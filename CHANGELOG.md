@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [0.1.39] - 2026-10-17
+
+### Added
+
+- `chrome_wait {until:"change"}`：轮询 delta 快照，DOM 控件变化即返回
+- `chrome_click {button, clickCount}`：右键/中键、双击（dblclick/contextmenu 事件）
+- `scripts/cpu-sample.mjs` + `npm run cpu:sample -- 120`：可复现的 CPU 采样
+
 ## [0.1.38] - 2026-10-17
 
 ### Added

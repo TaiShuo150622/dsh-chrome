@@ -690,6 +690,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       properties: {
         ref: { type: 'number', description: 'Control number from the latest chrome_snapshot.' },
         selector: { type: 'string', description: 'CSS selector alternative to ref (used when ref is omitted).' },
+        button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button (default left).' },
+        clickCount: { type: 'number', description: 'Click count, 1-3 (default 1; 2 = double click).' },
         snapshot: {
           type: 'boolean',
           description: 'Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip).',
@@ -732,7 +734,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_click', `click ref ${args?.ref}`)
-      return call('tab.click', { ref: args?.ref, selector: args?.selector, snapshot: Boolean(args?.snapshot), dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
+      return call('tab.click', { ref: args?.ref, selector: args?.selector, button: args?.button, clickCount: args?.clickCount, snapshot: Boolean(args?.snapshot), dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
 
@@ -1102,11 +1104,11 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   list.push({
     name: 'chrome_wait',
     description:
-      'Wait for the current DSH session page: until=load (document complete), networkidle (load + short settle), text (page text contains it), selector (CSS selector exists), or url (current URL contains it). Fails with TIMEOUT instead of hanging.',
+      'Wait for the current DSH session page: until=load (document complete), networkidle (load + short settle), text (page text contains it), selector (CSS selector exists), url (current URL contains it), or change (DOM controls changed since the previous snapshot). Fails with TIMEOUT instead of hanging.',
     parameters: {
       type: 'object',
       properties: {
-        until: { type: 'string', enum: ['load', 'networkidle', 'text', 'selector', 'url'] },
+        until: { type: 'string', enum: ['load', 'networkidle', 'text', 'selector', 'url', 'change'] },
         text: { type: 'string', description: 'Required when until=text.' },
         selector: { type: 'string', description: 'Required when until=selector (CSS selector).' },
         url: { type: 'string', description: 'Required when until=url (substring of the current URL).' },

@@ -368,6 +368,15 @@ check('disconnect allows a new connectNative attempt', connectNativeCalls === 2,
 await sandbox.ensurePort()
 check('while connected, ensurePort does not reconnect', connectNativeCalls === 2, String(connectNativeCalls))
 
+// wait until=change polls the delta snapshot
+nextPageValue = { mode: 'delta', changedCount: 1, sameCount: 0, removedRefs: [], controls: [] }
+const waitedChange = await sandbox.handleRequest({
+  method: 'tab.wait',
+  params: { until: 'change', owner: 's1' },
+  id: 'wait-change',
+})
+check('tab.wait change resolves when controls change', waitedChange?.loadState === 'complete')
+
 // disk version mismatch triggers an automatic extension reload (800ms debounce)
 for (const listener of nativePortListeners.message) {
   listener({ event: 'ext.state', params: { version: '9.9.9' } })

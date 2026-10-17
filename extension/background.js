@@ -728,7 +728,13 @@ async function click(owner, params) {
   if (!Number.isFinite(ref) && !selector) {
     throw bridgeError('INVALID_ARGUMENT', 'ref or selector is required')
   }
-  const result = await callInPage(tabId, 'click', [Number.isFinite(ref) ? ref : null, selector], 15000, params.dialog)
+  const result = await callInPage(
+    tabId,
+    'click',
+    [Number.isFinite(ref) ? ref : null, selector, String(params.button || 'left'), Number(params.clickCount) || 1],
+    15000,
+    params.dialog,
+  )
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
   }
@@ -1008,6 +1014,18 @@ async function wait(owner, params) {
       await new Promise((resolve) => setTimeout(resolve, 300))
     }
     if (!found) throw bridgeError('TIMEOUT', `selector not found within ${timeoutMs}ms: ${selector}`)
+  } else if (until === 'change') {
+    const started = Date.now()
+    let changed = false
+    while (Date.now() - started < timeoutMs) {
+      const delta = await callInPage(tabId, 'snapshot', [1000, false, 'delta'], 5000)
+      if ((delta?.changedCount ?? 0) > 0 || (delta?.removedRefs ?? []).length > 0) {
+        changed = true
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+    if (!changed) throw bridgeError('TIMEOUT', `no DOM change within ${timeoutMs}ms`)
   } else if (until === 'url') {
     const needle = String(params.url || '')
     if (!needle) throw bridgeError('INVALID_ARGUMENT', 'url is required when until=url')
@@ -1265,7 +1283,7 @@ function hoverByRef(ref, selector) {
   }
 }
 
-function clickByRef(ref, selector) {
+function clickByRef(ref, selector, buttonName, clickCount) {
   const element = ref
     ? document.querySelector(`[data-dsh-ref="${ref}"]`)
     : selector

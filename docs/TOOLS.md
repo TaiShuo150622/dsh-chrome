@@ -123,6 +123,8 @@ Click the interactive control with the given snapshot ref number on the current 
 |---|---|---|---|
 | `ref` | number | no | Control number from the latest chrome_snapshot. |
 | `selector` | string | no | CSS selector alternative to ref (used when ref is omitted). |
+| `button` | enum(left | right | middle) | no | Mouse button (default left). |
+| `clickCount` | number | no | Click count, 1-3 (default 1; 2 = double click). |
 | `snapshot` | boolean | no | Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip). |
 | `dialog` | object | no | How to answer a JS dialog (confirm/prompt/beforeunload) triggered by this action. Default: dismiss. Set accept:true to accept; promptText fills a prompt. |
 | `tabId` | number | no | Optional tab id owned by this session. |
@@ -203,11 +205,11 @@ List recent Chrome downloads (filename, URL, state, bytes, start time). Use afte
 
 ### `chrome_wait`
 
-Wait for the current DSH session page: until=load (document complete), networkidle (load + short settle), text (page text contains it), selector (CSS selector exists), or url (current URL contains it). Fails with TIMEOUT instead of hanging.
+Wait for the current DSH session page: until=load (document complete), networkidle (load + short settle), text (page text contains it), selector (CSS selector exists), url (current URL contains it), or change (DOM controls changed since the previous snapshot). Fails with TIMEOUT instead of hanging.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `until` | enum(load | networkidle | text | selector | url) | yes |  |
+| `until` | enum(load | networkidle | text | selector | url | change) | yes |  |
 | `text` | string | no | Required when until=text. |
 | `selector` | string | no | Required when until=selector (CSS selector). |
 | `url` | string | no | Required when until=url (substring of the current URL). |
