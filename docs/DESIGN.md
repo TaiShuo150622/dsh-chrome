@@ -217,6 +217,8 @@ cordis.patch.yml
 | `chrome_screenshot` clip | `clip{x,y,width,height}` | 区域截图（CSS px） |
 | `chrome_click/type/press` dialog | `dialog{accept,promptText}` + 输出 `dialogs[]` | alert 默认接受、confirm/prompt 默认取消 |
 | `chrome_hover` | `ref` | 悬停触发菜单/提示，虚拟光标显示在目标 |
+| `chrome_a11y` | `limit?` | 可访问性树节点（role/name/value） |
+| `chrome_snapshot` boxes | `boxes:true` | 控件视口坐标 `[x,y,w,h]`；ref 稳定 |
 
 #### 4.5.1 错误码
 

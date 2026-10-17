@@ -78,6 +78,24 @@ function sendNativeEvent(event, params) {
   writeNative({ event, params })
 }
 
+function readExtensionManifest() {
+  try {
+    const dev = JSON.parse(fs.readFileSync(path.join(cacheDir, 'dev.json'), 'utf8'))
+    if (!dev?.extensionDir) return null
+    const manifest = JSON.parse(fs.readFileSync(path.join(dev.extensionDir, 'manifest.json'), 'utf8'))
+    return { version: String(manifest.version || ''), watching: Boolean(dev.watch) }
+  } catch {
+    return null
+  }
+}
+
+function sendExtensionState() {
+  const state = readExtensionManifest()
+  if (!state) return
+  sendNativeEvent('ext.state', state)
+  log(`extension state sent: version ${state.version}, watching ${state.watching}`)
+}
+
 function startExtensionWatcher() {
   try {
     const dev = JSON.parse(fs.readFileSync(path.join(cacheDir, 'dev.json'), 'utf8'))
@@ -216,6 +234,7 @@ function onSocketData(chunk, source) {
         authed = true
         retryDelay = 500
         log(`bridge authenticated (protocol ${message.protocol})`)
+        sendExtensionState()
       } else {
         log('unexpected bridge greeting; reconnecting')
         source.destroy()

@@ -35,6 +35,7 @@ let nextPageValue = { ok: true, tag: 'button', label: 'OK' }
 let nextTabId = 100
 
 let connectNativeCalls = 0
+let runtimeReloads = 0
 const nativePortListeners = { message: [], disconnect: [] }
 const fakeNativePort = {
   posted: [],
@@ -63,7 +64,9 @@ const chrome = {
       connectNativeCalls += 1
       return fakeNativePort
     },
-    reload: () => {},
+    reload: () => {
+      runtimeReloads += 1
+    },
     onConnect: { addListener() {} },
     onInstalled: { addListener() {} },
     onStartup: { addListener() {} },
@@ -327,6 +330,13 @@ await sandbox.ensurePort()
 check('disconnect allows a new connectNative attempt', connectNativeCalls === 2, String(connectNativeCalls))
 await sandbox.ensurePort()
 check('while connected, ensurePort does not reconnect', connectNativeCalls === 2, String(connectNativeCalls))
+
+// disk version mismatch triggers an automatic extension reload (800ms debounce)
+for (const listener of nativePortListeners.message) {
+  listener({ event: 'ext.state', params: { version: '9.9.9' } })
+}
+await new Promise((resolve) => setTimeout(resolve, 950))
+check('disk version mismatch requests an extension reload', runtimeReloads >= 1, String(runtimeReloads))
 
 // unsupported method
 let unsupported = null

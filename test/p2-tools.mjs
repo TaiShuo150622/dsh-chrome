@@ -72,6 +72,7 @@ host.stdout.on(
       'tab.upload': { ok: true, ref: 5, files: 1 },
       'browser.downloads': { items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z' }] },
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
+      'tab.a11y': { total: 2, truncated: false, nodes: [{ role: 'button', name: 'Submit' }, { role: 'textbox', name: 'Name' }] },
       'tab.get_text': { found: true, text: 'Example Domain body', truncated: false },
       'tab.console': { available: true, entries: [{ level: 'error', text: 'boom', time: 1 }] },
       'tab.network': { available: true, entries: [{ url: 'https://example.com/a.js', type: 'script', durationMs: 12, transferSize: 340 }] },
@@ -104,7 +105,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('twenty tools registered', tools.length === 20, tools.map((t) => t.name).join(', '))
+check('twenty-one tools registered', tools.length === 21, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -161,6 +162,10 @@ check('claim params reach the extension', requests.at(-1)?.method === 'tab.tabs'
 const selectValue = await byName.chrome_select.execute({ ref: 4, checked: true }, exec())
 check('chrome_select executes', selectValue.ok === true && selectValue.value === 'checked')
 check('select params reach the extension', requests.at(-1)?.method === 'tab.select' && requests.at(-1)?.params?.checked === true)
+
+const a11yValue = await byName.chrome_a11y.execute({ limit: 100 }, exec())
+check('chrome_a11y executes', a11yValue.nodes?.[0]?.role === 'button')
+check('a11y limit reaches the extension', requests.at(-1)?.method === 'tab.a11y' && requests.at(-1)?.params?.limit === 100)
 
 const textValue = await byName.chrome_get_text.execute({ selector: 'main', maxChars: 1000 }, exec())
 check('chrome_get_text executes', textValue.found === true && textValue.text === 'Example Domain body')

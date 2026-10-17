@@ -56,6 +56,12 @@ async function waitFor(predicate, timeoutMs, label) {
   throw new Error(`timed out waiting for ${label}`)
 }
 
+await fsp.mkdir(path.join(home, 'cache', 'dsh-chrome'), { recursive: true })
+await fsp.writeFile(
+  path.join(home, 'cache', 'dsh-chrome', 'dev.json'),
+  JSON.stringify({ watch: true, extensionDir: path.join(root, 'extension') }),
+)
+
 let bridge = new BridgeServer({ home })
 await bridge.start()
 
@@ -64,10 +70,14 @@ const host = spawn(process.execPath, [path.join(root, 'host', 'host.mjs')], {
   stdio: ['pipe', 'pipe', 'inherit'],
 })
 
+const events = []
 host.stdout.on(
   'data',
   frameReader((message) => {
-    if (message.id == null) return
+    if (message.id == null) {
+      if (message.event) events.push(message)
+      return
+    }
     const result =
       message.method === 'browser.status'
         ? { extensionVersion: 'reconnect-fake', connected: true }
@@ -84,6 +94,9 @@ host.stdout.on(
 
 await waitFor(() => bridge.connected, 5000, 'initial host authentication')
 check('host connects to the first provider instance', bridge.connected)
+const stateEvent = events.find((event) => event.event === 'ext.state')
+const manifestVersion = JSON.parse(await fsp.readFile(path.join(root, 'extension', 'manifest.json'), 'utf8')).version
+check('host reports the disk extension version on connect', stateEvent?.params?.version === manifestVersion, JSON.stringify(stateEvent?.params))
 const firstPid = bridge.discovery?.pid ?? null
 
 // Simulate a provider restart: the first server goes away completely (socket

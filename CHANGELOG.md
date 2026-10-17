@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+## [0.1.34] - 2026-10-17
+
+### Added
+
+- `chrome_a11y`：CDP `Accessibility.getFullAXTree` 的可访问性节点（role/name/value，限 200/可调）
+- `chrome_get_text {format:"markdown"}`：页面正文转 markdown（标题/链接/列表/代码/引用）
+- **自动更新补强**：host 在每次 native 连接建立时上报磁盘扩展版本（`ext.state`）；SW 发现与运行版本不一致会自动 reload（覆盖"host 断开期间文件已更新"场景）
+- 测试：host-reconnect 断言 `ext.state` 版本、extension-logic 断言版本不一致触发 reload
+
 ## [0.1.33] - 2026-10-17
 
 ### Changed

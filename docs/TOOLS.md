@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：20
+> 工具数量：21
 
 ### `chrome_status`
 
@@ -19,11 +19,12 @@ Open an http(s) URL in this DSH session browser tab (created as a background tab
 
 ### `chrome_snapshot`
 
-Return a text snapshot of the current DSH session page: title, URL, a numbered list of visible interactive controls (use the numbers as refs for click/type), and visible page text. Password and payment-card values are masked. Prefer this over screenshots for reading content.
+Return a text snapshot of the current DSH session page: title, URL, a numbered list of visible interactive controls (use the numbers as refs for click/type), and visible page text. Refs are stable across snapshots until the page changes; newly seen controls are marked with new:true. Password and payment-card values are masked. Prefer this over screenshots for reading content.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `maxChars` | number | no | Maximum page-text characters to return (default 100000). |
+| `boxes` | boolean | no | Include each control viewport box [x,y,width,height] in CSS px. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_find`
@@ -44,6 +45,7 @@ Read the visible text of the DSH session page (or one element via a CSS selector
 |---|---|---|---|
 | `selector` | string | no | Optional CSS selector; defaults to main/article/[role=main]/body. |
 | `maxChars` | number | no | Max characters, 500-200000 (default 20000). |
+| `format` | enum(text | markdown) | no | Output format (default text). |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_select`
@@ -55,6 +57,15 @@ Select an option in a <select>, set a checkbox/radio, or toggle one. Takes a ref
 | `ref` | number | yes | Ref of the select/checkbox/radio control. |
 | `value` | string | no | Option value or visible label (for <select>). |
 | `checked` | boolean | no | Desired checked state (for checkbox/radio); defaults to toggle. |
+| `tabId` | number | no | Optional tab id owned by this session. |
+
+### `chrome_a11y`
+
+Return the accessibility tree of the DSH session page (role/name/value nodes, filtered and truncated). Useful for understanding structure, dialogs and non-DOM UIs; use chrome_snapshot for clickable refs.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `limit` | number | no | Max nodes, 1-400 (default 200). |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_console`
@@ -85,6 +96,8 @@ Capture a PNG screenshot of the current DSH session page (or tabId) and return i
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `tabId` | number | no | Optional tab id owned by this session. |
+| `fullPage` | boolean | no | Capture the full scrollable document instead of the viewport. |
+| `highlight` | boolean | no | Overlay labeled boxes for current snapshot refs in the capture. |
 | `clip` | object | no | Optional viewport region to capture, in CSS pixels. |
 
 ### `chrome_hover`
@@ -178,12 +191,14 @@ List recent Chrome downloads (filename, URL, state, bytes, start time). Use afte
 
 ### `chrome_wait`
 
-Wait for the current DSH session page: until=load (document complete), until=networkidle (load + short settle), or until=text with a text argument (polls page text until it appears). Fails with TIMEOUT instead of hanging.
+Wait for the current DSH session page: until=load (document complete), networkidle (load + short settle), text (page text contains it), selector (CSS selector exists), or url (current URL contains it). Fails with TIMEOUT instead of hanging.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `until` | enum(load | networkidle | text) | yes |  |
+| `until` | enum(load | networkidle | text | selector | url) | yes |  |
 | `text` | string | no | Required when until=text. |
+| `selector` | string | no | Required when until=selector (CSS selector). |
+| `url` | string | no | Required when until=url (substring of the current URL). |
 | `timeoutMs` | number | no | Maximum wait in ms (default 30000, max 120000). |
 | `tabId` | number | no | Optional tab id owned by this session. |
 

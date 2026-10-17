@@ -328,6 +328,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       properties: {
         selector: { type: 'string', description: 'Optional CSS selector; defaults to main/article/[role=main]/body.' },
         maxChars: { type: 'number', description: 'Max characters, 500-200000 (default 20000).' },
+        format: { type: 'string', enum: ['text', 'markdown'], description: 'Output format (default text).' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
       additionalProperties: false,
@@ -351,7 +352,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     async execute(args, exec) {
       const value = await call(
         'tab.get_text',
-        { selector: args?.selector, maxChars: args?.maxChars, tabId: args?.tabId, owner: ownerOf(exec) },
+        { selector: args?.selector, maxChars: args?.maxChars, format: args?.format, tabId: args?.tabId, owner: ownerOf(exec) },
         30000,
       )
       if (!value) throw new BridgeError('INTERNAL', 'extension returned no text result')
@@ -390,6 +391,50 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         30000,
       )
       if (!value) throw new BridgeError('INTERNAL', 'extension returned no select result')
+      return value
+    },
+  },
+  {
+    name: 'chrome_a11y',
+    description:
+      'Return the accessibility tree of the DSH session page (role/name/value nodes, filtered and truncated). Useful for understanding structure, dialogs and non-DOM UIs; use chrome_snapshot for clickable refs.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max nodes, 1-400 (default 200).' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        total: { type: 'number' },
+        truncated: { type: 'boolean' },
+        nodes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              role: { type: 'string' },
+              name: { type: 'string' },
+              value: { type: 'string' },
+            },
+            additionalProperties: true,
+          },
+        },
+      }),
+      render: (_args, value) => {
+        const lines = (value.nodes ?? []).map((node) =>
+          `${node.role}${node.name ? ` ${JSON.stringify(node.name)}` : ''}${node.value ? ` value=${JSON.stringify(node.value)}` : ''}`,
+        )
+        return renderText(
+          `Accessibility nodes (${lines.length}/${value.total}${value.truncated ? ', truncated' : ''}):\n${lines.join('\n') || '(none)'}`,
+        )
+      },
+    },
+    async execute(args, exec) {
+      const value = await call('tab.a11y', { limit: args?.limit, tabId: args?.tabId, owner: ownerOf(exec) }, 30000)
+      if (!value) throw new BridgeError('INTERNAL', 'extension returned no accessibility tree')
       return value
     },
   },

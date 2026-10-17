@@ -54,8 +54,8 @@
 | 快照 `boxes`（返回坐标） | Playwright MCP | ✅ 已实现（0.1.30）：`chrome_snapshot {boxes:true}` |
 | 全页截图 / 高亮 ref 截图 | browser-use | ✅ 已实现（0.1.31）：`fullPage` / `highlight` |
 | `chrome_wait` 支持 selector/url | Playwright MCP waiting 工具 | ✅ 已实现（0.1.31）：`until: selector\|url` |
-| 可访问性树工具 | Playwright MCP / browser-use | P2/P3：`chrome_a11y`（CDP `Accessibility.getFullAXTree`，带 ref） |
-| Markdown 阅读 | browser-use | P3：`chrome_get_text {format:"markdown"}` |
+| 可访问性树工具 | Playwright MCP / browser-use | ✅ 已实现（0.1.34）：`chrome_a11y`（role/name/value；交互仍用 snapshot ref） |
+| Markdown 阅读 | browser-use | ✅ 已实现（0.1.34）：`chrome_get_text {format:"markdown"}` |
 | 自动更新（开发期） | 自研 | 已有：host 监听 extension/ → ext.changed → reload；P2 补"连接时版本核对"（host 报磁盘版本，SW 发现不一致自动 reload） |
 | 动作观察/缓存（observe） | Stagehand | P3 评估（需要模型侧配合，工具层只提供候选动作列表） |
 

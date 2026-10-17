@@ -284,6 +284,14 @@ function ensurePort() {
         scheduleExtensionReload()
         return
       }
+      if (message?.event === 'ext.state') {
+        const diskVersion = String(message.params?.version || '')
+        if (diskVersion && diskVersion !== VERSION) {
+          log('disk extension version differs; reloading', diskVersion)
+          scheduleExtensionReload()
+        }
+        return
+      }
       if (message?.event) log('event', message.event)
       return
     }
@@ -389,6 +397,8 @@ async function handleRequest(message) {
       return listDownloads(params)
     case 'tab.select':
       return selectAgent(owner, params)
+    case 'tab.a11y':
+      return a11y(owner, params)
     case 'tab.get_text':
       return getTextAgent(owner, params)
     case 'tab.console':
@@ -440,6 +450,7 @@ const PAGE_ACTIONS = {
   scroll: scrollPage,
   find: findInPage,
   getText,
+  getMarkdown,
   select: selectByRef,
   overlay: drawRefOverlay,
   overlayRemove: removeRefOverlay,
@@ -858,10 +869,51 @@ async function listDownloads(params) {
   }
 }
 
+async function a11y(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const target = { tabId }
+  const limit = Number.isFinite(params.limit) ? Math.min(400, Math.max(1, params.limit)) : 200
+  try {
+    await chrome.debugger.attach(target, '1.3')
+  } catch (error) {
+    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
+  }
+  try {
+    await chrome.debugger.sendCommand(target, 'Accessibility.enable')
+    const response = await chrome.debugger.sendCommand(target, 'Accessibility.getFullAXTree')
+    const nodes = (response?.nodes ?? [])
+      .filter((node) => node.ignored !== true)
+      .map((node) => ({
+        role: node.role?.value || node.role || '',
+        name: node.name?.value || node.name || '',
+        value: node.value?.value ?? undefined,
+      }))
+      .filter((node) => node.role || node.name)
+    return {
+      nodes: nodes.slice(0, limit).map((node) => ({
+        role: node.role,
+        name: String(node.name).slice(0, 160),
+        ...(node.value != null ? { value: String(node.value).slice(0, 160) } : {}),
+      })),
+      total: nodes.length,
+      truncated: nodes.length > limit,
+    }
+  } finally {
+    try {
+      await chrome.debugger.detach(target)
+    } catch {
+      // tab may have closed
+    }
+  }
+}
+
 async function getTextAgent(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const maxChars = Number.isFinite(params.maxChars) ? Math.min(200000, Math.max(500, params.maxChars)) : 20000
   const selector = params.selector ? String(params.selector) : ''
+  if (String(params.format || 'text') === 'markdown') {
+    return callInPage(tabId, 'getMarkdown', [selector, maxChars])
+  }
   return callInPage(tabId, 'getText', [selector, maxChars])
 }
 
@@ -1312,6 +1364,60 @@ function selectByRef(ref, value, checked) {
     return { ok: true, tag, value: element.checked ? 'checked' : 'unchecked' }
   }
   return { ok: false, reason: 'UNSUPPORTED', message: `ref ${ref} is a ${tag}, not a select/checkbox/radio` }
+}
+
+function getMarkdown(selector, maxChars) {
+  const limit = Number.isFinite(maxChars) ? maxChars : 20000
+  let root
+  try {
+    root = selector ? document.querySelector(selector) : document.querySelector('main,article,[role="main"]') || document.body
+  } catch {
+    return { found: false, error: 'INVALID_SELECTOR', text: '', truncated: false }
+  }
+  if (!root) return { found: false, text: '', truncated: false }
+  const inline = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || ''
+    if (node.nodeType !== Node.ELEMENT_NODE) return ''
+    const tag = node.tagName.toLowerCase()
+    if (tag === 'br') return '\n'
+    if (tag === 'img') return `![${node.getAttribute('alt') || ''}](${node.getAttribute('src') || ''})`
+    if (tag === 'a') {
+      const text = Array.from(node.childNodes).map(inline).join('')
+      return node.getAttribute('href') ? `[${text}](${node.getAttribute('href')})` : text
+    }
+    if (tag === 'code') return `\`${node.textContent || ''}\``
+    if (tag === 'strong' || tag === 'b') return `**${Array.from(node.childNodes).map(inline).join('')}**`
+    if (tag === 'em' || tag === 'i') return `*${Array.from(node.childNodes).map(inline).join('')}*`
+    return Array.from(node.childNodes).map(inline).join('')
+  }
+  const block = (node, depth = 0) => {
+    if (node.nodeType === Node.TEXT_NODE) return (node.nodeValue || '').trim()
+    if (node.nodeType !== Node.ELEMENT_NODE) return ''
+    const tag = node.tagName.toLowerCase()
+    const children = () => Array.from(node.children || []).map((child) => block(child, depth)).filter(Boolean)
+    if (/^h[1-6]$/.test(tag)) return `${'#'.repeat(Number(tag[1]))} ${(node.textContent || '').trim()}`
+    if (tag === 'p') return blockChildrenInline(node)
+    if (tag === 'ul' || tag === 'ol') {
+      const items = Array.from(node.children).filter((child) => child.tagName.toLowerCase() === 'li')
+      return items
+        .map((li, index) => `${'  '.repeat(depth)}${tag === 'ol' ? `${index + 1}.` : '-'} ${blockChildrenInline(li).replace(/\n/g, ' ')}`)
+        .join('\n')
+    }
+    if (tag === 'pre') return `\n\`\`\`\n${(node.textContent || '').replace(/\n+$/, '')}\n\`\`\`\n`
+    if (tag === 'blockquote') return `> ${blockChildrenInline(node)}`
+    if (tag === 'hr') return '---'
+    if (['script', 'style', 'noscript', 'svg'].includes(tag)) return ''
+    if (['div', 'section', 'article', 'main', 'header', 'footer', 'nav', 'aside', 'form', 'li'].includes(tag)) {
+      return children().join('\n\n')
+    }
+    return blockChildrenInline(node)
+  }
+  const blockChildrenInline = (node) => Array.from(node.childNodes).map(inline).join('').replace(/[ \t]+/g, ' ').trim()
+  const markdown = block(root)
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  const truncated = markdown.length > limit
+  return { found: true, text: truncated ? markdown.slice(0, limit) : markdown, truncated }
 }
 
 function getText(selector, maxChars) {
