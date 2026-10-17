@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [0.1.29] - 2026-10-17
+
+### Fixed
+
+- **自动重连根因**：`ensurePort()` 的 `connecting` promise 被外层赋值覆盖，导致一次成功后永远不再 `connectNative`；改为 deferred 模式，并加 vm 回归测试。CfT 真机：kill host 后 10s 自动恢复
+
+### Added
+
+- 重连诊断写入 `chrome.storage.local.dshDiag`（worker 被回收后仍可查）
+
+## [0.1.26] - 2026-10-17
+
+### Fixed
+
+- `chrome_tabs op=claim` 路由缺失（真机暴露）：provider 以 `tab.tabs` 的 op 发送，扩展只认 list/new/close
+
 ## [0.1.25] - 2026-10-17
 
 ### Added
