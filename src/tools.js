@@ -61,7 +61,7 @@ function normalize(error) {
   return wrapped
 }
 
-export function chromeTools({ bridge, attachments, assets, approval }) {
+export function chromeTools({ bridge, attachments, assets, approval, sessionContext }) {
   const list = []
   const ownerOf = (exec) => exec?.agent?.id ?? 'default'
 
@@ -73,7 +73,21 @@ export function chromeTools({ bridge, attachments, assets, approval }) {
     }
   }
 
+  function sessionSandboxMode(exec) {
+    const services = sessionContext?.()
+    const session = services?.sessions?.get?.(exec?.agent?.id)
+    const policy = services?.sandboxPolicy
+    if (!session || !policy) return null
+    try {
+      return policy.resolve({ session })?.mode ?? null
+    } catch {
+      return null
+    }
+  }
+
   async function guard(exec, toolName, action) {
+    // follow-dsh: the session's sandbox preset already grants full access.
+    if (sessionSandboxMode(exec) === 'danger-full-access') return
     const service = approval?.()
     if (!service || !exec?.agent) return
     let outcome

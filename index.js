@@ -25,6 +25,8 @@ export function apply(ctx) {
   const assets = { current: null }
   const attachments = { current: null }
   const approval = { current: null }
+  const sessions = { current: null }
+  const sandboxPolicy = { current: null }
   const logger = ctx.logger
 
   ctx.inject(['attachments'], (scoped) => {
@@ -38,6 +40,15 @@ export function apply(ctx) {
     approval.current = scoped.get('approval')
     return () => {
       approval.current = null
+    }
+  })
+
+  ctx.inject(['sessions', 'sandboxPolicy'], (scoped) => {
+    sessions.current = scoped.get('sessions')
+    sandboxPolicy.current = scoped.get('sandboxPolicy')
+    return () => {
+      sessions.current = null
+      sandboxPolicy.current = null
     }
   })
 
@@ -76,6 +87,7 @@ export function apply(ctx) {
       attachments: () => attachments.current,
       assets: () => assets.current,
       approval: () => approval.current,
+      sessionContext: () => ({ sessions: sessions.current, sandboxPolicy: sandboxPolicy.current }),
     }).map((definition) => ctx.tools.register(definition))
     return () => {
       for (const dispose of disposers) {
