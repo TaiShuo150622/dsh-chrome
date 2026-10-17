@@ -21,7 +21,8 @@
     "icon.svg",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "scripts/**/*"
   ],
   "dsh": {
     "bundle": {
@@ -29,6 +30,8 @@
     }
   },
   "scripts": {
-    "test": "node test/p0-bridge.mjs && node test/p0-tools.mjs && node test/p1-tools.mjs && node test/p2-tools.mjs"
+    "test": "node test/p0-bridge.mjs && node test/p0-tools.mjs && node test/p1-tools.mjs && node test/p2-tools.mjs",
+    "docs:tools": "node scripts/gen-tools-doc.mjs",
+    "package:extension": "node scripts/package-extension.mjs"
   }
 }

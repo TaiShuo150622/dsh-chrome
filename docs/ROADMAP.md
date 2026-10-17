@@ -109,6 +109,7 @@
 - **目标**：陌生人按文档能装、能排错、能贡献。
 - **范围**：公开仓库（GitHub）、版本号与 CHANGELOG、CI（typecheck/test/e2e，Chrome for Testing）、完整文档（README、INSTALL、TOOLS、TROUBLESHOOTING、SECURITY）、Releases 提供扩展 zip、安装器友好化。
 - **平台**：macOS 通用；Windows 作为可选支线（`.cmd` launcher + 目录路径），不承诺 Linux。
+- **已完成部分（2026-10-17）**：CI 工作流（`npm test` + `docs/TOOLS.md` 一致性检查）、[安装指南](INSTALL.md)、[工具参考](TOOLS.md)（`npm run docs:tools` 生成）、扩展打包脚本（`npm run package:extension` → `dist/*.zip`）。
 - **Gate**：干净环境 10 分钟内装好；CI 绿；文档能让第三方独立完成安装与首个任务；P1/P2 验收无回归；许可与出处（NOTICE）齐备。
 
 ### P4 官方化（依官方流程）
