@@ -303,7 +303,9 @@ async function handleRequest(message) {
     case 'tab.snapshot':
       return snapshot(owner, params)
     case 'tab.screenshot':
-      return screenshot(owner, params.tabId)
+      return screenshot(owner, params)
+    case 'tab.find':
+      return find(owner, params)
     case 'tab.click':
       return click(owner, params)
     case 'tab.type':
@@ -358,6 +360,7 @@ const PAGE_ACTIONS = {
   type: typeIntoRef,
   press: pressKey,
   scroll: scrollPage,
+  find: findInPage,
   hasText,
 }
 
@@ -472,9 +475,21 @@ async function snapshot(owner, params) {
   return value
 }
 
-async function screenshot(owner, tabIdArg) {
-  const tabId = await resolveOwnedTabId(owner, tabIdArg)
+async function screenshot(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params?.tabId)
   const target = { tabId }
+  let clip
+  const rawClip = params?.clip
+  if (rawClip && typeof rawClip === 'object') {
+    const x = Number(rawClip.x)
+    const y = Number(rawClip.y)
+    const width = Number(rawClip.width)
+    const height = Number(rawClip.height)
+    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+      throw bridgeError('INVALID_ARGUMENT', 'clip must be {x,y,width,height} with positive width/height')
+    }
+    clip = { x, y, width, height, scale: 1 }
+  }
   try {
     await chrome.debugger.attach(target, '1.3')
   } catch (error) {
@@ -484,6 +499,7 @@ async function screenshot(owner, tabIdArg) {
     const response = await chrome.debugger.sendCommand(target, 'Page.captureScreenshot', {
       format: 'png',
       captureBeyondViewport: false,
+      ...(clip ? { clip } : {}),
     })
     if (!response?.data) throw bridgeError('INTERNAL', 'empty screenshot data')
     return { dataBase64: response.data }
@@ -494,6 +510,16 @@ async function screenshot(owner, tabIdArg) {
       // tab may have navigated or closed
     }
   }
+}
+
+async function find(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const query = String(params.query ?? '')
+  if (!query.trim()) throw bridgeError('INVALID_ARGUMENT', 'query must not be empty')
+  const limit = Number.isFinite(params.maxResults) ? Math.min(50, Math.max(1, params.maxResults)) : 20
+  const value = await callInPage(tabId, 'find', [query, limit])
+  if (!value) throw bridgeError('INTERNAL', 'page find returned no result')
+  return value
 }
 
 async function click(owner, params) {
@@ -857,6 +883,58 @@ function scrollPage(direction, amount) {
 }
 
 /** Runs inside the page; self-contained. */
+function findInPage(query, limit) {
+  const needle = String(query || '').toLowerCase()
+  if (!needle.trim()) return { query: '', matches: [], truncated: false }
+  const max = Number.isFinite(limit) ? Math.max(1, Math.min(50, limit)) : 20
+  const root = document.body || document.documentElement
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const matches = []
+  const seen = new Set()
+  let node
+  while ((node = walker.nextNode())) {
+    if (matches.length >= max) break
+    const value = node.nodeValue || ''
+    if (!value.toLowerCase().includes(needle)) continue
+    const element = node.parentElement
+    if (!element || seen.has(element)) continue
+    const style = getComputedStyle(element)
+    if (style.display === 'none' || style.visibility === 'hidden') continue
+    const rect = element.getBoundingClientRect()
+    if (rect.width < 1 || rect.height < 1) continue
+    seen.add(element)
+    const interactive = element.closest('a[href],button,input,select,textarea,[role="button"],[role="link"],[onclick]')
+    const target = interactive || element
+    let ref = Number(target.getAttribute('data-dsh-ref')) || 0
+    if (!ref) {
+      ref = 900 + matches.length + 1
+      try {
+        target.setAttribute('data-dsh-ref', String(ref))
+      } catch {
+        // read-only DOM: match still reports coordinates
+      }
+    }
+    try {
+      const previousOutline = target.style.outline
+      const previousOffset = target.style.outlineOffset
+      target.style.outline = '2px solid rgba(0,122,255,.8)'
+      target.style.outlineOffset = '2px'
+      setTimeout(() => {
+        target.style.outline = previousOutline
+        target.style.outlineOffset = previousOffset
+      }, 1500)
+    } catch {}
+    matches.push({
+      ref,
+      text: value.trim().slice(0, 160),
+      tag: target.tagName.toLowerCase(),
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+    })
+  }
+  return { query, matches, truncated: matches.length >= max }
+}
+
 function hasText(text) {
   return (document.body ? document.body.innerText : '').includes(text)
 }

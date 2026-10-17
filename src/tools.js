@@ -264,6 +264,55 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
 
   // ------------------------------------------------------------ 4. screenshot
   list.push({
+    name: 'chrome_find',
+    description:
+      'Find text inside the current DSH session page. Returns matching snippets with data-dsh-ref handles (when the match sits in a link/button/input) and viewport coordinates, so results can be clicked without a full snapshot.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Text to search for (case-insensitive).' },
+        maxResults: { type: 'number', description: 'Optional cap, 1-50 (default 20).' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        query: { type: 'string' },
+        matches: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              ref: { type: 'number' },
+              text: { type: 'string' },
+              tag: { type: 'string' },
+              x: { type: 'number' },
+              y: { type: 'number' },
+            },
+            additionalProperties: true,
+          },
+        },
+        truncated: { type: 'boolean' },
+      }),
+      render: (_args, value) => {
+        const header = `Matches for "${value.query}": ${value.matches?.length ?? 0}${value.truncated ? ' (truncated)' : ''}`
+        const lines = (value.matches ?? []).map((match) => `- [ref ${match.ref}] ${match.tag} ${JSON.stringify(match.text)}`)
+        return [{ type: 'text', text: [header, ...lines].join('\n') }]
+      },
+    },
+    async execute(args, exec) {
+      const value = await call(
+        'tab.find',
+        { query: String(args?.query ?? ''), maxResults: args?.maxResults, tabId: args?.tabId, owner: ownerOf(exec) },
+        30000,
+      )
+      if (!value) throw new BridgeError('INTERNAL', 'extension returned no find result')
+      return value
+    },
+  },
+  {
     name: 'chrome_screenshot',
     description:
       'Capture a PNG screenshot of the current DSH session page (or tabId) and return it as an image in this conversation. The file is also saved on disk. Use when layout or visual state matters; use chrome_snapshot for text.',
@@ -271,6 +320,18 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       type: 'object',
       properties: {
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+        clip: {
+          type: 'object',
+          description: 'Optional viewport region to capture, in CSS pixels.',
+          properties: {
+            x: { type: 'number' },
+            y: { type: 'number' },
+            width: { type: 'number' },
+            height: { type: 'number' },
+          },
+          required: ['x', 'y', 'width', 'height'],
+          additionalProperties: false,
+        },
       },
       additionalProperties: false,
     },
@@ -296,7 +357,11 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       },
     },
     async execute(args, exec) {
-      const shot = await call('tab.screenshot', { tabId: args?.tabId, owner: ownerOf(exec) }, 60000)
+      const shot = await call(
+        'tab.screenshot',
+        { tabId: args?.tabId, clip: args?.clip, owner: ownerOf(exec) },
+        60000,
+      )
       if (!shot?.path) throw new BridgeError('INTERNAL', 'native host did not return a screenshot path')
       let bytes = shot.bytes
       let image = null
