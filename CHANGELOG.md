@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [0.1.38] - 2026-10-17
+
+### Added
+
+- popup 显示 **Auto-update** 状态（on / reload pending / off，读 host 上报的磁盘版本）
+- `chrome_status` 输出 `diskVersion` / `autoReload`（provider 侧已先行）
+- 新测试 `test/tool-render.mjs`：用 schema 样本调用每个工具的 render，拦截渲染崩溃（npm test 10 条）
+
 ## [0.1.37] - 2026-10-17
 
 ### Added

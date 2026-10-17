@@ -5,6 +5,7 @@ const hint = document.getElementById('hint')
 const reconnect = document.getElementById('reconnect')
 const reload = document.getElementById('reload')
 const selfheal = document.getElementById('selfheal')
+const autoupdate = document.getElementById('autoupdate')
 
 function render(status) {
   if (!status) {
@@ -16,6 +17,14 @@ function render(status) {
   badge.className = `badge ${status.connected ? 'ok' : 'bad'}`
   version.textContent = status.extensionVersion || '—'
   tab.textContent = status.sessionTabId == null ? 'none yet (call chrome_goto)' : `#${status.sessionTabId}`
+  if (status.autoReload) {
+    autoupdate.textContent =
+      status.diskVersion && status.diskVersion !== status.extensionVersion
+        ? `reload pending (disk ${status.diskVersion})`
+        : `on (disk ${status.diskVersion || '?'})`
+  } else {
+    autoupdate.textContent = 'off (no dev.json watcher)'
+  }
   hint.textContent = status.connected
     ? 'The DSH provider can open background tabs. Nothing is focused automatically.'
     : 'Start DSH Desktop with the dsh-chrome plugin, then press Reconnect. If it still fails, quit and reopen Chrome once so it reads the native messaging manifest.'
