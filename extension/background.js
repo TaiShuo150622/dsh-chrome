@@ -393,7 +393,14 @@ async function evalInTab(tabId, fn, args, timeoutMs) {
 async function callInPage(tabId, action, args = [], timeoutMs = 15000) {
   const fn = PAGE_ACTIONS[action]
   if (!fn) throw bridgeError('UNSUPPORTED', `unknown page action: ${action}`)
-  return evalInTab(tabId, fn, args, timeoutMs)
+  try {
+    return await evalInTab(tabId, fn, args, timeoutMs)
+  } catch (error) {
+    if (error?.code !== 'TIMEOUT') throw error
+    // First attach after a page load / worker wake can be slow; retry once.
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    return evalInTab(tabId, fn, args, timeoutMs)
+  }
 }
 
 async function snapshot(owner, params) {
@@ -511,7 +518,7 @@ async function tabs(owner, params) {
       throw bridgeError('PROTECTED_PAGE', 'Only http(s) URLs are allowed.')
     }
     const tab = await chrome.tabs.create({ url, active: false, pinned: false })
-    await addTabToSession(owner, tab)
+    await addTabToSession(owner, tab, { activate: false })
     if (url !== 'about:blank') await waitForComplete(tab.id, 45000).catch(() => {})
     const created = await chrome.tabs.get(tab.id)
     return { tabId: tab.id, url: created.url || url, title: created.title || '' }
