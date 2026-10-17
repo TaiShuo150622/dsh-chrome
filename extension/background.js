@@ -10,6 +10,7 @@ const VERSION = chrome.runtime.getManifest().version
 
 let port = null
 let connecting = null
+let lastDiskVersion = null
 let lastConnectError = null
 let lastNativeSignalAt = 0
 
@@ -286,6 +287,7 @@ function ensurePort() {
       }
       if (message?.event === 'ext.state') {
         const diskVersion = String(message.params?.version || '')
+        lastDiskVersion = diskVersion || null
         if (diskVersion && diskVersion !== VERSION) {
           log('disk extension version differs; reloading', diskVersion)
           scheduleExtensionReload()
@@ -366,7 +368,12 @@ async function handleRequest(message) {
   const owner = params.owner ?? 'default'
   switch (method) {
     case 'browser.status':
-      return { extensionVersion: VERSION, connected: true }
+      return {
+        extensionVersion: VERSION,
+        connected: true,
+        diskVersion: lastDiskVersion,
+        autoReload: Boolean(lastDiskVersion),
+      }
     case 'tab.goto':
       return gotoUrl(owner, String(params.url || ''))
     case 'tab.snapshot':
@@ -452,6 +459,7 @@ const PAGE_ACTIONS = {
   getText,
   getMarkdown,
   select: selectByRef,
+  elementBox,
   overlay: drawRefOverlay,
   overlayRemove: removeRefOverlay,
   hasSelector,
@@ -623,6 +631,7 @@ async function screenshot(owner, params) {
   const target = { tabId }
   const highlight = Boolean(params?.highlight)
   const fullPage = Boolean(params?.fullPage)
+  const elementRef = Number(params?.ref)
   if (highlight) await callInPage(tabId, 'overlay', [], 10000).catch(() => null)
   let clip
   const rawClip = params?.clip
@@ -642,6 +651,13 @@ async function screenshot(owner, params) {
     throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
   }
   let effectiveClip = clip
+  if (!effectiveClip && Number.isFinite(elementRef)) {
+    const box = await callInPage(tabId, 'elementBox', [elementRef, ''], 10000)
+    if (!box || box.width <= 0 || box.height <= 0) {
+      throw bridgeError('REF_STALE', `ref ${elementRef} has no visible box`)
+    }
+    effectiveClip = { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 }
+  }
   try {
     if (fullPage) {
       const dims = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
@@ -683,8 +699,11 @@ async function find(owner, params) {
 async function hover(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
-  if (!Number.isFinite(ref)) throw bridgeError('REF_STALE', 'ref must be a snapshot number')
-  const result = await callInPage(tabId, 'hover', [ref])
+  const selector = params.selector ? String(params.selector) : ''
+  if (!Number.isFinite(ref) && !selector) {
+    throw bridgeError('INVALID_ARGUMENT', 'ref or selector is required')
+  }
+  const result = await callInPage(tabId, 'hover', [Number.isFinite(ref) ? ref : null, selector])
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
   }
@@ -694,8 +713,11 @@ async function hover(owner, params) {
 async function click(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
-  if (!Number.isFinite(ref)) throw bridgeError('REF_STALE', 'ref must be a snapshot number')
-  const result = await callInPage(tabId, 'click', [ref], 15000, params.dialog)
+  const selector = params.selector ? String(params.selector) : ''
+  if (!Number.isFinite(ref) && !selector) {
+    throw bridgeError('INVALID_ARGUMENT', 'ref or selector is required')
+  }
+  const result = await callInPage(tabId, 'click', [Number.isFinite(ref) ? ref : null, selector], 15000, params.dialog)
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
   }
@@ -705,11 +727,14 @@ async function click(owner, params) {
 async function typeText(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
-  if (!Number.isFinite(ref)) throw bridgeError('REF_STALE', 'ref must be a snapshot number')
+  const selector = params.selector ? String(params.selector) : ''
+  if (!Number.isFinite(ref) && !selector) {
+    throw bridgeError('INVALID_ARGUMENT', 'ref or selector is required')
+  }
   const result = await callInPage(
     tabId,
     'type',
-    [ref, String(params.text ?? ''), Boolean(params.replace), Boolean(params.submit)],
+    [Number.isFinite(ref) ? ref : null, String(params.text ?? ''), Boolean(params.replace), Boolean(params.submit), selector],
     15000,
     params.dialog,
   )
@@ -787,6 +812,12 @@ async function tabs(owner, params) {
   }
   if (op === 'claim') {
     return claimTab(owner, params)
+  }
+  if (op === 'focus') {
+    const tabId = await resolveOwnedTabId(owner, params.tabId)
+    await chrome.tabs.update(tabId, { active: true })
+    const tab = await chrome.tabs.get(tabId)
+    return { tabId, url: tab.url || '', title: tab.title || '', focused: true }
   }
   throw bridgeError('UNSUPPORTED', `unknown tabs op: ${op}`)
 }
@@ -1156,9 +1187,25 @@ function pageSnapshot(maxChars, withBoxes) {
 
 // ------------------------------------------------------- injected page actions
 /** Runs inside the page; self-contained. */
-function hoverByRef(ref) {
-  const element = document.querySelector(`[data-dsh-ref="${ref}"]`)
-  if (!element) return { ok: false, reason: 'REF_STALE', message: `ref ${ref} not found; take a new snapshot` }
+function hoverByRef(ref, selector) {
+  const element = ref
+    ? document.querySelector(`[data-dsh-ref="${ref}"]`)
+    : selector
+      ? (() => {
+          try {
+            return document.querySelector(String(selector))
+          } catch {
+            return null
+          }
+        })()
+      : null
+  if (!element) {
+    return {
+      ok: false,
+      reason: ref ? 'REF_STALE' : 'SELECTOR_NOT_FOUND',
+      message: ref ? `ref ${ref} not found; take a new snapshot` : `selector not found: ${selector}`,
+    }
+  }
   element.scrollIntoView({ block: 'center', inline: 'center' })
   const rect = element.getBoundingClientRect()
   const x = rect.left + rect.width / 2
@@ -1179,9 +1226,25 @@ function hoverByRef(ref) {
   }
 }
 
-function clickByRef(ref) {
-  const element = document.querySelector(`[data-dsh-ref="${ref}"]`)
-  if (!element) return { ok: false, reason: 'REF_STALE', message: `ref ${ref} not found; take a new snapshot` }
+function clickByRef(ref, selector) {
+  const element = ref
+    ? document.querySelector(`[data-dsh-ref="${ref}"]`)
+    : selector
+      ? (() => {
+          try {
+            return document.querySelector(String(selector))
+          } catch {
+            return null
+          }
+        })()
+      : null
+  if (!element) {
+    return {
+      ok: false,
+      reason: ref ? 'REF_STALE' : 'SELECTOR_NOT_FOUND',
+      message: ref ? `ref ${ref} not found; take a new snapshot` : `selector not found: ${selector}`,
+    }
+  }
   element.scrollIntoView({ block: 'center', inline: 'center' })
   const rect = element.getBoundingClientRect()
   const x = rect.left + rect.width / 2
@@ -1202,9 +1265,25 @@ function clickByRef(ref) {
 }
 
 /** Runs inside the page; self-contained. */
-function typeIntoRef(ref, text, replace, submit) {
-  const element = document.querySelector(`[data-dsh-ref="${ref}"]`)
-  if (!element) return { ok: false, reason: 'REF_STALE', message: `ref ${ref} not found; take a new snapshot` }
+function typeIntoRef(ref, text, replace, submit, selector) {
+  const element = ref
+    ? document.querySelector(`[data-dsh-ref="${ref}"]`)
+    : selector
+      ? (() => {
+          try {
+            return document.querySelector(String(selector))
+          } catch {
+            return null
+          }
+        })()
+      : null
+  if (!element) {
+    return {
+      ok: false,
+      reason: ref ? 'REF_STALE' : 'SELECTOR_NOT_FOUND',
+      message: ref ? `ref ${ref} not found; take a new snapshot` : `selector not found: ${selector}`,
+    }
+  }
   element.focus()
   try {
     const rect = element.getBoundingClientRect()
@@ -1460,6 +1539,28 @@ function readNetwork(filter, limit) {
       durationMs: Math.round(entry.duration || 0),
       transferSize: entry.transferSize || 0,
     })),
+  }
+}
+
+function elementBox(ref, selector) {
+  const element = ref
+    ? document.querySelector(`[data-dsh-ref="${ref}"]`)
+    : selector
+      ? (() => {
+          try {
+            return document.querySelector(String(selector))
+          } catch {
+            return null
+          }
+        })()
+      : null
+  if (!element) return null
+  const rect = element.getBoundingClientRect()
+  return {
+    x: Math.round(rect.left),
+    y: Math.round(rect.top),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
   }
 }
 

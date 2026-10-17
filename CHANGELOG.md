@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+## [0.1.35] - 2026-10-17
+
+### Added
+
+- `chrome_click` / `chrome_type` / `chrome_hover` 支持 `selector` 作为 `ref` 的替代（对齐 Playwright MCP 的 ref/selector 双入口）
+- `chrome_screenshot {ref}`：按元素包围盒截图
+- `chrome_tabs op=focus`：显式把会话标签切到前台（人工接管/演示）
+- `chrome_status` 增加 `diskVersion` / `autoReload`（磁盘扩展版本与自动更新状态）
+
 ## [0.1.34] - 2026-10-17
 
 ### Added

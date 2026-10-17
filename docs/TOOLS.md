@@ -96,6 +96,7 @@ Capture a PNG screenshot of the current DSH session page (or tabId) and return i
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `tabId` | number | no | Optional tab id owned by this session. |
+| `ref` | number | no | Capture only the element with this snapshot ref. |
 | `fullPage` | boolean | no | Capture the full scrollable document instead of the viewport. |
 | `highlight` | boolean | no | Overlay labeled boxes for current snapshot refs in the capture. |
 | `clip` | object | no | Optional viewport region to capture, in CSS pixels. |
@@ -106,7 +107,7 @@ Hover over the control with the given snapshot ref (useful to reveal menus, tool
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `ref` | number | yes | Control number from the latest chrome_snapshot or chrome_find. |
+| `ref` | number | no | Control number from the latest chrome_snapshot or chrome_find. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_click`
@@ -115,7 +116,8 @@ Click the interactive control with the given snapshot ref number on the current 
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `ref` | number | yes | Control number from the latest chrome_snapshot. |
+| `ref` | number | no | Control number from the latest chrome_snapshot. |
+| `selector` | string | no | CSS selector alternative to ref (used when ref is omitted). |
 | `dialog` | object | no | How to answer a JS dialog (confirm/prompt/beforeunload) triggered by this action. Default: dismiss. Set accept:true to accept; promptText fills a prompt. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
@@ -125,7 +127,8 @@ Type text into the input/textarea with the given snapshot ref number (React/Vue-
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `ref` | number | yes | Control number from the latest chrome_snapshot. |
+| `ref` | number | no | Control number from the latest chrome_snapshot. |
+| `selector` | string | no | CSS selector alternative to ref (used when ref is omitted). |
 | `text` | string | yes | Text to enter. |
 | `replace` | boolean | no | Replace the existing value instead of appending. |
 | `submit` | boolean | no | Submit the form after typing. |
@@ -167,7 +170,7 @@ Manage tabs owned by this DSH session: list owned tabs, open a new background ta
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `op` | enum(list | new | close | claim) | yes |  |
+| `op` | enum(list | new | close | claim | focus) | yes |  |
 | `url` | string | no | URL for op=new (http/https; defaults to about:blank). |
 | `tabId` | number | no | Tab id for op=close/claim; claim defaults to the active tab. |
 

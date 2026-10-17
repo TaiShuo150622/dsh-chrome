@@ -56,7 +56,7 @@
 | `chrome_wait` 支持 selector/url | Playwright MCP waiting 工具 | ✅ 已实现（0.1.31）：`until: selector\|url` |
 | 可访问性树工具 | Playwright MCP / browser-use | ✅ 已实现（0.1.34）：`chrome_a11y`（role/name/value；交互仍用 snapshot ref） |
 | Markdown 阅读 | browser-use | ✅ 已实现（0.1.34）：`chrome_get_text {format:"markdown"}` |
-| 自动更新（开发期） | 自研 | 已有：host 监听 extension/ → ext.changed → reload；P2 补"连接时版本核对"（host 报磁盘版本，SW 发现不一致自动 reload） |
+| 自动更新（开发期） | 自研 | ✅ host 监听 extension/ → ext.changed → reload；0.1.34 起连接时 host 上报磁盘版本（ext.state），SW 发现不一致自动 reload |
 | 动作观察/缓存（observe） | Stagehand | P3 评估（需要模型侧配合，工具层只提供候选动作列表） |
 
 ## 6. 自动更新的现实约束

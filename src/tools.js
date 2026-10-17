@@ -128,6 +128,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         extensionDir: {},
         nativeManifestPath: {},
         instructionsPath: {},
+        diskVersion: {},
+        autoReload: { type: 'boolean' },
         error: { type: 'string' },
       }),
       render: (_args, value) => {
@@ -136,6 +138,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           `provider: ${value.provider}  protocol: ${value.protocol}`,
           `extension: ${value.extensionVersion ?? 'unknown'}  host: ${value.hostVersion ?? 'unknown'}`,
           `extension id: ${value.extensionId ?? 'unknown'}`,
+          `disk version: ${value.diskVersion ?? 'unknown'}  auto-reload: ${value.autoReload ? 'on' : 'off'}`,
         ]
         if (!value.connected) lines.push('', installHint(assets()))
         if (value.error) lines.push('', `last error: ${value.error}`)
@@ -154,6 +157,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         extensionDir: info.extensionDir ?? null,
         nativeManifestPath: info.nativeManifestPath ?? null,
         instructionsPath: info.instructionsPath ?? null,
+        diskVersion: null,
+        autoReload: false,
       }
       if (bridge.connected) {
         try {
@@ -162,6 +167,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
             value.extensionVersion = status.extensionVersion
             bridge.extensionVersion = status.extensionVersion
           }
+          if (typeof status?.diskVersion === 'string') value.diskVersion = status.diskVersion
+          value.autoReload = Boolean(status?.autoReload)
         } catch (error) {
           value.error = error?.message || String(error)
         }
@@ -543,6 +550,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       type: 'object',
       properties: {
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+        ref: { type: 'number', description: 'Capture only the element with this snapshot ref.' },
         fullPage: { type: 'boolean', description: 'Capture the full scrollable document instead of the viewport.' },
         highlight: { type: 'boolean', description: 'Overlay labeled boxes for current snapshot refs in the capture.' },
         clip: {
@@ -584,7 +592,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     async execute(args, exec) {
       const shot = await call(
         'tab.screenshot',
-        { tabId: args?.tabId, clip: args?.clip, fullPage: Boolean(args?.fullPage), highlight: Boolean(args?.highlight), owner: ownerOf(exec) },
+        { tabId: args?.tabId, ref: args?.ref, clip: args?.clip, fullPage: Boolean(args?.fullPage), highlight: Boolean(args?.highlight), owner: ownerOf(exec) },
         60000,
       )
       if (!shot?.path) throw new BridgeError('INTERNAL', 'native host did not return a screenshot path')
@@ -626,7 +634,6 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         ref: { type: 'number', description: 'Control number from the latest chrome_snapshot or chrome_find.' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
-      required: ['ref'],
       additionalProperties: false,
     },
     output: {
@@ -640,7 +647,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_hover', `hover ref ${args?.ref}`)
-      return call('tab.hover', { ref: args?.ref, tabId: args?.tabId, owner: ownerOf(exec) })
+      return call('tab.hover', { ref: args?.ref, selector: args?.selector, tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
 
@@ -653,6 +660,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       type: 'object',
       properties: {
         ref: { type: 'number', description: 'Control number from the latest chrome_snapshot.' },
+        selector: { type: 'string', description: 'CSS selector alternative to ref (used when ref is omitted).' },
         dialog: {
           type: 'object',
           description:
@@ -665,7 +673,6 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
-      required: ['ref'],
       additionalProperties: false,
     },
     output: {
@@ -691,7 +698,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_click', `click ref ${args?.ref}`)
-      return call('tab.click', { ref: args?.ref, dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
+      return call('tab.click', { ref: args?.ref, selector: args?.selector, dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
 
@@ -704,6 +711,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       type: 'object',
       properties: {
         ref: { type: 'number', description: 'Control number from the latest chrome_snapshot.' },
+        selector: { type: 'string', description: 'CSS selector alternative to ref (used when ref is omitted).' },
         text: { type: 'string', description: 'Text to enter.' },
         replace: { type: 'boolean', description: 'Replace the existing value instead of appending.' },
         submit: { type: 'boolean', description: 'Submit the form after typing.' },
@@ -719,7 +727,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
-      required: ['ref', 'text'],
+      required: ['text'],
       additionalProperties: false,
     },
     output: {
@@ -750,6 +758,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       await guard(exec, 'chrome_type', `type into ref ${args?.ref}`)
       return call('tab.type', {
         ref: args?.ref,
+        selector: args?.selector,
         text: String(args?.text ?? ''),
         replace: Boolean(args?.replace),
         submit: Boolean(args?.submit),
@@ -884,7 +893,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     parameters: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['list', 'new', 'close', 'claim'] },
+        op: { type: 'string', enum: ['list', 'new', 'close', 'claim', 'focus'] },
         url: { type: 'string', description: 'URL for op=new (http/https; defaults to about:blank).' },
         tabId: { type: 'number', description: 'Tab id for op=close/claim; claim defaults to the active tab.' },
       },
@@ -913,10 +922,14 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         closed: { type: 'number' },
         remaining: { type: 'number' },
         claimed: { type: 'boolean' },
+        focused: { type: 'boolean' },
       }),
       render: (_args, value) => {
         if (value.claimed) {
           return renderText(`Claimed tab #${value.tabId} — ${value.title || ''} ${value.url || ''}`)
+        }
+        if (value.focused) {
+          return renderText(`Focused tab #${value.tabId} — ${value.title || ''} ${value.url || ''}`)
         }
         if (Array.isArray(value.tabs)) {
           const lines = value.tabs.map(

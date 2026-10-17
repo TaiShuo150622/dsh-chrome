@@ -320,6 +320,26 @@ await sandbox.handleRequest({
 })
 check('dialog accept:true is honored', dialogCommands.at(-1)?.accept === true)
 
+// selector fallback, element screenshot, tabs focus
+nextPageValue = { ok: true, tag: 'button', label: 'BySelector' }
+const clickSelector = await sandbox.handleRequest({
+  method: 'tab.click',
+  params: { selector: '#greet', owner: 's1' },
+  id: 'click-selector',
+})
+check('tab.click accepts a selector instead of a ref', clickSelector?.ok === true)
+
+nextPageValue = { x: 10, y: 20, width: 100, height: 30 }
+const refShot = await sandbox.handleRequest({
+  method: 'tab.screenshot',
+  params: { owner: 's1', ref: 1 },
+  id: 'shot-ref',
+})
+check('tab.screenshot with ref returns base64 data', typeof refShot?.dataBase64 === 'string')
+
+const focus = await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'focus', tabId: 7, owner: 's1' }, id: 'tabs-focus' })
+check('tab.tabs op=focus activates the tab', focus?.focused === true && tabs.get(7)?.active === true)
+
 // reconnect after the host exits: the worker must issue a NEW connectNative.
 // Regression: ensurePort used to leave `connecting` non-null forever, so every
 // later attempt returned a stale resolved promise without reconnecting.
