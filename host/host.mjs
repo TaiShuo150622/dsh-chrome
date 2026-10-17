@@ -175,9 +175,7 @@ function scheduleReconnect(reason) {
   const delay = retryDelay
   retryTimer = setTimeout(() => {
     retryTimer = null
-    log(`host started pid=${process.pid}`)
-connectBridge()
-startExtensionWatcher()
+    connectBridge()
   }, delay)
   retryDelay = Math.min(retryDelay * 2, 5000)
   log(`will reconnect in ${delay}ms (${reason})`)
@@ -257,7 +255,9 @@ function connectBridge() {
   })
 }
 
+log(`host started pid=${process.pid}`)
 connectBridge()
+startExtensionWatcher()
 
 function materializeScreenshot(result) {
   const dataBase64 = result?.dataBase64
