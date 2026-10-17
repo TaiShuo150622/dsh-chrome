@@ -29,6 +29,16 @@
 
 工具参数与说明见 [docs/TOOLS.md](docs/TOOLS.md)（自动生成）。
 
+## 演示
+
+点击后页面上会出现 DSH 虚拟光标（蓝点+脉冲），截图能拍到它落在哪个控件上：
+
+![虚拟光标](docs/media/virtual-cursor.png)
+
+区域截图（`chrome_screenshot {clip}`）：
+
+![区域截图](docs/media/clip-screenshot.png)
+
 ## 是什么
 
 - 目标形态：**Chrome MV3 扩展 + Chrome 原生消息（native messaging）+ DSH 桌面 provider 插件**。
