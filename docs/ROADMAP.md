@@ -96,7 +96,7 @@
 
 - **目标**：能力上不再需要 Claude/Codex 作为替代；处理复杂任务。
 - **前置（P2-1 稳定性，先于广度）**：扩展自动重连（免人工 ⟳）、CDP 首次动作超时自动重试、`chrome_tabs new` 后台打开、扩展版本/死代码清理、V9/V10（DSH 重启/关闭）验证。
-- **P2 规划文档**：[docs/P2-PLAN.md](P2-PLAN.md)（竞品能力盘点 + 待办优先级；虚拟光标 v1 已上线）。
+- **P2 规划文档**：[docs/P2-PLAN.md](P2-PLAN.md)。2026-10-17 探索周期后工具面达到 **25 个**（含 pdf/drag/emulate/storage/a11y），见 [P2 探索记录](records/2026-10-17-code-p2-explore/record.md)。
 - **范围**：全工具矩阵（约 24 个工具），重点：
   - 调试与数据：`chrome_console` / `chrome_network` / `chrome_html` / `chrome_a11y` / `chrome_find` / `chrome_get_text`；
   - 账号与文件：`chrome_upload` / `chrome_download` / `chrome_dialog` / `chrome_select` / `chrome_evaluate`（默认关）；
