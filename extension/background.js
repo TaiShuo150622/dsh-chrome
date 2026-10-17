@@ -361,6 +361,48 @@ const PAGE_ACTIONS = {
   hasText,
 }
 
+// Virtual cursor: a small DSH-colored pointer injected into the page so the
+// user can see where the agent is acting (Codex-style "own cursor"). It is a
+// DOM overlay; screenshots taken right after an action include it.
+const CURSOR_HELPER_SRC = `
+(() => {
+  if (window.__dshCursor) return
+  const ID = '__dsh_cursor__'
+  window.__dshCursor = (x, y, kind) => {
+    try {
+      let cursor = document.getElementById(ID)
+      if (!cursor) {
+        cursor = document.createElement('div')
+        cursor.id = ID
+        cursor.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none;opacity:0;transition:transform .22s cubic-bezier(.2,.8,.2,1),opacity .2s'
+        const ring = document.createElement('div')
+        ring.style.cssText = 'position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%;border:2px solid rgba(0,122,255,.55);opacity:0;transition:opacity .2s,transform .3s'
+        const dot = document.createElement('div')
+        dot.style.cssText = 'position:absolute;left:-7px;top:-7px;width:14px;height:14px;border-radius:50%;background:rgba(0,122,255,.95);border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.35)'
+        cursor.appendChild(ring)
+        cursor.appendChild(dot)
+        document.documentElement.appendChild(cursor)
+      }
+      cursor.style.transform = 'translate(' + x + 'px,' + y + 'px)'
+      cursor.style.opacity = '1'
+      if (kind === 'click' || kind === 'type' || kind === 'key') {
+        const ring = cursor.firstChild
+        ring.style.transition = 'none'
+        ring.style.opacity = '1'
+        ring.style.transform = 'scale(.6)'
+        requestAnimationFrame(() => {
+          ring.style.transition = 'opacity .35s,transform .35s'
+          ring.style.opacity = '0'
+          ring.style.transform = 'scale(2.4)'
+        })
+      }
+      clearTimeout(cursor.__dshTimer)
+      cursor.__dshTimer = setTimeout(() => { cursor.style.opacity = '0' }, 900)
+    } catch {}
+  }
+})();
+`
+
 function withTimeout(promise, timeoutMs, code, message) {
   return Promise.race([
     promise,
@@ -378,7 +420,9 @@ async function evalInTab(tabId, fn, args, timeoutMs) {
     // A previous detach may have raced; try to use the existing session.
   }
   try {
-    const expression = `(${fn.toString()})(...${JSON.stringify(args)})`
+    const expression = `(() => { ${CURSOR_HELPER_SRC}
+      return (${fn.toString()})(...${JSON.stringify(args)})
+    })()`
     const response = await withTimeout(
       chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
         expression,
@@ -728,6 +772,7 @@ function clickByRef(ref) {
   const x = rect.left + rect.width / 2
   const y = rect.top + rect.height / 2
   const base = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window }
+  window.__dshCursor?.(x, y, 'click')
   const pointer = { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0 }
   try { element.dispatchEvent(new PointerEvent('pointerdown', pointer)) } catch {}
   element.dispatchEvent(new MouseEvent('mousedown', base))
@@ -746,6 +791,10 @@ function typeIntoRef(ref, text, replace, submit) {
   const element = document.querySelector(`[data-dsh-ref="${ref}"]`)
   if (!element) return { ok: false, reason: 'REF_STALE', message: `ref ${ref} not found; take a new snapshot` }
   element.focus()
+  try {
+    const rect = element.getBoundingClientRect()
+    window.__dshCursor?.(rect.left + rect.width / 2, rect.top + rect.height / 2, 'type')
+  } catch {}
   const tag = element.tagName.toLowerCase()
   if (tag !== 'input' && tag !== 'textarea') {
     return { ok: false, reason: 'UNSUPPORTED', message: `ref ${ref} is a ${tag}, not a text field` }
@@ -782,6 +831,10 @@ function pressKey(key) {
   const target = document.activeElement && document.activeElement !== document.body
     ? document.activeElement
     : document.body
+  try {
+    const rect = target.getBoundingClientRect()
+    window.__dshCursor?.(rect.left + rect.width / 2, rect.top + rect.height / 2, 'key')
+  } catch {}
   const options = { key, bubbles: true, cancelable: true, composed: true }
   target.dispatchEvent(new KeyboardEvent('keydown', options))
   target.dispatchEvent(new KeyboardEvent('keypress', options))
