@@ -16,6 +16,8 @@ const cacheDir = path.join(home, 'cache', 'dsh-chrome')
 const bridgePath = path.join(cacheDir, 'bridge.json')
 const hostLogPath = path.join(cacheDir, 'host.log')
 const devPath = path.join(cacheDir, 'dev.json')
+const updateStatePath = path.join(cacheDir, 'update-state.json')
+const updateLogPath = path.join(cacheDir, 'update.log')
 const nativeManifestPath =
   process.platform === 'darwin'
     ? path.join(
@@ -49,6 +51,7 @@ function processAlive(pid) {
 
 const bridge = readJson(bridgePath)
 const dev = readJson(devPath)
+const updateState = readJson(updateStatePath)
 const extensionManifest = readJson(path.join(root, 'extension', 'manifest.json'))
 
 const report = {
@@ -70,6 +73,8 @@ const report = {
     manifestPath: nativeManifestPath,
     manifestPresent: fs.existsSync(nativeManifestPath),
     devConfig: dev ?? null,
+    updateState: updateState ?? null,
+    updateLogTail: [],
     logTail: [],
   },
 }
@@ -79,6 +84,13 @@ try {
   report.nativeHost.logTail = lines.slice(-8)
 } catch {
   report.nativeHost.logTail = []
+}
+
+try {
+  const lines = fs.readFileSync(updateLogPath, 'utf8').trim().split('\n')
+  report.nativeHost.updateLogTail = lines.slice(-8)
+} catch {
+  report.nativeHost.updateLogTail = []
 }
 
 console.log(JSON.stringify(report, null, 2))

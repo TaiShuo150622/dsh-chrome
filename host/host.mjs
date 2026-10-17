@@ -24,6 +24,8 @@ const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
 const cacheDir = path.join(home, 'cache', 'dsh-chrome')
 const logPath = path.join(cacheDir, 'host.log')
 const discoveryPath = path.join(cacheDir, 'bridge.json')
+const updateStatePath = path.join(cacheDir, 'update-state.json')
+const updateLogPath = path.join(cacheDir, 'update.log')
 
 let socket = null
 let authed = false
@@ -82,10 +84,42 @@ function readExtensionManifest() {
   try {
     const dev = JSON.parse(fs.readFileSync(path.join(cacheDir, 'dev.json'), 'utf8'))
     if (!dev?.extensionDir) return null
-    const manifest = JSON.parse(fs.readFileSync(path.join(dev.extensionDir, 'manifest.json'), 'utf8'))
-    return { version: String(manifest.version || ''), watching: Boolean(dev.watch) }
+    const manifestPath = path.join(dev.extensionDir, 'manifest.json')
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    return {
+      version: String(manifest.version || ''),
+      watching: Boolean(dev.watch),
+      mtimeMs: fs.statSync(manifestPath).mtimeMs,
+    }
   } catch {
     return null
+  }
+}
+
+function readUpdateState() {
+  try {
+    return JSON.parse(fs.readFileSync(updateStatePath, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+function writeUpdateState(patch) {
+  try {
+    const state = { ...readUpdateState(), ...patch, lastCheckedAt: new Date().toISOString() }
+    fs.writeFileSync(updateStatePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 })
+    return state
+  } catch (error) {
+    log(`update-state write failed: ${error.message}`)
+    return null
+  }
+}
+
+function appendUpdateLog(line) {
+  try {
+    fs.appendFileSync(updateLogPath, `${new Date().toISOString()} ${line}\n`, { mode: 0o600 })
+  } catch {
+    // diagnostics only
   }
 }
 
@@ -93,7 +127,41 @@ function sendExtensionState() {
   const state = readExtensionManifest()
   if (!state) return
   sendNativeEvent('ext.state', state)
+  writeUpdateState({ diskVersion: state.version, watching: state.watching, manifestMtimeMs: state.mtimeMs })
   log(`extension state sent: version ${state.version}, watching ${state.watching}`)
+}
+
+// Polling fallback: fs.watch can miss events (atomic saves / network mounts).
+// Every 60s compare the manifest version+mtime and push a reload if they moved.
+let manifestPollTimer = null
+let lastManifestSignature = null
+
+function startManifestPolling() {
+  const intervalMs = Number(process.env.DSH_UPDATE_POLL_MS || 60000)
+  if (manifestPollTimer || intervalMs <= 0) return
+  manifestPollTimer = setInterval(() => {
+    const state = readExtensionManifest()
+    if (!state) return
+    const signature = `${state.version}:${state.mtimeMs}`
+    if (lastManifestSignature && signature !== lastManifestSignature) {
+      appendUpdateLog(`manifest changed version=${state.version} mtime=${state.mtimeMs}`)
+      lastReloadNoticeAt = 0
+      lastReloadNoticeAt = Date.now()
+      writeUpdateState({
+        diskVersion: state.version,
+        watching: state.watching,
+        manifestMtimeMs: state.mtimeMs,
+        lastChangeAt: new Date().toISOString(),
+        lastReloadRequestedAt: new Date().toISOString(),
+      })
+      log(`manifest changed on disk: ${state.version}; requesting extension reload`)
+      sendNativeEvent('ext.changed', { file: 'manifest.json' })
+    } else {
+      lastManifestSignature = signature
+      writeUpdateState({ diskVersion: state.version, watching: state.watching, manifestMtimeMs: state.mtimeMs })
+    }
+  }, intervalMs)
+  manifestPollTimer.unref?.()
 }
 
 function startExtensionWatcher() {
@@ -120,6 +188,12 @@ function startExtensionWatcher() {
           return
         }
         lastReloadNoticeAt = Date.now()
+        writeUpdateState({
+          lastChangeAt: new Date().toISOString(),
+          lastReloadRequestedAt: new Date().toISOString(),
+          lastFile: name,
+        })
+        appendUpdateLog(`file changed: ${name}`)
         log(`extension change detected: ${name}`)
         sendNativeEvent('ext.changed', { file: name })
       }, 800)
@@ -291,6 +365,7 @@ function connectBridge() {
 log(`host started pid=${process.pid}`)
 connectBridge()
 startExtensionWatcher()
+startManifestPolling()
 
 function materializeScreenshot(result) {
   const dataBase64 = result?.dataBase64
@@ -311,6 +386,10 @@ function materializeScreenshot(result) {
 
 function shutdown(code, reason = 'shutdown') {
   log(reason)
+  if (manifestPollTimer) {
+    clearInterval(manifestPollTimer)
+    manifestPollTimer = null
+  }
   if (retryTimer) {
     clearTimeout(retryTimer)
     retryTimer = null

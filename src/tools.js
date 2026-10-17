@@ -22,6 +22,31 @@ function renderText(text) {
   return [{ type: 'text', text }]
 }
 
+let providerVersionCache
+async function providerVersion() {
+  if (providerVersionCache !== undefined) return providerVersionCache
+  try {
+    const raw = await fsp.readFile(new URL('../package.json', import.meta.url), 'utf8')
+    providerVersionCache = JSON.parse(raw).version ?? null
+  } catch {
+    providerVersionCache = null
+  }
+  return providerVersionCache
+}
+
+async function readUpdateState() {
+  const cacheDir = path.join(
+    process.env.DSH_HOME || path.join(os.homedir(), '.dsh'),
+    'cache',
+    'dsh-chrome',
+  )
+  try {
+    return JSON.parse(await fsp.readFile(path.join(cacheDir, 'update-state.json'), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes)) return 'unknown size'
   if (bytes < 1024) return `${bytes} B`
@@ -132,6 +157,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         instructionsPath: {},
         diskVersion: {},
         autoReload: { type: 'boolean' },
+        providerVersion: {},
+        updateState: { type: 'object', additionalProperties: true },
         error: { type: 'string' },
       }),
       render: (_args, value) => {
@@ -141,6 +168,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           `extension: ${value.extensionVersion ?? 'unknown'}  host: ${value.hostVersion ?? 'unknown'}`,
           `extension id: ${value.extensionId ?? 'unknown'}`,
           `disk version: ${value.diskVersion ?? 'unknown'}  auto-reload: ${value.autoReload ? 'on' : 'off'}`,
+          `provider: ${value.providerVersion ?? 'unknown'}  last reload: ${value.updateState?.lastReloadRequestedAt ?? 'never'}`,
         ]
         if (!value.connected) lines.push('', installHint(assets()))
         if (value.error) lines.push('', `last error: ${value.error}`)
@@ -161,6 +189,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         instructionsPath: info.instructionsPath ?? null,
         diskVersion: null,
         autoReload: false,
+        providerVersion: await providerVersion(),
+        updateState: await readUpdateState(),
       }
       if (bridge.connected) {
         try {

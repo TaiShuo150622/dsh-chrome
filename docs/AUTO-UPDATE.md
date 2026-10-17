@@ -30,11 +30,34 @@ SW 比较磁盘版本与运行版本：不一致 → 再 reload（覆盖"host �
 | Chrome Web Store / CRX + `update_url` | Chrome 自身负责下载与更新；扩展只需版本握手与提示重载 |
 | provider（DSH bundle） | DSH bundle 管理；host 常驻会在 provider 重载后自动重连，扩展不受影响 |
 
+## 观察更新状态
+
+| 方式 | 看什么 |
+|---|---|
+| `npm run status` | bridge/host 状态 + `nativeHost.updateState`（diskVersion/watching/lastChangeAt/lastReloadRequestedAt）+ update.log 尾部 |
+| `npm run watch:update` | 每 2s 轮询 update-state，变化时打印（前台常驻观察） |
+| `chrome_status` | `extensionVersion`（运行）/ `diskVersion`（磁盘）/ `autoReload` / `providerVersion` / `updateState` |
+| popup | Auto-update 行（on / reload pending / off）、Self-heal 次数 |
+| `~/.dsh/cache/dsh-chrome/update.log` | 文件变更与 reload 请求的时间线 |
+
+`update-state.json` 由 native host 维护：连接时与每 60s 轮询都会写盘（`manifestMtimeMs`、`lastCheckedAt`）；fs.watch 事件与轮询兜底都会更新 `lastReloadRequestedAt`。
+
 ## 可见性
 
 - popup：`Auto-update` 行（on / reload pending / off）；`Reload` 按钮；
 - `chrome_status`：`extensionVersion`、`diskVersion`、`autoReload`；
 - `~/.dsh/cache/dsh-chrome/host.log`：`extension state sent: version ...`、`extension change detected ...`。
+
+## 实测（2026-10-17，0.1.55 → 0.1.56）
+
+```text
+改 extension/manifest.json 版本 0.1.55 → 0.1.56
+update.log: 2026-10-17T17:32:35.242Z file changed: manifest.json
+update-state: lastChangeAt=17:32:35.241Z, lastReloadRequestedAt=17:32:35.241Z, lastFile=manifest.json
+host.log: 旧 host stdin ended → 新 host started → extension state sent: version 0.1.56
+chrome_status: extension 0.1.56, disk version 0.1.56, provider 0.1.55, last reload 17:32:35Z
+npm run watch:update: 打印 diskVersion/watcher/lastCheckedAt/lastChangeAt/lastReloadRequestedAt/updateLogTail
+```
 
 ## 恢复手册
 

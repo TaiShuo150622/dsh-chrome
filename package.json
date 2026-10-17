@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop-chrome",
-  "version": "0.1.29",
+  "version": "0.1.55",
   "private": true,
   "type": "module",
   "description": "DSH Desktop provider that drives the user's real Chrome through a Chrome MV3 extension and native messaging.",
@@ -38,6 +38,7 @@
     "docs:tools": "node scripts/gen-tools-doc.mjs",
     "package:extension": "node scripts/package-extension.mjs",
     "status": "node scripts/status.mjs",
-    "cpu:sample": "node scripts/cpu-sample.mjs"
+    "cpu:sample": "node scripts/cpu-sample.mjs",
+    "watch:update": "node scripts/update-watch.mjs"
   }
 }

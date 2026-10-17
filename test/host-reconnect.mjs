@@ -97,6 +97,20 @@ check('host connects to the first provider instance', bridge.connected)
 const stateEvent = events.find((event) => event.event === 'ext.state')
 const manifestVersion = JSON.parse(await fsp.readFile(path.join(root, 'extension', 'manifest.json'), 'utf8')).version
 check('host reports the disk extension version on connect', stateEvent?.params?.version === manifestVersion, JSON.stringify(stateEvent?.params))
+
+let updateState = null
+try {
+  updateState = JSON.parse(
+    await fsp.readFile(path.join(home, 'cache', 'dsh-chrome', 'update-state.json'), 'utf8'),
+  )
+} catch {
+  updateState = null
+}
+check(
+  'host persists update-state with the disk version',
+  updateState?.diskVersion === manifestVersion && updateState?.watching === true,
+  JSON.stringify(updateState),
+)
 const firstPid = bridge.discovery?.pid ?? null
 
 // Simulate a provider restart: the first server goes away completely (socket

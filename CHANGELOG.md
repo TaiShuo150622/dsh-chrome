@@ -2,7 +2,24 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号在 P3 之前按扩展 manifest 递增。
 
+## [0.1.56] - 2026-10-17
+
+### Added
+
+- **自动更新可观测性（host/provider 侧）**：`update-state.json`（diskVersion/watching/manifestMtimeMs/lastCheckedAt/lastChangeAt/lastReloadRequestedAt）+ `update.log`；60s 轮询兜底 fs.watch 漏事件
+- `npm run watch:update`：前台观察更新状态变化
+- `npm run status` 输出 updateState 与 update.log 尾部
+- `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
+
 ## [Unreleased]
+
+### Added
+
+- **自动更新可观测性**：host 维护 `update-state.json`（diskVersion/watching/lastChangeAt/lastReloadRequestedAt/manifestMtimeMs）与 `update.log`；60s 轮询作为 fs.watch 的兜底
+- `npm run watch:update`：前台观察更新状态变化
+- `npm run status` 输出 updateState 与 update.log 尾部
+- `chrome_status` 增加 `providerVersion`、`updateState`
+- host 测试断言 update-state.json 写入
 
 ## [0.1.55] - 2026-10-17
 
