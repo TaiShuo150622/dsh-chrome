@@ -24,12 +24,20 @@ export function apply(ctx) {
   const bridge = new BridgeServer({ home })
   const assets = { current: null }
   const attachments = { current: null }
+  const approval = { current: null }
   const logger = ctx.logger
 
   ctx.inject(['attachments'], (scoped) => {
     attachments.current = scoped.get('attachments')
     return () => {
       attachments.current = null
+    }
+  })
+
+  ctx.inject(['approval'], (scoped) => {
+    approval.current = scoped.get('approval')
+    return () => {
+      approval.current = null
     }
   })
 
@@ -67,6 +75,7 @@ export function apply(ctx) {
       bridge,
       attachments: () => attachments.current,
       assets: () => assets.current,
+      approval: () => approval.current,
     }).map((definition) => ctx.tools.register(definition))
     return () => {
       for (const dispose of disposers) {

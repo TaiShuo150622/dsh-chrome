@@ -26,44 +26,145 @@ function bridgeError(code, message) {
   return error
 }
 
-// ------------------------------------------------------------- session tab id
-async function loadSessionTabId() {
-  if (sessionTabLoaded) return sessionTabId
-  sessionTabLoaded = true
+// --------------------------------------------------------------- session state
+// owner (DSH session id) -> { tabIds, groupId, activeTabId }
+const SESSIONS_KEY = 'dshSessions'
+let sessionsCache = null
+let sessionsLoaded = false
+
+async function loadSessions() {
+  if (sessionsLoaded) return sessionsCache
+  sessionsLoaded = true
   try {
-    const stored = await chrome.storage.session.get(SESSION_TAB_KEY)
-    sessionTabId = Number.isInteger(stored[SESSION_TAB_KEY]) ? stored[SESSION_TAB_KEY] : null
+    const stored = await chrome.storage.session.get(SESSIONS_KEY)
+    sessionsCache =
+      stored[SESSIONS_KEY] && typeof stored[SESSIONS_KEY] === 'object' ? stored[SESSIONS_KEY] : {}
   } catch {
-    sessionTabId = null
+    sessionsCache = {}
   }
-  return sessionTabId
+  return sessionsCache
 }
 
-async function setSessionTabId(tabId) {
-  sessionTabId = tabId
-  sessionTabLoaded = true
+async function saveSessions() {
   try {
-    await chrome.storage.session.set({ [SESSION_TAB_KEY]: tabId })
+    await chrome.storage.session.set({ [SESSIONS_KEY]: sessionsCache || {} })
   } catch {
-    // storage.session is best effort; the in-memory value still works for this worker
+    // storage.session is best effort; in-memory state still works for this worker
   }
 }
 
-async function requireSessionTabId() {
-  const tabId = await loadSessionTabId()
-  if (tabId == null) {
-    throw bridgeError(
-      'NO_SESSION_TAB',
-      'No DSH session tab yet. Call chrome_goto with a URL first.',
-    )
-  }
+function ownerKey(owner) {
+  return String(owner || 'default')
+}
+
+function ownerShort(owner) {
+  return ownerKey(owner).slice(-6)
+}
+
+async function tabExists(tabId) {
   try {
     await chrome.tabs.get(tabId)
+    return true
   } catch {
-    await setSessionTabId(null)
-    throw bridgeError('TAB_GONE', 'The DSH session tab was closed. Call chrome_goto to open a new one.')
+    return false
+  }
+}
+
+async function getSessionEntry(owner) {
+  const sessions = await loadSessions()
+  const key = ownerKey(owner)
+  let entry = sessions[key]
+  if (!entry) {
+    entry = { tabIds: [], groupId: null, activeTabId: null }
+    sessions[key] = entry
+  }
+  if (!Array.isArray(entry.tabIds)) entry.tabIds = []
+  const alive = []
+  for (const id of entry.tabIds) {
+    if (await tabExists(id)) alive.push(id)
+  }
+  entry.tabIds = alive
+  if (entry.activeTabId != null && !alive.includes(entry.activeTabId)) {
+    entry.activeTabId = alive.length ? alive[alive.length - 1] : null
+  }
+  if (entry.activeTabId == null && alive.length) entry.activeTabId = alive[alive.length - 1]
+  if (!alive.length) entry.groupId = null
+  return entry
+}
+
+async function attachGroup(owner, entry, tabIds) {
+  try {
+    if (entry.groupId != null) {
+      try {
+        await chrome.tabs.group({ tabIds, groupId: entry.groupId })
+        return
+      } catch {
+        entry.groupId = null
+      }
+    }
+    const groupId = await chrome.tabs.group({ tabIds })
+    entry.groupId = groupId
+    await chrome.tabGroups.update(groupId, {
+      title: `DSH · ${ownerShort(owner)}`,
+      color: 'blue',
+      collapsed: true,
+    })
+  } catch (error) {
+    log('tab group unavailable', error?.message || error)
+  }
+}
+
+async function addTabToSession(owner, tab, { activate = true } = {}) {
+  const entry = await getSessionEntry(owner)
+  entry.tabIds.push(tab.id)
+  if (activate) entry.activeTabId = tab.id
+  await attachGroup(owner, entry, [tab.id])
+  await saveSessions()
+  return entry
+}
+
+async function requireTabId(owner) {
+  const entry = await getSessionEntry(owner)
+  if (entry.activeTabId == null) {
+    throw bridgeError('NO_SESSION_TAB', 'No DSH session tab yet. Call chrome_goto with a URL first.')
+  }
+  return entry.activeTabId
+}
+
+async function resolveOwnedTabId(owner, tabId) {
+  if (tabId == null) return requireTabId(owner)
+  const entry = await getSessionEntry(owner)
+  if (!entry.tabIds.includes(tabId)) {
+    throw bridgeError('TAB_NOT_FOUND', `tab ${tabId} is not owned by this session`)
   }
   return tabId
+}
+
+async function firstActiveTabId() {
+  const sessions = await loadSessions()
+  for (const entry of Object.values(sessions)) {
+    if (entry && entry.activeTabId != null) return entry.activeTabId
+  }
+  return null
+}
+
+async function closeSessionTabs(owner) {
+  const sessions = await loadSessions()
+  const key = ownerKey(owner)
+  const entry = sessions[key]
+  if (!entry) return { closed: 0 }
+  let closed = 0
+  for (const id of entry.tabIds) {
+    try {
+      await chrome.tabs.remove(id)
+      closed += 1
+    } catch {
+      // already gone
+    }
+  }
+  delete sessions[key]
+  await saveSessions()
+  return { closed }
 }
 
 // ------------------------------------------------------------ native messaging
@@ -147,7 +248,8 @@ function ensurePort() {
 
 // Force a fresh native port: used by the popup button and the reconnect alarm
 // when a stale port object would otherwise keep us from reconnecting.
-function forceReconnect() {
+function forceReconnect({ force = false } = {}) {
+  if (port && !force) return Promise.resolve(port)
   if (port) {
     try {
       port.disconnect()
@@ -180,45 +282,234 @@ async function ensureOffscreen() {
 async function handleRequest(message) {
   const method = String(message.method || '')
   const params = message.params || {}
+  const owner = params.owner ?? 'default'
   switch (method) {
     case 'browser.status':
       return { extensionVersion: VERSION, connected: true }
     case 'tab.goto':
-      return gotoUrl(String(params.url || ''))
+      return gotoUrl(owner, String(params.url || ''))
     case 'tab.snapshot':
-      return snapshot(params.maxChars)
+      return snapshot(owner, params)
     case 'tab.screenshot':
-      return screenshot()
+      return screenshot(owner, params.tabId)
+    case 'tab.click':
+      return click(owner, params)
+    case 'tab.type':
+      return typeText(owner, params)
+    case 'tab.press':
+      return press(owner, params)
+    case 'tab.scroll':
+      return scroll(owner, params)
+    case 'tab.history':
+      return history(owner, params)
+    case 'tab.tabs':
+      return tabs(owner, params)
+    case 'tab.wait':
+      return wait(owner, params)
+    case 'tab.close_session':
+      return closeSessionTabs(owner)
     default:
       throw bridgeError('UNSUPPORTED', `unknown method: ${method}`)
   }
 }
 
-async function gotoUrl(url) {
+async function gotoUrl(owner, url) {
   if (!/^https?:\/\//i.test(url)) {
     throw bridgeError('PROTECTED_PAGE', 'Only http(s) URLs are allowed.')
   }
-  const existing = await loadSessionTabId()
-  let tab = null
-  if (existing != null) {
-    try {
-      tab = await chrome.tabs.update(existing, { url })
-    } catch {
-      await setSessionTabId(null)
-    }
+  const entry = await getSessionEntry(owner)
+  let tabId = entry.activeTabId
+  if (tabId == null) {
+    const tab = await chrome.tabs.create({ url, active: false, pinned: false })
+    tabId = tab.id
+    await addTabToSession(owner, tab)
+  } else {
+    await chrome.tabs.update(tabId, { url })
   }
-  if (!tab) {
-    tab = await chrome.tabs.create({ url, active: false, pinned: false })
-    await setSessionTabId(tab.id)
-  }
-  await waitForComplete(tab.id, 45000)
-  const updated = await chrome.tabs.get(tab.id)
+  await waitForComplete(tabId, 45000)
+  const updated = await chrome.tabs.get(tabId)
   return {
-    tabId: tab.id,
+    tabId,
     url: updated.url || url,
     title: updated.title || '',
     loadState: updated.status || 'complete',
   }
+}
+
+async function runInTab(tabId, func, args) {
+  let results
+  try {
+    results = await chrome.scripting.executeScript({ target: { tabId }, func, args })
+  } catch (error) {
+    throw bridgeError(
+      'PROTECTED_PAGE',
+      `cannot operate this page (browser-protected or unsupported): ${error?.message || error}`,
+    )
+  }
+  const value = results?.[0]?.result
+  if (value && value.error) {
+    throw bridgeError(String(value.error), String(value.message || value.error))
+  }
+  return value
+}
+
+async function snapshot(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const limit = Number.isFinite(params.maxChars)
+    ? Math.max(1000, Math.min(200000, params.maxChars))
+    : 100000
+  const value = await runInTab(tabId, pageSnapshot, [limit])
+  if (!value) throw bridgeError('INTERNAL', 'page snapshot returned no result')
+  return value
+}
+
+async function screenshot(owner, tabIdArg) {
+  const tabId = await resolveOwnedTabId(owner, tabIdArg)
+  const target = { tabId }
+  try {
+    await chrome.debugger.attach(target, '1.3')
+  } catch (error) {
+    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
+  }
+  try {
+    const response = await chrome.debugger.sendCommand(target, 'Page.captureScreenshot', {
+      format: 'png',
+      captureBeyondViewport: false,
+    })
+    if (!response?.data) throw bridgeError('INTERNAL', 'empty screenshot data')
+    return { dataBase64: response.data }
+  } finally {
+    try {
+      await chrome.debugger.detach(target)
+    } catch {
+      // tab may have navigated or closed
+    }
+  }
+}
+
+async function click(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const ref = Number(params.ref)
+  if (!Number.isFinite(ref)) throw bridgeError('REF_STALE', 'ref must be a snapshot number')
+  const result = await runInTab(tabId, clickByRef, [ref])
+  if (!result?.ok) {
+    throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
+  }
+  return { ...result, tabId }
+}
+
+async function typeText(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const ref = Number(params.ref)
+  if (!Number.isFinite(ref)) throw bridgeError('REF_STALE', 'ref must be a snapshot number')
+  const result = await runInTab(tabId, typeIntoRef, [
+    ref,
+    String(params.text ?? ''),
+    Boolean(params.replace),
+    Boolean(params.submit),
+  ])
+  if (!result?.ok) {
+    throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
+  }
+  return { ...result, tabId }
+}
+
+async function press(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const key = String(params.key || '')
+  if (!key) throw bridgeError('INTERNAL', 'key is required')
+  const result = await runInTab(tabId, pressKey, [key])
+  return { ...result, tabId }
+}
+
+async function scroll(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const direction = String(params.direction || 'down')
+  const amount = Number.isFinite(params.amount) ? Number(params.amount) : 600
+  const result = await runInTab(tabId, scrollPage, [direction, amount])
+  return { ...result, tabId }
+}
+
+async function history(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const op = String(params.op || 'reload')
+  if (op === 'back') await chrome.tabs.goBack(tabId)
+  else if (op === 'forward') await chrome.tabs.goForward(tabId)
+  else if (op === 'reload') await chrome.tabs.reload(tabId)
+  else throw bridgeError('UNSUPPORTED', `unknown history op: ${op}`)
+  await waitForComplete(tabId, 45000).catch(() => {})
+  const tab = await chrome.tabs.get(tabId)
+  return { tabId, url: tab.url || '', title: tab.title || '', loadState: tab.status || 'complete' }
+}
+
+async function tabs(owner, params) {
+  const op = String(params.op || 'list')
+  const entry = await getSessionEntry(owner)
+  if (op === 'list') {
+    const list = []
+    for (const id of entry.tabIds) {
+      try {
+        const tab = await chrome.tabs.get(id)
+        list.push({
+          tabId: id,
+          title: tab.title || '',
+          url: tab.url || '',
+          active: id === entry.activeTabId,
+        })
+      } catch {
+        // dropped between cleanup and listing
+      }
+    }
+    return { tabs: list, groupId: entry.groupId }
+  }
+  if (op === 'new') {
+    const url = params.url ? String(params.url) : 'about:blank'
+    if (url !== 'about:blank' && !/^https?:\/\//i.test(url)) {
+      throw bridgeError('PROTECTED_PAGE', 'Only http(s) URLs are allowed.')
+    }
+    const tab = await chrome.tabs.create({ url, active: false, pinned: false })
+    await addTabToSession(owner, tab)
+    if (url !== 'about:blank') await waitForComplete(tab.id, 45000).catch(() => {})
+    const created = await chrome.tabs.get(tab.id)
+    return { tabId: tab.id, url: created.url || url, title: created.title || '' }
+  }
+  if (op === 'close') {
+    const tabId = await resolveOwnedTabId(owner, params.tabId)
+    await chrome.tabs.remove(tabId)
+    const after = await getSessionEntry(owner)
+    await saveSessions()
+    return { closed: tabId, remaining: after.tabIds.length }
+  }
+  throw bridgeError('UNSUPPORTED', `unknown tabs op: ${op}`)
+}
+
+async function wait(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const until = String(params.until || 'load')
+  const timeoutMs = Number.isFinite(params.timeoutMs)
+    ? Math.max(500, Math.min(120000, Number(params.timeoutMs)))
+    : 30000
+  if (until === 'load') {
+    await waitForComplete(tabId, timeoutMs)
+  } else if (until === 'networkidle') {
+    await waitForComplete(tabId, timeoutMs)
+    await new Promise((resolve) => setTimeout(resolve, 800))
+  } else if (until === 'text') {
+    const text = String(params.text || '')
+    if (!text) throw bridgeError('INTERNAL', 'text is required when until=text')
+    const started = Date.now()
+    let found = false
+    while (Date.now() - started < timeoutMs) {
+      found = Boolean(await runInTab(tabId, hasText, [text]))
+      if (found) break
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+    if (!found) throw bridgeError('TIMEOUT', `text not found within ${timeoutMs}ms: ${text}`)
+  } else {
+    throw bridgeError('UNSUPPORTED', `unknown wait target: ${until}`)
+  }
+  const tab = await chrome.tabs.get(tabId)
+  return { tabId, url: tab.url || '', title: tab.title || '', loadState: tab.status || 'complete' }
 }
 
 function waitForComplete(tabId, timeoutMs) {
@@ -249,53 +540,6 @@ function waitForComplete(tabId, timeoutMs) {
       })
       .catch(() => {})
   })
-}
-
-async function snapshot(maxChars) {
-  const tabId = await requireSessionTabId()
-  const limit = Number.isFinite(maxChars)
-    ? Math.max(1000, Math.min(200000, maxChars))
-    : 100000
-  let results
-  try {
-    results = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: pageSnapshot,
-      args: [limit],
-    })
-  } catch (error) {
-    throw bridgeError(
-      'PROTECTED_PAGE',
-      `cannot read this page (browser-protected or unsupported): ${error?.message || error}`,
-    )
-  }
-  const value = results?.[0]?.result
-  if (!value) throw bridgeError('INTERNAL', 'page snapshot returned no result')
-  return value
-}
-
-async function screenshot() {
-  const tabId = await requireSessionTabId()
-  const target = { tabId }
-  try {
-    await chrome.debugger.attach(target, '1.3')
-  } catch (error) {
-    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
-  }
-  try {
-    const response = await chrome.debugger.sendCommand(target, 'Page.captureScreenshot', {
-      format: 'png',
-      captureBeyondViewport: false,
-    })
-    if (!response?.data) throw bridgeError('INTERNAL', 'empty screenshot data')
-    return { dataBase64: response.data }
-  } finally {
-    try {
-      await chrome.debugger.detach(target)
-    } catch {
-      // tab may have navigated or closed
-    }
-  }
 }
 
 // ------------------------------------------------------- injected page snapshot
@@ -409,6 +653,95 @@ function pageSnapshot(maxChars) {
   }
 }
 
+// ------------------------------------------------------- injected page actions
+/** Runs inside the page; self-contained. */
+function clickByRef(ref) {
+  const element = document.querySelector(`[data-dsh-ref="${ref}"]`)
+  if (!element) return { ok: false, reason: 'REF_STALE', message: `ref ${ref} not found; take a new snapshot` }
+  element.scrollIntoView({ block: 'center', inline: 'center' })
+  const rect = element.getBoundingClientRect()
+  const x = rect.left + rect.width / 2
+  const y = rect.top + rect.height / 2
+  const base = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window }
+  const pointer = { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0 }
+  try { element.dispatchEvent(new PointerEvent('pointerdown', pointer)) } catch {}
+  element.dispatchEvent(new MouseEvent('mousedown', base))
+  try { element.dispatchEvent(new PointerEvent('pointerup', pointer)) } catch {}
+  element.dispatchEvent(new MouseEvent('mouseup', base))
+  element.dispatchEvent(new MouseEvent('click', base))
+  return {
+    ok: true,
+    tag: element.tagName.toLowerCase(),
+    label: (element.innerText || element.getAttribute('aria-label') || '').trim().slice(0, 80),
+  }
+}
+
+/** Runs inside the page; self-contained. */
+function typeIntoRef(ref, text, replace, submit) {
+  const element = document.querySelector(`[data-dsh-ref="${ref}"]`)
+  if (!element) return { ok: false, reason: 'REF_STALE', message: `ref ${ref} not found; take a new snapshot` }
+  element.focus()
+  const tag = element.tagName.toLowerCase()
+  if (tag !== 'input' && tag !== 'textarea') {
+    return { ok: false, reason: 'UNSUPPORTED', message: `ref ${ref} is a ${tag}, not a text field` }
+  }
+  const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+  const next = `${replace ? '' : element.value || ''}${text}`
+  if (setter) setter.call(element, next)
+  else element.value = next
+  element.dispatchEvent(new Event('input', { bubbles: true }))
+  element.dispatchEvent(new Event('change', { bubbles: true }))
+  let submitted = false
+  if (submit) {
+    const form = element.form
+    try {
+      if (form && typeof form.requestSubmit === 'function') {
+        form.requestSubmit()
+        submitted = true
+      }
+    } catch {
+      submitted = false
+    }
+    if (!submitted) {
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        element.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }))
+      }
+    }
+  }
+  return { ok: true, value: element.value, submitted }
+}
+
+/** Runs inside the page; self-contained. */
+function pressKey(key) {
+  const target = document.activeElement && document.activeElement !== document.body
+    ? document.activeElement
+    : document.body
+  const options = { key, bubbles: true, cancelable: true, composed: true }
+  target.dispatchEvent(new KeyboardEvent('keydown', options))
+  target.dispatchEvent(new KeyboardEvent('keypress', options))
+  target.dispatchEvent(new KeyboardEvent('keyup', options))
+  return { ok: true, key, target: target.tagName.toLowerCase() }
+}
+
+/** Runs inside the page; self-contained. */
+function scrollPage(direction, amount) {
+  const step = Number.isFinite(amount) ? amount : 600
+  const deltas = { down: step, up: -step, top: -1e9, bottom: 1e9 }
+  window.scrollBy({ top: deltas[direction] ?? step, left: 0, behavior: 'smooth' })
+  return {
+    ok: true,
+    y: window.scrollY,
+    viewportHeight: window.innerHeight,
+    documentHeight: document.documentElement.scrollHeight,
+  }
+}
+
+/** Runs inside the page; self-contained. */
+function hasText(text) {
+  return (document.body ? document.body.innerText : '').includes(text)
+}
+
 // --------------------------------------------------------------- worker wiring
 function ensureReconnectAlarm() {
   try {
@@ -446,7 +779,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'dsh-status') {
     ;(async () => {
-      await loadSessionTabId()
+      const sessionTabId = await firstActiveTabId()
       sendResponse({
         connected: Boolean(port),
         extensionVersion: VERSION,
@@ -466,11 +799,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     forceReconnect()
       .catch(() => {})
       .finally(() => {
-        setTimeout(() => {
+        setTimeout(async () => {
           sendResponse({
             connected: Boolean(port),
             extensionVersion: VERSION,
-            sessionTabId,
+            sessionTabId: await firstActiveTabId(),
             lastError: lastConnectError,
           })
         }, 600)

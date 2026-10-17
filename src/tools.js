@@ -1,22 +1,23 @@
 /**
- * Model-facing chrome_* tools (P0: status / goto / snapshot / screenshot).
- * Each definition follows the Host ToolDefinition contract:
- * name, description, parameters, output.schema/render, execute.
+ * Model-facing chrome_* tools (P1: 12 tools).
+ *
+ * Reads (status/snapshot/screenshot/tabs list/wait) run without approval.
+ * Mutating actions (goto/click/type/press/history/tabs new|close/close_session)
+ * go through ctx.approval, which follows the DSH session policy ("follow-dsh":
+ * under danger-full-access / never it is allowed without a prompt).
  */
 import fsp from 'node:fs/promises'
 
 import { BridgeError } from './bridge.js'
 
-function text(value) {
-  return JSON.stringify(value, null, 2)
-}
-
-function renderText(summary) {
-  return [{ type: 'text', text: summary }]
-}
+const MUTATION_TIMEOUT_MS = 45000
 
 function outputSchema(properties) {
   return { type: 'object', properties, additionalProperties: true }
+}
+
+function renderText(text) {
+  return [{ type: 'text', text }]
 }
 
 function formatBytes(bytes) {
@@ -53,13 +54,54 @@ function validateHttpUrl(raw) {
   return url.toString()
 }
 
-export function chromeTools({ bridge, attachments, assets }) {
-  const list = []
+function normalize(error) {
+  if (error instanceof BridgeError) return error
+  const wrapped = new BridgeError('INTERNAL', error?.message || String(error))
+  wrapped.cause = error
+  return wrapped
+}
 
+export function chromeTools({ bridge, attachments, assets, approval }) {
+  const list = []
+  const ownerOf = (exec) => exec?.agent?.id ?? 'default'
+
+  async function call(method, params, timeoutMs = MUTATION_TIMEOUT_MS) {
+    try {
+      return await bridge.call(method, params, timeoutMs)
+    } catch (error) {
+      throw normalize(error)
+    }
+  }
+
+  async function guard(exec, toolName, action) {
+    const service = approval?.()
+    if (!service || !exec?.agent) return
+    let outcome
+    try {
+      outcome = await service.request({
+        agent: exec.agent,
+        toolName,
+        callId: exec.callId,
+        reason: action,
+        displayReason: {
+          en: `Browser action: ${action}`,
+          zh: `浏览器操作：${action}`,
+        },
+        signal: exec.signal,
+      })
+    } catch (error) {
+      throw new BridgeError('APPROVAL_DENIED', `approval unavailable: ${error?.message || error}`)
+    }
+    if (outcome !== 'allowed-once') {
+      throw new BridgeError('APPROVAL_DENIED', `browser action was not approved (${outcome})`)
+    }
+  }
+
+  // ---------------------------------------------------------------- 1. status
   list.push({
     name: 'chrome_status',
     description:
-      'Report the Chrome bridge state: whether the extension is connected, extension/host/protocol versions, the pinned extension id, and the exact install paths. Call this first when browser tools fail.',
+      'Report the Chrome bridge state: whether the extension is connected, extension/host/protocol versions, install paths, and the last known tab for this DSH session. Call this first when browser tools fail.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     output: {
       schema: outputSchema({
@@ -114,10 +156,11 @@ export function chromeTools({ bridge, attachments, assets }) {
     },
   })
 
+  // ------------------------------------------------------------------ 2. goto
   list.push({
     name: 'chrome_goto',
     description:
-      'Open an http(s) URL in the current DSH session browser tab, creating a background tab if needed. This does not steal focus from the user. Returns the tab id, final URL, title, and load state.',
+      'Open an http(s) URL in this DSH session browser tab (created as a background tab in the session tab group if absent). Does not steal focus. Returns tab id, URL, title, and load state.',
     parameters: {
       type: 'object',
       properties: {
@@ -136,27 +179,23 @@ export function chromeTools({ bridge, attachments, assets }) {
       render: (_args, value) =>
         renderText(`Navigated to ${value.title || '(untitled)'} — ${value.url} (${value.loadState})`),
     },
-    async execute(args) {
+    async execute(args, exec) {
       const url = validateHttpUrl(args?.url)
-      try {
-        return await bridge.call('tab.goto', { url }, 45000)
-      } catch (error) {
-        throw normalize(error)
-      }
+      await guard(exec, 'chrome_goto', `navigate to ${url}`)
+      return call('tab.goto', { url, owner: ownerOf(exec) })
     },
   })
 
+  // -------------------------------------------------------------- 3. snapshot
   list.push({
     name: 'chrome_snapshot',
     description:
-      'Return a text snapshot of the current DSH session page: title, URL, a numbered list of visible interactive controls (use the numbers as refs for later actions), and visible page text. Password and payment-card values are masked. Prefer this over screenshots for reading page content.',
+      'Return a text snapshot of the current DSH session page: title, URL, a numbered list of visible interactive controls (use the numbers as refs for click/type), and visible page text. Password and payment-card values are masked. Prefer this over screenshots for reading content.',
     parameters: {
       type: 'object',
       properties: {
-        maxChars: {
-          type: 'number',
-          description: 'Maximum page-text characters to return (default 100000).',
-        },
+        maxChars: { type: 'number', description: 'Maximum page-text characters to return (default 100000).' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
       additionalProperties: false,
     },
@@ -201,23 +240,24 @@ export function chromeTools({ bridge, attachments, assets }) {
         return renderText(body.join('\n'))
       },
     },
-    async execute(args) {
-      const maxChars = Number.isFinite(args?.maxChars) ? Math.max(1000, Math.min(200000, args.maxChars)) : 100000
-      try {
-        return await bridge.call('tab.snapshot', { maxChars }, 30000)
-      } catch (error) {
-        throw normalize(error)
-      }
+    async execute(args, exec) {
+      const maxChars = Number.isFinite(args?.maxChars)
+        ? Math.max(1000, Math.min(200000, args.maxChars))
+        : 100000
+      return call('tab.snapshot', { maxChars, tabId: args?.tabId, owner: ownerOf(exec) }, 30000)
     },
   })
 
+  // ------------------------------------------------------------ 4. screenshot
   list.push({
     name: 'chrome_screenshot',
     description:
-      'Capture a PNG screenshot of the current DSH session page and return it as an image in this conversation. The screenshot is also saved on disk. Use when layout or visual state matters; use chrome_snapshot for text content.',
+      'Capture a PNG screenshot of the current DSH session page (or tabId) and return it as an image in this conversation. The file is also saved on disk. Use when layout or visual state matters; use chrome_snapshot for text.',
     parameters: {
       type: 'object',
-      properties: {},
+      properties: {
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
       additionalProperties: false,
     },
     output: {
@@ -241,20 +281,15 @@ export function chromeTools({ bridge, attachments, assets }) {
         return blocks
       },
     },
-    async execute() {
-      let shot
-      try {
-        shot = await bridge.call('tab.screenshot', {}, 60000)
-      } catch (error) {
-        throw normalize(error)
-      }
+    async execute(args, exec) {
+      const shot = await call('tab.screenshot', { tabId: args?.tabId, owner: ownerOf(exec) }, 60000)
       if (!shot?.path) throw new BridgeError('INTERNAL', 'native host did not return a screenshot path')
       let bytes = shot.bytes
       let image = null
       try {
         const data = await fsp.readFile(shot.path)
         bytes = data.byteLength
-        const service = attachments()
+        const service = attachments?.()
         if (service) {
           image = await service.saveImage({
             data: new Uint8Array(data),
@@ -262,8 +297,7 @@ export function chromeTools({ bridge, attachments, assets }) {
             name: `chrome-screenshot-${Date.now()}.png`,
           })
         }
-      } catch (error) {
-        // Saving to DSH attachments is best-effort in P0; the file path still returns.
+      } catch {
         image = null
       }
       return {
@@ -277,12 +311,288 @@ export function chromeTools({ bridge, attachments, assets }) {
     },
   })
 
-  return list
-}
+  // ---------------------------------------------------------------- 5. click
+  list.push({
+    name: 'chrome_click',
+    description:
+      'Click the interactive control with the given snapshot ref number on the current DSH session page. Take a fresh snapshot if refs may be stale. Returns the clicked element kind and label.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'number', description: 'Control number from the latest chrome_snapshot.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['ref'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        ok: { type: 'boolean' },
+        tag: { type: 'string' },
+        label: { type: 'string' },
+        tabId: { type: 'number' },
+      }),
+      render: (_args, value) => renderText(`Clicked ${value.tag || 'element'} ${JSON.stringify(value.label || '')}`),
+    },
+    async execute(args, exec) {
+      await guard(exec, 'chrome_click', `click ref ${args?.ref}`)
+      return call('tab.click', { ref: args?.ref, tabId: args?.tabId, owner: ownerOf(exec) })
+    },
+  })
 
-function normalize(error) {
-  if (error instanceof BridgeError) return error
-  const wrapped = new BridgeError('INTERNAL', error?.message || String(error))
-  wrapped.cause = error
-  return wrapped
+  // ----------------------------------------------------------------- 6. type
+  list.push({
+    name: 'chrome_type',
+    description:
+      'Type text into the input/textarea with the given snapshot ref number (React/Vue-safe). Set replace to clear first, submit to submit the owning form. The page is not re-snapshotted automatically.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'number', description: 'Control number from the latest chrome_snapshot.' },
+        text: { type: 'string', description: 'Text to enter.' },
+        replace: { type: 'boolean', description: 'Replace the existing value instead of appending.' },
+        submit: { type: 'boolean', description: 'Submit the form after typing.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['ref', 'text'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        ok: { type: 'boolean' },
+        value: { type: 'string' },
+        submitted: { type: 'boolean' },
+        tabId: { type: 'number' },
+      }),
+      render: (_args, value) =>
+        renderText(
+          `Typed into field${value.submitted ? ' and submitted the form' : ''}; value now ${JSON.stringify(value.value ?? '')}`,
+        ),
+    },
+    async execute(args, exec) {
+      await guard(exec, 'chrome_type', `type into ref ${args?.ref}`)
+      return call('tab.type', {
+        ref: args?.ref,
+        text: String(args?.text ?? ''),
+        replace: Boolean(args?.replace),
+        submit: Boolean(args?.submit),
+        tabId: args?.tabId,
+        owner: ownerOf(exec),
+      })
+    },
+  })
+
+  // ---------------------------------------------------------------- 7. press
+  list.push({
+    name: 'chrome_press',
+    description:
+      'Dispatch a keyboard key (Enter, Tab, Escape, ArrowUp/Down/Left/Right, PageUp/PageDown, Home/End, or a single character) to the focused element on the current DSH session page.',
+    parameters: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'Key to press, e.g. Enter or Escape.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['key'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({ ok: { type: 'boolean' }, key: { type: 'string' }, target: { type: 'string' } }),
+      render: (_args, value) => renderText(`Pressed ${value.key} on <${value.target}>`),
+    },
+    async execute(args, exec) {
+      await guard(exec, 'chrome_press', `press ${args?.key}`)
+      return call('tab.press', { key: String(args?.key ?? ''), tabId: args?.tabId, owner: ownerOf(exec) })
+    },
+  })
+
+  // --------------------------------------------------------------- 8. scroll
+  list.push({
+    name: 'chrome_scroll',
+    description:
+      'Scroll the current DSH session page: direction up/down/top/bottom, optional pixel amount (default 600). Returns the resulting scroll position.',
+    parameters: {
+      type: 'object',
+      properties: {
+        direction: { type: 'string', enum: ['up', 'down', 'top', 'bottom'] },
+        amount: { type: 'number', description: 'Pixels to scroll for up/down (default 600).' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['direction'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        ok: { type: 'boolean' },
+        y: { type: 'number' },
+        viewportHeight: { type: 'number' },
+        documentHeight: { type: 'number' },
+      }),
+      render: (_args, value) =>
+        renderText(`Scrolled to y=${value.y} (viewport ${value.viewportHeight}, document ${value.documentHeight})`),
+    },
+    async execute(args, exec) {
+      return call('tab.scroll', {
+        direction: String(args?.direction ?? 'down'),
+        amount: args?.amount,
+        tabId: args?.tabId,
+        owner: ownerOf(exec),
+      })
+    },
+  })
+
+  // -------------------------------------------------------------- 9. history
+  list.push({
+    name: 'chrome_history',
+    description:
+      'Navigate backwards, forwards, or reload the current DSH session page. Waits for the load to complete and returns the resulting URL/title.',
+    parameters: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['back', 'forward', 'reload'] },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['op'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        tabId: { type: 'number' },
+        url: { type: 'string' },
+        title: { type: 'string' },
+        loadState: { type: 'string' },
+      }),
+      render: (_args, value) =>
+        renderText(`${value.title || '(untitled)'} — ${value.url} (${value.loadState})`),
+    },
+    async execute(args, exec) {
+      await guard(exec, 'chrome_history', String(args?.op ?? 'reload'))
+      return call('tab.history', {
+        op: String(args?.op ?? 'reload'),
+        tabId: args?.tabId,
+        owner: ownerOf(exec),
+      })
+    },
+  })
+
+  // ----------------------------------------------------------------- 10. tabs
+  list.push({
+    name: 'chrome_tabs',
+    description:
+      'Manage tabs owned by this DSH session: list owned tabs, open a new background tab in the session tab group, or close an owned tab. Never lists or controls tabs outside this session.',
+    parameters: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['list', 'new', 'close'] },
+        url: { type: 'string', description: 'URL for op=new (http/https; defaults to about:blank).' },
+        tabId: { type: 'number', description: 'Tab id for op=close.' },
+      },
+      required: ['op'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        tabs: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              tabId: { type: 'number' },
+              title: { type: 'string' },
+              url: { type: 'string' },
+              active: { type: 'boolean' },
+            },
+            additionalProperties: true,
+          },
+        },
+        groupId: { type: 'number' },
+        tabId: { type: 'number' },
+        url: { type: 'string' },
+        title: { type: 'string' },
+        closed: { type: 'number' },
+        remaining: { type: 'number' },
+      }),
+      render: (_args, value) => {
+        if (Array.isArray(value.tabs)) {
+          const lines = value.tabs.map(
+            (tab) => `${tab.active ? '*' : ' '} #${tab.tabId} ${tab.title || '(untitled)'} — ${tab.url}`,
+          )
+          return renderText(`Session tabs (group ${value.groupId ?? 'none'}):\n${lines.join('\n') || '(none)'}`)
+        }
+        if (value.closed != null) {
+          return renderText(`Closed tab ${value.closed}; ${value.remaining} tab(s) remain in this session`)
+        }
+        return renderText(`Opened tab #${value.tabId} — ${value.title || ''} ${value.url || ''}`)
+      },
+    },
+    async execute(args, exec) {
+      const op = String(args?.op ?? 'list')
+      if (op !== 'list') await guard(exec, 'chrome_tabs', `tabs ${op}`)
+      return call('tab.tabs', {
+        op,
+        url: args?.url,
+        tabId: args?.tabId,
+        owner: ownerOf(exec),
+      })
+    },
+  })
+
+  // ----------------------------------------------------------------- 11. wait
+  list.push({
+    name: 'chrome_wait',
+    description:
+      'Wait for the current DSH session page: until=load (document complete), until=networkidle (load + short settle), or until=text with a text argument (polls page text until it appears). Fails with TIMEOUT instead of hanging.',
+    parameters: {
+      type: 'object',
+      properties: {
+        until: { type: 'string', enum: ['load', 'networkidle', 'text'] },
+        text: { type: 'string', description: 'Required when until=text.' },
+        timeoutMs: { type: 'number', description: 'Maximum wait in ms (default 30000, max 120000).' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['until'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        tabId: { type: 'number' },
+        url: { type: 'string' },
+        title: { type: 'string' },
+        loadState: { type: 'string' },
+      }),
+      render: (_args, value) =>
+        renderText(`Ready: ${value.title || '(untitled)'} — ${value.url} (${value.loadState})`),
+    },
+    async execute(args, exec) {
+      return call(
+        'tab.wait',
+        {
+          until: String(args?.until ?? 'load'),
+          text: args?.text,
+          timeoutMs: args?.timeoutMs,
+          tabId: args?.tabId,
+          owner: ownerOf(exec),
+        },
+        120000,
+      )
+    },
+  })
+
+  // -------------------------------------------------------- 12. close session
+  list.push({
+    name: 'chrome_close_session',
+    description:
+      "Close every tab owned by this DSH session (and its tab group). Does not quit Chrome and never touches the user's other tabs.",
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    output: {
+      schema: outputSchema({ closed: { type: 'number' } }),
+      render: (_args, value) => renderText(`Closed ${value.closed} session tab(s)`),
+    },
+    async execute(_args, exec) {
+      await guard(exec, 'chrome_close_session', 'close session tabs')
+      return call('tab.close_session', { owner: ownerOf(exec) })
+    },
+  })
+
+  return list
 }

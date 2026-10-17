@@ -12,7 +12,9 @@
     "storage",
     "debugger",
     "alarms",
-    "offscreen"
+    "offscreen",
+    "tabGroups",
+    "webNavigation"
   ],
   "host_permissions": [
     "http://*/*",
