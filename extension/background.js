@@ -333,27 +333,67 @@ async function gotoUrl(owner, url) {
   }
 }
 
-async function callInPage(tabId, action, args = [], timeoutMs = 10000) {
-  let response
+// Page actions run through the DevTools protocol. Content-script messaging and
+// chrome.scripting both proved unreliable for background/collapsed-group tabs
+// (messages queued forever); CDP Runtime.evaluate stays responsive and is the
+// same channel that already captures screenshots.
+const PAGE_ACTIONS = {
+  snapshot: pageSnapshot,
+  click: clickByRef,
+  type: typeIntoRef,
+  press: pressKey,
+  scroll: scrollPage,
+  hasText,
+}
+
+function withTimeout(promise, timeoutMs, code, message) {
+  return Promise.race([
+    promise,
+    new Promise((_resolve, reject) => setTimeout(() => reject(bridgeError(code, message)), timeoutMs)),
+  ])
+}
+
+async function evalInTab(tabId, fn, args, timeoutMs) {
+  const target = { tabId }
+  let attached = false
   try {
-    response = await Promise.race([
-      chrome.tabs.sendMessage(tabId, { target: 'dsh-page', action, args }),
-      new Promise((_resolve, reject) =>
-        setTimeout(() => reject(bridgeError('TIMEOUT', `page ${action} timed out after ${timeoutMs}ms`)), timeoutMs),
-      ),
-    ])
-  } catch (error) {
-    if (error?.code) throw error
-    const message = String(error?.message || error)
-    if (message.includes('Receiving end does not exist') || message.includes('Could not establish connection')) {
-      throw bridgeError('PAGE_NOT_READY', 'page helper is not attached; navigate or reload the tab and retry')
+    await chrome.debugger.attach(target, '1.3')
+    attached = true
+  } catch {
+    // A previous detach may have raced; try to use the existing session.
+  }
+  try {
+    const expression = `(${fn.toString()})(...${JSON.stringify(args)})`
+    const response = await withTimeout(
+      chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      }),
+      timeoutMs,
+      'TIMEOUT',
+      `page action timed out after ${timeoutMs}ms`,
+    )
+    if (response?.exceptionDetails) {
+      const text = response.exceptionDetails.exception?.description || response.exceptionDetails.text || 'page action failed'
+      throw bridgeError('INTERNAL', String(text))
     }
-    throw bridgeError('INTERNAL', message)
+    return response?.result?.value
+  } finally {
+    if (attached) {
+      try {
+        await chrome.debugger.detach(target)
+      } catch {
+        // tab may have closed or detached already
+      }
+    }
   }
-  if (response?.error) {
-    throw bridgeError(response.error.code || 'INTERNAL', response.error.message || 'page action failed')
-  }
-  return response?.result
+}
+
+async function callInPage(tabId, action, args = [], timeoutMs = 15000) {
+  const fn = PAGE_ACTIONS[action]
+  if (!fn) throw bridgeError('UNSUPPORTED', `unknown page action: ${action}`)
+  return evalInTab(tabId, fn, args, timeoutMs)
 }
 
 async function snapshot(owner, params) {
