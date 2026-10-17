@@ -351,23 +351,6 @@ function forceReconnect({ force = false } = {}) {
   return ensurePort()
 }
 
-// MV3 worker eviction is the main reason a dead native port goes unnoticed:
-// keep a tiny offscreen document that pings the worker every 15s.
-async function ensureOffscreen() {
-  if (!chrome.offscreen?.createDocument) return
-  try {
-    const existing = await chrome.offscreen.hasDocument?.()
-    if (existing) return
-    await chrome.offscreen.createDocument({
-      url: 'offscreen.html',
-      reasons: ['BLOBS'],
-      justification: 'Keep the DSH native messaging reconnect loop alive.',
-    })
-  } catch (error) {
-    log('offscreen keepalive unavailable', error?.message || error)
-  }
-}
-
 // ------------------------------------------------------------------- requests
 async function handleRequest(message) {
   const method = String(message.method || '')
@@ -1436,7 +1419,7 @@ function ensureReconnectAlarm() {
     chrome.alarms.create('dsh-chrome-reconnect', { periodInMinutes: 1 })
     // Independent watchdog: even when no other event wakes the worker, retry
     // the native port every 30s and let the self-heal path reload if needed.
-    chrome.alarms.create('dsh-chrome-watchdog', { periodInMinutes: 0.5 })
+    chrome.alarms.create('dsh-chrome-watchdog', { periodInMinutes: 1 })
   } catch {
     // alarms are best effort; the port and popup button still work
   }
@@ -1444,12 +1427,10 @@ function ensureReconnectAlarm() {
 
 chrome.runtime.onInstalled.addListener(() => {
   ensureReconnectAlarm()
-  ensureOffscreen().catch(() => {})
   ensurePort().catch(() => {})
 })
 chrome.runtime.onStartup.addListener(() => {
   ensureReconnectAlarm()
-  ensureOffscreen().catch(() => {})
   ensurePort().catch(() => {})
 })
 chrome.tabs.onUpdated.addListener(() => {
@@ -1500,12 +1481,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     })()
     return true
   }
-  if (message?.type === 'dsh-tick') {
-    // Silence for 30s (provider heartbeats every 10s) means the port object is
-    // stale even though Chrome never fired onDisconnect.
-    if (!port || Date.now() - lastNativeSignalAt > 30000) forceReconnect().catch(() => {})
-    return false
-  }
   if (message?.type === 'dsh-connect') {
     forceReconnect()
       .catch(() => {})
@@ -1528,5 +1503,4 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 // every start so a worker eviction cannot silently lose the reconnect timer.
 diag('worker-start', { version: VERSION, hasPort: Boolean(port) })
 ensureReconnectAlarm()
-ensureOffscreen().catch(() => {})
 ensurePort().catch(() => {})

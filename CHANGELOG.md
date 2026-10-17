@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [0.1.33] - 2026-10-17
+
+### Changed
+
+- host 扩展目录 watcher：800ms 去抖 + 3s 冷却 + manifest JSON 有效性检查（避免批量写/删除时连续 reload 把新 host 打断）
+
+## [0.1.32] - 2026-10-17
+
+### Changed（CPU/资源占用优化）
+
+- 移除 `page.js` 内容脚本（15s 唤醒）与 offscreen 文档（15s 唤醒）——provider 心跳已负责保活 SW，崩溃恢复由 alarms 负责
+- provider 心跳 10s → 20s；watchdog alarm 30s → 60s；扩展 stale 阈值 30s → 45s
+- 预期减少空闲期 Chrome/扩展唤醒次数，具体数值见 docs/CPU.md
+
 ## [0.1.31] - 2026-10-17
 
 ### Added

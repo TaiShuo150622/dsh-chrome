@@ -71,6 +71,7 @@ function readDiscovery() {
 // code change in extension/ reaches Chrome without a manual ⟳.
 let watcher = null
 let watchTimer = null
+let lastReloadNoticeAt = 0
 
 function sendNativeEvent(event, params) {
   if (!authed || !socket || socket.destroyed) return
@@ -88,9 +89,22 @@ function startExtensionWatcher() {
       if (watchTimer) clearTimeout(watchTimer)
       watchTimer = setTimeout(() => {
         watchTimer = null
+        // Cooldown: one reload per 3s. A batch of file writes (or a delete)
+        // would otherwise trigger several reloads and kill the fresh host
+        // before Chrome finishes loading the extension.
+        if (Date.now() - lastReloadNoticeAt < 3000) return
+        try {
+          // Only reload when the manifest on disk is valid JSON (mid-write or
+          // partially deleted files must not be pushed to Chrome).
+          JSON.parse(fs.readFileSync(path.join(dev.extensionDir, 'manifest.json'), 'utf8'))
+        } catch (error) {
+          log(`extension change ignored (manifest not readable yet): ${error.message}`)
+          return
+        }
+        lastReloadNoticeAt = Date.now()
         log(`extension change detected: ${name}`)
         sendNativeEvent('ext.changed', { file: name })
-      }, 500)
+      }, 800)
     })
     watcher.on('error', (error) => log(`extension watcher error: ${error.message}`))
     log(`watching extension dir ${dev.extensionDir}`)

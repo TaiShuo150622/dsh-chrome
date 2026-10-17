@@ -66,9 +66,9 @@ check(
 // 5) version is semver-ish and matches package version line
 check('manifest version looks like semver', /^\d+\.\d+\.\d+$/.test(manifest.version), manifest.version)
 
-// 6) popup/offscreen HTML files exist because background opens them
-check('offscreen.html exists', fs.existsSync(path.join(extensionDir, 'offscreen.html')))
+// 6) popup HTML exists because the manifest opens it
 check('popup.html exists', fs.existsSync(path.join(extensionDir, 'popup.html')))
+check('unused page.js/offscreen files are gone', !fs.existsSync(path.join(extensionDir, 'page.js')) && !fs.existsSync(path.join(extensionDir, 'offscreen.js')))
 
 console.log(failures === 0 ? '\nEXTENSION MANIFEST TEST: PASS' : `\nEXTENSION MANIFEST TEST: ${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

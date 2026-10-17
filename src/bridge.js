@@ -152,7 +152,7 @@ export class BridgeServer {
           } catch {
             // the close handler tears down the timer
           }
-        }, 10000)
+        }, 20000)
         continue
       }
       if (message?.id != null) {
