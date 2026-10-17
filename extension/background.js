@@ -336,21 +336,60 @@ async function gotoUrl(owner, url) {
   }
 }
 
-async function runInTab(tabId, func, args) {
-  let results
+function sendPage(port, action, args, timeoutMs) {
+  const id = ++pageRequestSeq
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pagePending.delete(id)
+      reject(bridgeError('TIMEOUT', `page ${action} timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    pagePending.set(id, { resolve, reject, timer })
+    try {
+      port.postMessage({ id, action, args })
+    } catch (error) {
+      clearTimeout(timer)
+      pagePending.delete(id)
+      reject(bridgeError('PAGE_NOT_READY', error?.message || 'page port is gone'))
+    }
+  })
+}
+
+async function attachPageHelper(tabId) {
+  for (let i = 0; i < 10; i += 1) {
+    const port = pagePorts.get(tabId)
+    if (port) return port
+    await new Promise((resolve) => setTimeout(resolve, 150))
+  }
   try {
-    results = await chrome.scripting.executeScript({ target: { tabId }, func, args })
+    await chrome.tabs.reload(tabId)
+    await waitForComplete(tabId, 15000)
+  } catch {
+    // reload may be blocked; the poll below decides
+  }
+  for (let i = 0; i < 20; i += 1) {
+    const port = pagePorts.get(tabId)
+    if (port) return port
+    await new Promise((resolve) => setTimeout(resolve, 150))
+  }
+  return null
+}
+
+async function callInPage(tabId, action, args = [], timeoutMs = 10000) {
+  let port = pagePorts.get(tabId)
+  if (!port) port = await attachPageHelper(tabId)
+  if (!port) {
+    throw bridgeError('PAGE_NOT_READY', 'page helper is not attached; navigate or reload the tab and retry')
+  }
+  try {
+    return await sendPage(port, action, args, timeoutMs)
   } catch (error) {
-    throw bridgeError(
-      'PROTECTED_PAGE',
-      `cannot operate this page (browser-protected or unsupported): ${error?.message || error}`,
-    )
+    if (error?.code === 'TIMEOUT' || error?.code === 'PAGE_NOT_READY') {
+      pagePorts.delete(tabId)
+      const fresh = await attachPageHelper(tabId)
+      if (fresh) return sendPage(fresh, action, args, timeoutMs)
+    }
+    throw error
   }
-  const value = results?.[0]?.result
-  if (value && value.error) {
-    throw bridgeError(String(value.error), String(value.message || value.error))
-  }
-  return value
 }
 
 async function snapshot(owner, params) {
@@ -358,7 +397,7 @@ async function snapshot(owner, params) {
   const limit = Number.isFinite(params.maxChars)
     ? Math.max(1000, Math.min(200000, params.maxChars))
     : 100000
-  const value = await runInTab(tabId, pageSnapshot, [limit])
+  const value = await callInPage(tabId, 'snapshot', [limit])
   if (!value) throw bridgeError('INTERNAL', 'page snapshot returned no result')
   return value
 }
@@ -391,7 +430,7 @@ async function click(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
   if (!Number.isFinite(ref)) throw bridgeError('REF_STALE', 'ref must be a snapshot number')
-  const result = await runInTab(tabId, clickByRef, [ref])
+  const result = await callInPage(tabId, 'click', [ref])
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
   }
@@ -402,7 +441,7 @@ async function typeText(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
   if (!Number.isFinite(ref)) throw bridgeError('REF_STALE', 'ref must be a snapshot number')
-  const result = await runInTab(tabId, typeIntoRef, [
+  const result = await callInPage(tabId, 'type', [
     ref,
     String(params.text ?? ''),
     Boolean(params.replace),
@@ -418,7 +457,7 @@ async function press(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const key = String(params.key || '')
   if (!key) throw bridgeError('INTERNAL', 'key is required')
-  const result = await runInTab(tabId, pressKey, [key])
+  const result = await callInPage(tabId, 'press', [key])
   return { ...result, tabId }
 }
 
@@ -426,7 +465,7 @@ async function scroll(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const direction = String(params.direction || 'down')
   const amount = Number.isFinite(params.amount) ? Number(params.amount) : 600
-  const result = await runInTab(tabId, scrollPage, [direction, amount])
+  const result = await callInPage(tabId, 'scroll', [direction, amount])
   return { ...result, tabId }
 }
 
@@ -500,7 +539,7 @@ async function wait(owner, params) {
     const started = Date.now()
     let found = false
     while (Date.now() - started < timeoutMs) {
-      found = Boolean(await runInTab(tabId, hasText, [text]))
+      found = Boolean(await callInPage(tabId, 'hasText', [text], 5000))
       if (found) break
       await new Promise((resolve) => setTimeout(resolve, 300))
     }
@@ -769,6 +808,28 @@ chrome.runtime.onConnect.addListener((keepalivePort) => {
   if (keepalivePort.name !== 'dsh-keepalive') return
   keepalivePort.onMessage.addListener(() => {
     if (!port) forceReconnect().catch(() => {})
+  })
+})
+chrome.runtime.onConnect.addListener((pagePort) => {
+  if (pagePort.name !== 'dsh-page') return
+  const tabId = pagePort.sender?.tab?.id
+  if (typeof tabId !== 'number') return
+  pagePorts.set(tabId, pagePort)
+  pagePort.onMessage.addListener((message) => {
+    if (message?.type === 'keepalive') return
+    if (message?.id == null) return
+    const pending = pagePending.get(message.id)
+    if (!pending) return
+    pagePending.delete(message.id)
+    clearTimeout(pending.timer)
+    if (message.error) {
+      pending.reject(bridgeError(message.error.code || 'INTERNAL', message.error.message || 'page action failed'))
+    } else {
+      pending.resolve(message.result)
+    }
+  })
+  pagePort.onDisconnect.addListener(() => {
+    if (pagePorts.get(tabId) === pagePort) pagePorts.delete(tabId)
   })
 })
 chrome.alarms.onAlarm.addListener((alarm) => {
