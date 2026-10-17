@@ -23,3 +23,13 @@ jobs:
         run: |
           npm run docs:tools
           git diff --exit-code -- docs/TOOLS.md
+      - name: Package extension
+        run: |
+          npm run package:extension
+          unzip -l dist/*.zip | grep -q ' manifest.json$'
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-zip-${{ matrix.os }}
+          path: dist/*.zip
+          if-no-files-found: error
