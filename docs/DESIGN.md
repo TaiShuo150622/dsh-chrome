@@ -128,9 +128,10 @@ Native Host ──connect(socket) + hello{token,version}──▶ Provider Bridg
 - **host ↔ DSH 侧鉴权**：provider 启动时生成随机 token，写入 `$DSH_HOME/cache/dsh-chrome/bridge.json`（`0600`，含 socket 路径、pid、版本）；host 读取最新文件并 hello；provider 校验 token。
 - **socket 路径**：`$DSH_HOME/cache/dsh-chrome/bridge.sock`（实测可用；macOS 上 UNIX socket 路径上限 104 字符，当前长度约 50）。
 - **帧格式**：newline-delimited JSON；`{"id","method","params"}` / `{"id","result"}` / `{"id","error"}`；事件 `{"event","params"}`（例如 `tab.updated`）。
-- **重连**（P1 实测结论）：
+- **重连**（P1/P2 实测结论）：
   - **host 常驻**：provider 的 socket 断开时 host 不退出，重读 `bridge.json` 按 0.5s→5s 退避重连；DSH 重启 / 插件重载对扩展透明。
-  - 扩展侧自动重连（SW 被回收后重新 `connectNative`）仍不可靠——P0 遗留、P2 稳定性专项；缓解手段是 host 常驻 + 内容脚本保活端口。
+  - **native port 由 offscreen 文档持有**（P2-1，扩展 0.1.13）：SW 被回收时端口会随之死亡，且从濒死上下文里 `connectNative` 拉起的 host 会被 Chrome 一并回收；offscreen 是普通扩展页、生命周期长于 SW，由它 `connectNative` 并负责断线重连（0.5s→5s 退避 + 10s 健康检查）。provider 请求经 host → offscreen → `runtime.sendMessage` → SW `handleRequest` 原路返回；SW 被回收时这条消息会把它唤醒。
+  - 内容脚本保留保活端口（`dsh-keepalive`）作为额外唤醒源；`page.js` 每 15s 的 `dsh-page-tick` 也会触发 ensure 重连。
   - launcher 用**安装时写入的 DSH app 内 Electron-as-Node 绝对路径**，不依赖用户 shell 环境；系统 node（`/opt/homebrew/bin/node`）仅作兜底。
 - 选择理由：无端口冲突/发现；不暴露 loopback 端口；Chrome 按需拉起；与 Claude/Codex 同构（本机已有两份可参照的 host manifest）。
 
