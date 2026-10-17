@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+## [0.1.30] - 2026-10-17
+
+### Added
+
+- **稳定 ref**：`chrome_snapshot` 保留元素已有 `data-dsh-ref`，只有新元素递增编号；输出对新元素标 `new:true`（借鉴 browser-use/Playwright MCP 的稳定 handle）
+- `chrome_snapshot {boxes:true}`：返回每个控件的视口坐标 `[x,y,w,h]`
+- `chrome_find` 分配 ref 时同样使用稳定编号
+
+### Changed
+
+- `chrome_snapshot` 描述与输出 schema 同步（`new`/`box` 字段）
+
 ## [0.1.29] - 2026-10-17
 
 ### Fixed

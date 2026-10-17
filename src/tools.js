@@ -204,11 +204,12 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   list.push({
     name: 'chrome_snapshot',
     description:
-      'Return a text snapshot of the current DSH session page: title, URL, a numbered list of visible interactive controls (use the numbers as refs for click/type), and visible page text. Password and payment-card values are masked. Prefer this over screenshots for reading content.',
+      'Return a text snapshot of the current DSH session page: title, URL, a numbered list of visible interactive controls (use the numbers as refs for click/type), and visible page text. Refs are stable across snapshots until the page changes; newly seen controls are marked with new:true. Password and payment-card values are masked. Prefer this over screenshots for reading content.',
     parameters: {
       type: 'object',
       properties: {
         maxChars: { type: 'number', description: 'Maximum page-text characters to return (default 100000).' },
+        boxes: { type: 'boolean', description: 'Include each control viewport box [x,y,width,height] in CSS px.' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
       additionalProperties: false,
@@ -229,6 +230,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
               label: { type: 'string' },
               kind: { type: 'string' },
               value: { type: 'string' },
+              new: { type: 'boolean' },
+              box: { type: 'array', items: { type: 'number' } },
             },
             additionalProperties: true,
           },
@@ -238,7 +241,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         const controls = Array.isArray(value.controls) ? value.controls : []
         const controlLines = controls.map(
           (control) =>
-            `[${control.ref}] ${control.tag}${control.kind ? ` (${control.kind})` : ''} ${JSON.stringify(control.label)}${control.value ? ` value=${JSON.stringify(control.value)}` : ''}`,
+            `${control.new ? '+ ' : ''}[${control.ref}] ${control.tag}${control.kind ? ` (${control.kind})` : ''} ${JSON.stringify(control.label)}${control.value ? ` value=${JSON.stringify(control.value)}` : ''}${control.box ? ` box=[${control.box.join(',')}]` : ''}`,
         )
         const body = [
           `# ${value.title || '(untitled)'}`,
@@ -258,7 +261,11 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       const maxChars = Number.isFinite(args?.maxChars)
         ? Math.max(1000, Math.min(200000, args.maxChars))
         : 100000
-      return call('tab.snapshot', { maxChars, tabId: args?.tabId, owner: ownerOf(exec) }, 30000)
+      return call(
+        'tab.snapshot',
+        { maxChars, boxes: Boolean(args?.boxes), tabId: args?.tabId, owner: ownerOf(exec) },
+        30000,
+      )
     },
   })
 

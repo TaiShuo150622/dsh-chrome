@@ -615,7 +615,7 @@ async function snapshot(owner, params) {
   const limit = Number.isFinite(params.maxChars)
     ? Math.max(1000, Math.min(200000, params.maxChars))
     : 100000
-  const value = await callInPage(tabId, 'snapshot', [limit])
+  const value = await callInPage(tabId, 'snapshot', [limit, Boolean(params.boxes)])
   if (!value) throw bridgeError('INTERNAL', 'page snapshot returned no result')
   return value
 }
@@ -942,8 +942,24 @@ function waitForComplete(tabId, timeoutMs) {
  * Runs inside the page. Must stay self-contained: Chrome serializes this
  * function and its arguments into the page's isolated world.
  */
-function pageSnapshot(maxChars) {
+function pageSnapshot(maxChars, withBoxes) {
   const limit = Number.isFinite(maxChars) ? maxChars : 100000
+  // Refs are stable across snapshots: an element that already has one keeps it;
+  // only new elements get the next number. (Adopted from browser-use's stable
+  // backend-node handles and Playwright MCP's per-page refs.)
+  const nextRef = () => {
+    if (!window.__dshRefSeq) {
+      let max = 0
+      for (const element of document.querySelectorAll('[data-dsh-ref]')) {
+        const value = Number(element.getAttribute('data-dsh-ref'))
+        if (Number.isFinite(value) && value > max) max = value
+      }
+      window.__dshRefSeq = max + 1
+    }
+    const ref = window.__dshRefSeq
+    window.__dshRefSeq += 1
+    return ref
+  }
   const selectors = [
     'a[href]',
     'button',
@@ -1013,17 +1029,31 @@ function pageSnapshot(maxChars) {
   for (const element of elements) {
     if (controls.length >= 400) break
     if (!isVisible(element)) continue
-    const ref = controls.length + 1
-    try {
-      element.setAttribute('data-dsh-ref', String(ref))
-    } catch {
-      // read-only DOM is fine; the ref still works for this snapshot
+    let ref = Number(element.getAttribute('data-dsh-ref')) || 0
+    const isNew = ref === 0
+    if (isNew) {
+      ref = nextRef()
+      try {
+        element.setAttribute('data-dsh-ref', String(ref))
+      } catch {
+        // read-only DOM is fine; the ref still works for this snapshot
+      }
     }
     const control = {
       ref,
       tag: element.tagName.toLowerCase(),
       kind: kindOf(element),
       label: labelOf(element),
+    }
+    if (isNew) control.new = true
+    if (withBoxes) {
+      const box = element.getBoundingClientRect()
+      control.box = [
+        Math.round(box.left),
+        Math.round(box.top),
+        Math.round(box.width),
+        Math.round(box.height),
+      ]
     }
     const value = maskedValue(element)
     if (value !== undefined) control.value = value
@@ -1193,7 +1223,16 @@ function findInPage(query, limit) {
     const target = interactive || element
     let ref = Number(target.getAttribute('data-dsh-ref')) || 0
     if (!ref) {
-      ref = 900 + matches.length + 1
+      if (!window.__dshRefSeq) {
+        let max = 0
+        for (const element of document.querySelectorAll('[data-dsh-ref]')) {
+          const value = Number(element.getAttribute('data-dsh-ref'))
+          if (Number.isFinite(value) && value > max) max = value
+        }
+        window.__dshRefSeq = max + 1
+      }
+      ref = window.__dshRefSeq
+      window.__dshRefSeq += 1
       try {
         target.setAttribute('data-dsh-ref', String(ref))
       } catch {

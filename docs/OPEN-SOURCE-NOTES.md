@@ -50,8 +50,8 @@
 
 | 能力 | 来源 | 我们的计划 |
 |---|---|---|
-| **稳定 ref**（元素有 ref 就复用，不每次重排） | browser-use / Playwright MCP | P2：`chrome_snapshot` 改为保留已有 `data-dsh-ref`，新元素递增编号；输出标 `new` |
-| 快照 `boxes`（返回坐标） | Playwright MCP | P2：`chrome_snapshot {boxes:true}` 输出每个控件 `[x,y,w,h]` |
+| **稳定 ref**（元素有 ref 就复用，不每次重排） | browser-use / Playwright MCP | ✅ 已实现（0.1.30）：保留已有 ref，新元素递增并标 `new` |
+| 快照 `boxes`（返回坐标） | Playwright MCP | ✅ 已实现（0.1.30）：`chrome_snapshot {boxes:true}` |
 | 全页截图 / 高亮 ref 截图 | browser-use | P2：`chrome_screenshot {fullPage:true}`、`{highlight:true}` |
 | `chrome_wait` 支持 selector/url | Playwright MCP waiting 工具 | P2：`until: selector\|url` |
 | 可访问性树工具 | Playwright MCP / browser-use | P2/P3：`chrome_a11y`（CDP `Accessibility.getFullAXTree`，带 ref） |
