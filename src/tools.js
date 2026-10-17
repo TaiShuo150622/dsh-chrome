@@ -352,6 +352,41 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   },
   {
+    name: 'chrome_select',
+    description:
+      'Select an option in a <select>, set a checkbox/radio, or toggle one. Takes a ref from chrome_snapshot or chrome_find. Pass value for select/radio, checked for checkbox/radio.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'number', description: 'Ref of the select/checkbox/radio control.' },
+        value: { type: 'string', description: 'Option value or visible label (for <select>).' },
+        checked: { type: 'boolean', description: 'Desired checked state (for checkbox/radio); defaults to toggle.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['ref'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        ok: { type: 'boolean' },
+        tag: { type: 'string' },
+        value: { type: 'string' },
+      }),
+      render: (_args, value) => [
+        { type: 'text', text: `${value.tag} → ${value.value}` },
+      ],
+    },
+    async execute(args, exec) {
+      const value = await call(
+        'tab.select',
+        { ref: args?.ref, value: args?.value, checked: args?.checked, tabId: args?.tabId, owner: ownerOf(exec) },
+        30000,
+      )
+      if (!value) throw new BridgeError('INTERNAL', 'extension returned no select result')
+      return value
+    },
+  },
+  {
     name: 'chrome_console',
     description:
       'Read recent console output captured from the DSH session page (log/info/warn/error/debug plus uncaught errors). Captured at document_start by the extension, so logs emitted before the call are available. Optionally clear the buffer.',

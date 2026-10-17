@@ -65,6 +65,7 @@ host.stdout.on(
     const replies = {
       'browser.status': { extensionVersion: 'p2-fake', connected: true },
       'tab.screenshot': { dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' },
+      'tab.select': { ok: true, tag: 'input', value: 'checked' },
       'tab.get_text': { found: true, text: 'Example Domain body', truncated: false },
       'tab.console': { available: true, entries: [{ level: 'error', text: 'boom', time: 1 }] },
       'tab.network': { available: true, entries: [{ url: 'https://example.com/a.js', type: 'script', durationMs: 12, transferSize: 340 }] },
@@ -97,7 +98,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('sixteen tools registered', tools.length === 16, tools.map((t) => t.name).join(', '))
+check('seventeen tools registered', tools.length === 17, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -112,6 +113,10 @@ check('find render lists matches', /ref 901/.test(rendered[0]?.text || ''))
 const shot = await byName.chrome_screenshot.execute({ clip: { x: 10, y: 20, width: 300, height: 200 } }, exec())
 check('clip screenshot executes', Boolean(shot?.path))
 check('clip envelope reaches the extension', requests.at(-1)?.method === 'tab.screenshot' && requests.at(-1)?.params?.clip?.width === 300)
+
+const selectValue = await byName.chrome_select.execute({ ref: 4, checked: true }, exec())
+check('chrome_select executes', selectValue.ok === true && selectValue.value === 'checked')
+check('select params reach the extension', requests.at(-1)?.method === 'tab.select' && requests.at(-1)?.params?.checked === true)
 
 const textValue = await byName.chrome_get_text.execute({ selector: 'main', maxChars: 1000 }, exec())
 check('chrome_get_text executes', textValue.found === true && textValue.text === 'Example Domain body')

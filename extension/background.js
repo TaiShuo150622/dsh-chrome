@@ -357,6 +357,8 @@ async function handleRequest(message) {
       return history(owner, params)
     case 'tab.tabs':
       return tabs(owner, params)
+    case 'tab.select':
+      return selectAgent(owner, params)
     case 'tab.get_text':
       return getTextAgent(owner, params)
     case 'tab.console':
@@ -407,6 +409,7 @@ const PAGE_ACTIONS = {
   scroll: scrollPage,
   find: findInPage,
   getText,
+  select: selectByRef,
   console: readConsole,
   consoleClear: clearConsoleBuffer,
   network: readNetwork,
@@ -665,6 +668,18 @@ async function tabs(owner, params) {
     return { closed: tabId, remaining: after.tabIds.length }
   }
   throw bridgeError('UNSUPPORTED', `unknown tabs op: ${op}`)
+}
+
+async function selectAgent(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const ref = Number(params.ref)
+  if (!Number.isFinite(ref)) throw bridgeError('INVALID_ARGUMENT', 'ref is required')
+  const value = params.value == null ? '' : String(params.value)
+  const checked = params.checked
+  if (value === '' && typeof checked !== 'boolean') {
+    throw bridgeError('INVALID_ARGUMENT', 'provide value (select/radio) or checked (checkbox)')
+  }
+  return callInPage(tabId, 'select', [ref, value, checked])
 }
 
 async function getTextAgent(owner, params) {
@@ -1007,6 +1022,36 @@ function findInPage(query, limit) {
     })
   }
   return { query, matches, truncated: matches.length >= max }
+}
+
+function selectByRef(ref, value, checked) {
+  const element = document.querySelector(`[data-dsh-ref="${ref}"]`)
+  if (!element) return { ok: false, reason: 'REF_STALE', message: `ref ${ref} not found; take a new snapshot` }
+  const tag = element.tagName.toLowerCase()
+  try {
+    const rect = element.getBoundingClientRect()
+    window.__dshCursor?.(rect.left + rect.width / 2, rect.top + rect.height / 2, 'click')
+  } catch {}
+  if (tag === 'select') {
+    const options = Array.from(element.options || [])
+    const match = options.find((option) => option.value === value) || options.find((option) => (option.textContent || '').trim() === value)
+    if (!match) return { ok: false, reason: 'NO_OPTION', message: `no option matching ${value}` }
+    element.value = match.value
+    element.dispatchEvent(new Event('input', { bubbles: true }))
+    element.dispatchEvent(new Event('change', { bubbles: true }))
+    return { ok: true, tag, value: element.value }
+  }
+  if (tag === 'input' && (element.type === 'checkbox' || element.type === 'radio')) {
+    const next = typeof checked === 'boolean' ? checked : !element.checked
+    if (element.checked !== next) element.click()
+    if (element.checked !== next) {
+      element.checked = next
+      element.dispatchEvent(new Event('input', { bubbles: true }))
+      element.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+    return { ok: true, tag, value: element.checked ? 'checked' : 'unchecked' }
+  }
+  return { ok: false, reason: 'UNSUPPORTED', message: `ref ${ref} is a ${tag}, not a select/checkbox/radio` }
 }
 
 function getText(selector, maxChars) {
