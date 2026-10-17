@@ -355,21 +355,12 @@ function sendPage(port, action, args, timeoutMs) {
 }
 
 async function attachPageHelper(tabId) {
-  for (let i = 0; i < 10; i += 1) {
+  // Wait for the page helper port to (re)connect. Never reload the page here:
+  // a reload would silently invalidate the refs a snapshot just handed out.
+  for (let i = 0; i < 25; i += 1) {
     const port = pagePorts.get(tabId)
     if (port) return port
-    await new Promise((resolve) => setTimeout(resolve, 150))
-  }
-  try {
-    await chrome.tabs.reload(tabId)
-    await waitForComplete(tabId, 15000)
-  } catch {
-    // reload may be blocked; the poll below decides
-  }
-  for (let i = 0; i < 20; i += 1) {
-    const port = pagePorts.get(tabId)
-    if (port) return port
-    await new Promise((resolve) => setTimeout(resolve, 150))
+    await new Promise((resolve) => setTimeout(resolve, 200))
   }
   return null
 }

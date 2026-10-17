@@ -6,33 +6,55 @@
 // Using a content-script port avoids chrome.scripting.executeScript, which can
 // hang on background/collapsed-group tabs in MV3.
 
-const port = chrome.runtime.connect({ name: 'dsh-page' })
+let port = null
 
-port.onMessage.addListener((message) => {
-  if (!message || message.id == null) return
-  const handler = ACTIONS[message.action]
+function connectPagePort() {
+  if (port) return port
   try {
-    if (!handler) throw pageError('UNSUPPORTED', `unknown page action: ${message.action}`)
-    const result = handler(message.args || [])
-    port.postMessage({ id: message.id, result })
-  } catch (error) {
-    port.postMessage({
-      id: message.id,
-      error: {
-        code: typeof error?.code === 'string' ? error.code : 'INTERNAL',
-        message: error?.message || String(error),
-      },
-    })
+    port = chrome.runtime.connect({ name: 'dsh-page' })
+  } catch {
+    port = null
+    return null
   }
-})
+  port.onMessage.addListener((message) => {
+    if (!message || message.id == null) return
+    const handler = ACTIONS[message.action]
+    try {
+      if (!handler) throw pageError('UNSUPPORTED', `unknown page action: ${message.action}`)
+      const result = handler(message.args || [])
+      port?.postMessage({ id: message.id, result })
+    } catch (error) {
+      port?.postMessage({
+        id: message.id,
+        error: {
+          code: typeof error?.code === 'string' ? error.code : 'INTERNAL',
+          message: error?.message || String(error),
+        },
+      })
+    }
+  })
+  port.onDisconnect.addListener(() => {
+    port = null
+    // The service worker may have been evicted; reconnect so refs survive.
+    setTimeout(connectPagePort, 1000)
+  })
+  return port
+}
+
+connectPagePort()
 
 setInterval(() => {
+  if (!port) {
+    connectPagePort()
+    return
+  }
   try {
     port.postMessage({ type: 'keepalive' })
   } catch {
-    // extension reloaded; this page needs a reload to reconnect
+    port = null
+    connectPagePort()
   }
-}, 20000)
+}, 15000)
 
 function pageError(code, message) {
   const error = new Error(message)
