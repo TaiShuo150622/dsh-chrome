@@ -7,6 +7,8 @@
  * under danger-full-access / never it is allowed without a prompt).
  */
 import fsp from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 
 import { BridgeError } from './bridge.js'
 
@@ -419,6 +421,41 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       )
       if (!value) throw new BridgeError('INTERNAL', 'extension returned no select result')
       return value
+    },
+  },
+  {
+    name: 'chrome_pdf',
+    description:
+      'Export the current DSH session page to a PDF file with CDP Page.printToPDF and return the saved path. Useful for archiving or sharing a page as it renders.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Optional absolute output path; defaults to the DSH cache pdfs directory.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        path: { type: 'string' },
+        bytes: { type: 'number' },
+      }),
+      render: (_args, value) => renderText(`PDF ${(value.bytes / 1024).toFixed(1)} KiB saved to ${value.path}`),
+    },
+    async execute(args, exec) {
+      const value = await call('tab.pdf', { tabId: args?.tabId, owner: ownerOf(exec) }, 60000)
+      if (!value?.dataBase64) throw new BridgeError('INTERNAL', 'extension returned no pdf data')
+      const cacheDir = path.join(
+        process.env.DSH_HOME || path.join(os.homedir(), '.dsh'),
+        'cache',
+        'dsh-chrome',
+        'pdfs',
+      )
+      const target = args?.path ? String(args.path) : path.join(cacheDir, `page-${Date.now()}.pdf`)
+      await fsp.mkdir(path.dirname(target), { recursive: true })
+      const bytes = Buffer.from(value.dataBase64, 'base64')
+      await fsp.writeFile(target, bytes, { mode: 0o600 })
+      return { path: target, bytes: bytes.length }
     },
   },
   {

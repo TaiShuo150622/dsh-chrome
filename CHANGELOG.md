@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [0.1.45] - 2026-10-17
+
+### Added
+
+- `chrome_pdf`（第 22 个工具）：CDP `Page.printToPDF` 导出当前页 PDF，默认存 `~/.dsh/cache/dsh-chrome/pdfs/`，也可指定 `path`；真机 CfT 验证 68.2 KiB
+- 测试：p2-tools 覆盖 pdf 写入；工具数 22
+
 ## [0.1.44] - 2026-10-17
 
 ### Fixed / Changed

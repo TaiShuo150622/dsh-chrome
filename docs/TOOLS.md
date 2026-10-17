@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：21
+> 工具数量：22
 
 ### `chrome_status`
 
@@ -59,6 +59,15 @@ Select an option in a <select>, set a checkbox/radio, or toggle one. Takes a ref
 | `ref` | number | yes | Ref of the select/checkbox/radio control. |
 | `value` | string | no | Option value or visible label (for <select>). |
 | `checked` | boolean | no | Desired checked state (for checkbox/radio); defaults to toggle. |
+| `tabId` | number | no | Optional tab id owned by this session. |
+
+### `chrome_pdf`
+
+Export the current DSH session page to a PDF file with CDP Page.printToPDF and return the saved path. Useful for archiving or sharing a page as it renders.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `path` | string | no | Optional absolute output path; defaults to the DSH cache pdfs directory. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_a11y`

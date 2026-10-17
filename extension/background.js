@@ -405,6 +405,8 @@ async function handleRequest(message) {
       return listDownloads(params)
     case 'tab.select':
       return selectAgent(owner, params)
+    case 'tab.pdf':
+      return pdf(owner, params)
     case 'tab.a11y':
       return a11y(owner, params)
     case 'tab.get_text':
@@ -915,6 +917,30 @@ async function listDownloads(params) {
       totalBytes: item.totalBytes || 0,
       startTime: item.startTime || '',
     })),
+  }
+}
+
+async function pdf(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params?.tabId)
+  const target = { tabId }
+  try {
+    await chrome.debugger.attach(target, '1.3')
+  } catch (error) {
+    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
+  }
+  try {
+    const response = await chrome.debugger.sendCommand(target, 'Page.printToPDF', {
+      printBackground: true,
+      preferCSSPageSize: true,
+    })
+    if (!response?.data) throw bridgeError('INTERNAL', 'empty pdf data')
+    return { dataBase64: response.data }
+  } finally {
+    try {
+      await chrome.debugger.detach(target)
+    } catch {
+      // tab may have closed
+    }
   }
 }
 

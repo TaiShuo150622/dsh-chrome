@@ -72,6 +72,7 @@ host.stdout.on(
       'tab.upload': { ok: true, ref: 5, files: 1 },
       'browser.downloads': { items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z' }] },
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
+      'tab.pdf': { dataBase64: Buffer.from('%PDF-1.4\n%%EOF\n').toString('base64') },
       'tab.a11y': { total: 2, truncated: false, nodes: [{ role: 'button', name: 'Submit' }, { role: 'textbox', name: 'Name' }] },
       'tab.get_text': { found: true, text: 'Example Domain body', truncated: false },
       'tab.console': { available: true, entries: [{ level: 'error', text: 'boom', time: 1 }] },
@@ -105,7 +106,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('twenty-one tools registered', tools.length === 21, tools.map((t) => t.name).join(', '))
+check('twenty-two tools registered', tools.length === 22, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -162,6 +163,11 @@ check('claim params reach the extension', requests.at(-1)?.method === 'tab.tabs'
 const selectValue = await byName.chrome_select.execute({ ref: 4, checked: true }, exec())
 check('chrome_select executes', selectValue.ok === true && selectValue.value === 'checked')
 check('select params reach the extension', requests.at(-1)?.method === 'tab.select' && requests.at(-1)?.params?.checked === true)
+
+const pdfPath = path.join(home, 'page.pdf')
+const pdfValue = await byName.chrome_pdf.execute({ path: pdfPath }, exec())
+check('chrome_pdf writes a pdf file', pdfValue?.path === pdfPath && pdfValue.bytes > 0)
+check('pdf path reaches the extension', requests.at(-1)?.method === 'tab.pdf')
 
 const a11yValue = await byName.chrome_a11y.execute({ limit: 100 }, exec())
 check('chrome_a11y executes', a11yValue.nodes?.[0]?.role === 'button')
