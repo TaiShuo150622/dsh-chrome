@@ -52,6 +52,7 @@ function bridgeError(code, message) {
 // --------------------------------------------------------------- session state
 // owner (DSH session id) -> { tabIds, groupId, activeTabId }
 const SESSIONS_KEY = 'dshSessions'
+const SESSION_AREA = 'local'
 let sessionsCache = null
 let sessionsLoaded = false
 
@@ -59,7 +60,7 @@ async function loadSessions() {
   if (sessionsLoaded) return sessionsCache
   sessionsLoaded = true
   try {
-    const stored = await chrome.storage.session.get(SESSIONS_KEY)
+    const stored = await chrome.storage.local.get(SESSIONS_KEY)
     sessionsCache =
       stored[SESSIONS_KEY] && typeof stored[SESSIONS_KEY] === 'object' ? stored[SESSIONS_KEY] : {}
   } catch {
@@ -70,9 +71,9 @@ async function loadSessions() {
 
 async function saveSessions() {
   try {
-    await chrome.storage.session.set({ [SESSIONS_KEY]: sessionsCache || {} })
+    await chrome.storage.local.set({ [SESSIONS_KEY]: sessionsCache || {} })
   } catch {
-    // storage.session is best effort; in-memory state still works for this worker
+    // storage.local persists across extension reloads (auto-update friendly)
   }
 }
 
@@ -929,11 +930,16 @@ async function a11y(owner, params) {
   try {
     await chrome.debugger.sendCommand(target, 'Accessibility.enable')
     const response = await chrome.debugger.sendCommand(target, 'Accessibility.getFullAXTree')
+    const asString = (value) => {
+      if (typeof value === 'string') return value
+      if (value && typeof value.value === 'string') return value.value
+      return ''
+    }
     const nodes = (response?.nodes ?? [])
       .filter((node) => node.ignored !== true)
       .map((node) => ({
-        role: node.role?.value || node.role || '',
-        name: node.name?.value || node.name || '',
+        role: asString(node.role),
+        name: asString(node.name),
         value: node.value?.value ?? undefined,
       }))
       .filter((node) => node.role || node.name)
@@ -1526,6 +1532,7 @@ function getMarkdown(selector, maxChars) {
     if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || ''
     if (node.nodeType !== Node.ELEMENT_NODE) return ''
     const tag = node.tagName.toLowerCase()
+    if (['script', 'style', 'noscript', 'template', 'svg', 'head'].includes(tag)) return ''
     if (tag === 'br') return '\n'
     if (tag === 'img') return `![${node.getAttribute('alt') || ''}](${node.getAttribute('src') || ''})`
     if (tag === 'a') {

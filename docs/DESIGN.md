@@ -142,6 +142,7 @@ Native Host ──connect(socket) + hello{token,version}──▶ Provider Bridg
 - **content script**：`document_idle`、`all_frames: false`（V1 只做顶层文档；iframe/shadow DOM V2）。
   - 现状（P1）：`page.js` 只做 **keepalive 端口**（防 SW 被回收），不承载页面动作。
   - 快照/操作实现（由 SW 通过 CDP 注入执行）：可见性过滤 → 交互控件编号（`data-dsh-ref`，按 DOM 顺序稳定编号）→ 文本摘要 → 密码/支付字段 `••••`；原生 setter + `input`/`change`（React/Vue 兼容）；点击派发 pointer/mouse 序列；滚动 instant。
+- **会话映射**：owner→标签映射存 `chrome.storage.local`（0.1.43+），扩展自动 reload 后仍保留；页面导航后无效 tab 会被清理。
 - **tab 组**：每个 DSH 会话一个组 `DSH · <session short id>`；新标签 `active:false` + `collapsed:true`；**永不调用 bringToFront/activate**（macOS 上避免抢焦点）。已知例外：`chrome_tabs op=new` 当前会激活新标签（P2 债）。
 - **截图**：`chrome.debugger` 的 `Page.captureScreenshot`（PNG base64 → native host 物化到 `~/.dsh/cache/dsh-chrome/screenshots/`），provider 只拿路径 + 尺寸。
 - **popup**：Connected/版本/本会话标签数 + 「安装/重载扩展」提示；不含聊天。

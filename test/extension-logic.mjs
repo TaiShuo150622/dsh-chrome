@@ -80,7 +80,8 @@ const chrome = {
       async set() {},
     },
     local: {
-      async get() {
+      async get(key) {
+        if (key === 'dshSessions') return { dshSessions: { s1: { tabIds: [7], groupId: 5, activeTabId: 7 } } }
         return {}
       },
       async set() {},

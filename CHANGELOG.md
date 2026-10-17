@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+## [0.1.44] - 2026-10-17
+
+### Fixed / Changed
+
+- **会话映射迁移到 `chrome.storage.local`**：扩展自动 reload / popup Reload 后本会话标签仍被跟踪（真机验证：reload 后 `chrome_tabs list` 仍显示原标签）
+- `chrome_get_text {format:"markdown"}` 跳过 script/style/svg 等节点，不再把内联脚本带进 markdown
+- `chrome_a11y` 名称提取修正（不再出现 `[object Object]`）
+- 动作 `snapshot:true` 的渲染提示（`[page snapshot attached]`）
+
 ## [0.1.39] - 2026-10-17
 
 ### Added

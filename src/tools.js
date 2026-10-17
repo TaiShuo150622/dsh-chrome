@@ -672,7 +672,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         tabId: { type: 'number' },
         page: { type: 'object', additionalProperties: true },
       }),
-      render: (_args, value) => renderText(`Hovered ${value.tag || 'element'} ${JSON.stringify(value.label || '')}`),
+      render: (_args, value) => renderText(`Hovered ${value.tag || 'element'} ${JSON.stringify(value.label || '')}${value.page ? '\n[page snapshot attached]' : ''}`),
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_hover', `hover ref ${args?.ref}`)
@@ -730,7 +730,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         },
         page: { type: 'object', additionalProperties: true },
       }),
-      render: (_args, value) => renderText(`Clicked ${value.tag || 'element'} ${JSON.stringify(value.label || '')}`),
+      render: (_args, value) => renderText(`Clicked ${value.tag || 'element'} ${JSON.stringify(value.label || '')}${value.page ? '\n[page snapshot attached]' : ''}`),
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_click', `click ref ${args?.ref}`)
@@ -792,7 +792,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       }),
       render: (_args, value) =>
         renderText(
-          `Typed into field${value.submitted ? ' and submitted the form' : ''}; value now ${JSON.stringify(value.value ?? '')}`,
+          `Typed into field${value.submitted ? ' and submitted the form' : ''}; value now ${JSON.stringify(value.value ?? '')}${value.page ? '\n[page snapshot attached]' : ''}`,
         ),
     },
     async execute(args, exec) {
@@ -855,7 +855,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         },
         page: { type: 'object', additionalProperties: true },
       }),
-      render: (_args, value) => renderText(`Pressed ${value.key} on <${value.target}>`),
+      render: (_args, value) => renderText(`Pressed ${value.key} on <${value.target}>${value.page ? '\n[page snapshot attached]' : ''}`),
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_press', `press ${args?.key}`)
@@ -891,7 +891,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         page: { type: 'object', additionalProperties: true },
       }),
       render: (_args, value) =>
-        renderText(`Scrolled to y=${value.y} (viewport ${value.viewportHeight}, document ${value.documentHeight})`),
+        renderText(`Scrolled to y=${value.y} (viewport ${value.viewportHeight}, document ${value.documentHeight})${value.page ? '\n[page snapshot attached]' : ''}`),
     },
     async execute(args, exec) {
       return call('tab.scroll', {
