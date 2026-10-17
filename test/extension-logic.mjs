@@ -34,10 +34,20 @@ const eventListeners = new Set()
 let nextPageValue = { ok: true, tag: 'button', label: 'OK' }
 let nextTabId = 100
 
+let connectNativeCalls = 0
+const nativePortListeners = { message: [], disconnect: [] }
 const fakeNativePort = {
   posted: [],
-  onMessage: { addListener() {} },
-  onDisconnect: { addListener() {} },
+  onMessage: {
+    addListener(listener) {
+      nativePortListeners.message.push(listener)
+    },
+  },
+  onDisconnect: {
+    addListener(listener) {
+      nativePortListeners.disconnect.push(listener)
+    },
+  },
   postMessage(message) {
     this.posted.push(message)
   },
@@ -49,7 +59,10 @@ const chrome = {
     id: 'test-extension',
     lastError: undefined,
     getManifest: () => ({ version: 'test-logic' }),
-    connectNative: () => fakeNativePort,
+    connectNative: () => {
+      connectNativeCalls += 1
+      return fakeNativePort
+    },
     reload: () => {},
     onConnect: { addListener() {} },
     onInstalled: { addListener() {} },
@@ -271,6 +284,17 @@ await sandbox.handleRequest({
   id: 'click-accept',
 })
 check('dialog accept:true is honored', dialogCommands.at(-1)?.accept === true)
+
+// reconnect after the host exits: the worker must issue a NEW connectNative.
+// Regression: ensurePort used to leave `connecting` non-null forever, so every
+// later attempt returned a stale resolved promise without reconnecting.
+check('worker connects once at startup', connectNativeCalls === 1)
+for (const listener of nativePortListeners.disconnect) listener()
+await new Promise((resolve) => setTimeout(resolve, 10))
+await sandbox.ensurePort()
+check('disconnect allows a new connectNative attempt', connectNativeCalls === 2, String(connectNativeCalls))
+await sandbox.ensurePort()
+check('while connected, ensurePort does not reconnect', connectNativeCalls === 2, String(connectNativeCalls))
 
 // unsupported method
 let unsupported = null

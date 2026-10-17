@@ -17,6 +17,31 @@ function log(...args) {
   console.log('[DSH Chrome]', ...args)
 }
 
+const DIAG_KEY = 'dshDiag'
+
+// Structured diagnostics persisted to chrome.storage.local so the reconnect
+// behaviour can be inspected after the worker has been evicted (console logs
+// alone are lost when the worker dies).
+function diag(event, extra = {}) {
+  const entry = { t: new Date().toISOString(), event, ...extra }
+  try {
+    console.log('[DSH Chrome][diag]', JSON.stringify(entry))
+  } catch {}
+  try {
+    chrome.storage.local
+      .get(DIAG_KEY)
+      .then((stored) => {
+        const list = Array.isArray(stored?.[DIAG_KEY]) ? stored[DIAG_KEY] : []
+        list.push(entry)
+        while (list.length > 80) list.shift()
+        return chrome.storage.local.set({ [DIAG_KEY]: list })
+      })
+      .catch(() => {})
+  } catch {
+    // storage unavailable
+  }
+}
+
 function bridgeError(code, message) {
   const error = new Error(message)
   error.code = code
@@ -207,6 +232,7 @@ async function maybeSelfHeal() {
     // storage unavailable; rely on in-memory guard
   }
   log('native port keeps failing; reloading extension to restore it')
+  diag('self-heal-reload', { attempts })
   selfHealTimer = setTimeout(() => {
     selfHealTimer = null
     try {
@@ -219,88 +245,100 @@ async function maybeSelfHeal() {
 
 // ------------------------------------------------------------ native messaging
 function ensurePort() {
+  diag('ensure-port-enter', { hasPort: Boolean(port), connecting: Boolean(connecting) })
   if (port) return Promise.resolve(port)
   if (connecting) return connecting
-  connecting = new Promise((resolve) => {
-    let settled = false
-    let nativePort
-    const finish = (value) => {
-      if (settled) return
-      settled = true
-      connecting = null
-      resolve(value)
-    }
-    try {
-      nativePort = chrome.runtime.connectNative(HOST_NAME)
-    } catch (error) {
-      lastConnectError = error?.message || String(error)
-      log('connectNative failed', error)
-      finish(null)
-      maybeSelfHeal().catch(() => {})
-      return
-    }
-    nativePort.onMessage.addListener((message) => {
-      lastNativeSignalAt = Date.now()
-      if (message?.id == null) {
-        if (message?.event === 'ext.changed') {
-          log('extension files changed; reloading', message.params?.file || '')
-          scheduleExtensionReload()
-          return
-        }
-        if (message?.event) log('event', message.event)
+  // NOTE: create the deferred before touching chrome.runtime.connectNative, and
+  // never assign `connecting` inside the executor — the executor runs
+  // synchronously, so a later assignment would overwrite the `connecting = null`
+  // performed by finish() and leave a permanently "connecting" worker.
+  let resolveConnecting
+  let settled = false
+  const promise = new Promise((resolve) => {
+    resolveConnecting = resolve
+  })
+  connecting = promise
+  const finish = (value) => {
+    if (settled) return
+    settled = true
+    if (connecting === promise) connecting = null
+    resolveConnecting(value)
+  }
+  let nativePort
+  try {
+    nativePort = chrome.runtime.connectNative(HOST_NAME)
+    diag('connect-start')
+  } catch (error) {
+    lastConnectError = error?.message || String(error)
+    log('connectNative failed', error)
+    diag('connect-fail', { error: lastConnectError })
+    finish(null)
+    maybeSelfHeal().catch(() => {})
+    return promise
+  }
+  nativePort.onMessage.addListener((message) => {
+    lastNativeSignalAt = Date.now()
+    if (message?.id == null) {
+      if (message?.event === 'ext.changed') {
+        log('extension files changed; reloading', message.params?.file || '')
+        scheduleExtensionReload()
         return
       }
-      handleRequest(message)
-        .then((result) => {
-          try {
-            nativePort.postMessage({ id: message.id, result })
-          } catch (error) {
-            log('postMessage result failed', error)
-          }
-        })
-        .catch((error) => {
-          try {
-            nativePort.postMessage({
-              id: message.id,
-              error: {
-                code: typeof error?.code === 'string' ? error.code : 'INTERNAL',
-                message: error?.message || String(error),
-              },
-            })
-          } catch (postError) {
-            log('postMessage error failed', postError)
-          }
-        })
-    })
-    nativePort.onDisconnect.addListener(() => {
-      const lastError = chrome.runtime.lastError
-      if (lastError?.message) lastConnectError = lastError.message
-      log('native port disconnected', lastError?.message || '')
-      if (port === nativePort) port = null
-      finish(null)
-      // Do NOT reconnect from inside this dying worker context: Chrome tears
-      // down the freshly spawned host together with the old context. A fresh
-      // wake-up (alarm / keepalive message / tab update) reconnects instead.
-      try {
-        chrome.alarms.create('dsh-chrome-reconnect-once', { delayInMinutes: 0.2 })
-      } catch {
-        // alarms unavailable; content-script keepalive still wakes us
-      }
-      maybeSelfHeal().catch(() => {})
-    })
-    // The host answers hello-ok only after it authenticated against DSH; the
-    // provider then starts sending requests. We consider the port usable now.
-    port = nativePort
-    lastNativeSignalAt = Date.now()
-    lastConnectError = null
-    finish(nativePort)
+      if (message?.event) log('event', message.event)
+      return
+    }
+    handleRequest(message)
+      .then((result) => {
+        try {
+          nativePort.postMessage({ id: message.id, result })
+        } catch (error) {
+          log('postMessage result failed', error)
+        }
+      })
+      .catch((error) => {
+        try {
+          nativePort.postMessage({
+            id: message.id,
+            error: {
+              code: typeof error?.code === 'string' ? error.code : 'INTERNAL',
+              message: error?.message || String(error),
+            },
+          })
+        } catch (postError) {
+          log('postMessage error failed', postError)
+        }
+      })
   })
-  return connecting
+  nativePort.onDisconnect.addListener(() => {
+    const lastError = chrome.runtime.lastError
+    if (lastError?.message) lastConnectError = lastError.message
+    log('native port disconnected', lastError?.message || '')
+    diag('disconnect', { error: lastError?.message || '' })
+    if (port === nativePort) port = null
+    finish(null)
+    // Do NOT reconnect from inside this dying worker context: Chrome tears
+    // down the freshly spawned host together with the old context. A fresh
+    // wake-up (alarm / keepalive message / tab update) reconnects instead.
+    try {
+      chrome.alarms.create('dsh-chrome-reconnect-once', { delayInMinutes: 0.2 })
+    } catch {
+      // alarms unavailable; content-script keepalive still wakes us
+    }
+    maybeSelfHeal().catch(() => {})
+  })
+  // The host answers hello-ok only after it authenticated against DSH; the
+  // provider then starts sending requests. We consider the port usable now.
+  port = nativePort
+  lastNativeSignalAt = Date.now()
+  lastConnectError = null
+  finish(nativePort)
+  return promise
 }
 
 // Force a fresh native port: used by the popup button and the reconnect alarm
 // when a stale port object would otherwise keep us from reconnecting.
 function forceReconnect({ force = false } = {}) {
+  diag('force-reconnect', { force, hasPort: Boolean(port), connecting: Boolean(connecting) })
   if (port && !force) return Promise.resolve(port)
   if (port) {
     try {
@@ -1296,6 +1334,8 @@ chrome.runtime.onConnect.addListener((keepalivePort) => {
 if (!port) forceReconnect().catch(() => {})
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  diag('alarm', { name: alarm.name, hasPort: Boolean(port) })
+  try {
   if (alarm.name === 'dsh-chrome-watchdog') {
     if (!port) {
       forceReconnect().catch(() => {})
@@ -1306,6 +1346,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   // Force, not "if (!port)": a killed native host can leave a stale port
   // object behind, and then a conditional reconnect never fires.
   forceReconnect().catch(() => {})
+  } catch (error) {
+    diag('alarm-error', { name: alarm.name, error: error?.message || String(error) })
+  }
 })
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'dsh-page-tick') {
@@ -1351,6 +1394,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 // Best-effort initial connection when the worker starts. Recreate the alarm on
 // every start so a worker eviction cannot silently lose the reconnect timer.
+diag('worker-start', { version: VERSION, hasPort: Boolean(port) })
 ensureReconnectAlarm()
 ensureOffscreen().catch(() => {})
 ensurePort().catch(() => {})
