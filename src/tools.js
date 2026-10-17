@@ -733,9 +733,9 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     parameters: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['list', 'new', 'close'] },
+        op: { type: 'string', enum: ['list', 'new', 'close', 'claim'] },
         url: { type: 'string', description: 'URL for op=new (http/https; defaults to about:blank).' },
-        tabId: { type: 'number', description: 'Tab id for op=close.' },
+        tabId: { type: 'number', description: 'Tab id for op=close/claim; claim defaults to the active tab.' },
       },
       required: ['op'],
       additionalProperties: false,
@@ -761,8 +761,12 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         title: { type: 'string' },
         closed: { type: 'number' },
         remaining: { type: 'number' },
+        claimed: { type: 'boolean' },
       }),
       render: (_args, value) => {
+        if (value.claimed) {
+          return renderText(`Claimed tab #${value.tabId} — ${value.title || ''} ${value.url || ''}`)
+        }
         if (Array.isArray(value.tabs)) {
           const lines = value.tabs.map(
             (tab) => `${tab.active ? '*' : ' '} #${tab.tabId} ${tab.title || '(untitled)'} — ${tab.url}`,
@@ -784,6 +788,98 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         tabId: args?.tabId,
         owner: ownerOf(exec),
       })
+    },
+  })
+
+  // ----------------------------------------------------------------- 11. upload
+  list.push({
+    name: 'chrome_upload',
+    description:
+      'Attach local files to a file input on the session page (e.g. upload a screenshot or a document). The ref must point at an <input type=file> from the latest snapshot. Requires approval and only accepts existing local files.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'number', description: 'Ref of the file input element.' },
+        files: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Absolute local file paths to attach.',
+        },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['ref', 'files'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        ok: { type: 'boolean' },
+        ref: { type: 'number' },
+        files: { type: 'number' },
+      }),
+      render: (_args, value) => renderText(`Attached ${value.files} file(s) to ref ${value.ref}`),
+    },
+    async execute(args, exec) {
+      const ref = Number(args?.ref)
+      if (!Number.isFinite(ref)) throw new BridgeError('INVALID_ARGUMENT', 'ref is required')
+      const files = Array.isArray(args?.files) ? args.files.map(String) : []
+      if (files.length === 0) throw new BridgeError('INVALID_ARGUMENT', 'files must be a non-empty array')
+      for (const file of files) {
+        const stat = await fsp.stat(file).catch(() => null)
+        if (!stat?.isFile()) throw new BridgeError('INVALID_ARGUMENT', `not a file: ${file}`)
+      }
+      await guard(exec, 'chrome_upload', `upload ${files.length} file(s) to ref ${ref}`)
+      const value = await call(
+        'tab.upload',
+        { ref, files, tabId: args?.tabId, owner: ownerOf(exec) },
+        60000,
+      )
+      if (!value) throw new BridgeError('INTERNAL', 'extension returned no upload result')
+      return value
+    },
+  })
+
+  // ----------------------------------------------------------------- 12. downloads
+  list.push({
+    name: 'chrome_download',
+    description:
+      'List recent Chrome downloads (filename, URL, state, bytes, start time). Use after triggering a download to find the saved file path.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max entries, 1-100 (default 20).' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'number' },
+              filename: { type: 'string' },
+              url: { type: 'string' },
+              state: { type: 'string' },
+              bytesReceived: { type: 'number' },
+              totalBytes: { type: 'number' },
+              startTime: { type: 'string' },
+            },
+            additionalProperties: true,
+          },
+        },
+      }),
+      render: (_args, value) => {
+        const lines = (value.items ?? []).map(
+          (item) => `${item.state} ${item.totalBytes}B ${item.filename || item.url}`,
+        )
+        return renderText(lines.length ? lines.join('\n') : '(no downloads)')
+      },
+    },
+    async execute(args) {
+      const value = await call('browser.downloads', { limit: args?.limit }, 30000)
+      if (!value) throw new BridgeError('INTERNAL', 'extension returned no download list')
+      return value
     },
   })
 

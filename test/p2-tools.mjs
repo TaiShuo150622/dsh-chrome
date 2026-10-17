@@ -65,6 +65,10 @@ host.stdout.on(
     const replies = {
       'browser.status': { extensionVersion: 'p2-fake', connected: true },
       'tab.screenshot': { dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' },
+      'tab.tabs': { claimed: true, tabId: 7, url: 'https://example.com/', title: 'Example Domain', remaining: 0 },
+      'tab.claim': { tabId: 7, url: 'https://example.com/', title: 'Example Domain', claimed: true },
+      'tab.upload': { ok: true, ref: 5, files: 1 },
+      'browser.downloads': { items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z' }] },
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
       'tab.get_text': { found: true, text: 'Example Domain body', truncated: false },
       'tab.console': { available: true, entries: [{ level: 'error', text: 'boom', time: 1 }] },
@@ -98,7 +102,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('seventeen tools registered', tools.length === 17, tools.map((t) => t.name).join(', '))
+check('nineteen tools registered', tools.length === 19, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -113,6 +117,20 @@ check('find render lists matches', /ref 901/.test(rendered[0]?.text || ''))
 const shot = await byName.chrome_screenshot.execute({ clip: { x: 10, y: 20, width: 300, height: 200 } }, exec())
 check('clip screenshot executes', Boolean(shot?.path))
 check('clip envelope reaches the extension', requests.at(-1)?.method === 'tab.screenshot' && requests.at(-1)?.params?.clip?.width === 300)
+
+const uploadPath = path.join(home, 'upload.txt')
+await fsp.writeFile(uploadPath, 'hello')
+const uploadValue = await byName.chrome_upload.execute({ ref: 5, files: [uploadPath] }, exec())
+check('chrome_upload executes', uploadValue.ok === true && uploadValue.files === 1)
+check('upload params reach the extension', requests.at(-1)?.method === 'tab.upload' && requests.at(-1)?.params?.ref === 5)
+
+const downloadValue = await byName.chrome_download.execute({ limit: 5 })
+check('chrome_download executes', downloadValue.items?.[0]?.filename === '/tmp/report.pdf')
+check('downloads limit reaches the extension', requests.at(-1)?.method === 'browser.downloads' && requests.at(-1)?.params?.limit === 5)
+
+const claimValue = await byName.chrome_tabs.execute({ op: 'claim', tabId: 7 }, exec())
+check('chrome_tabs claim executes', claimValue.claimed === true && claimValue.tabId === 7)
+check('claim params reach the extension', requests.at(-1)?.method === 'tab.tabs' && requests.at(-1)?.params?.op === 'claim')
 
 const selectValue = await byName.chrome_select.execute({ ref: 4, checked: true }, exec())
 check('chrome_select executes', selectValue.ok === true && selectValue.value === 'checked')

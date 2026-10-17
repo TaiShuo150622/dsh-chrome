@@ -357,6 +357,12 @@ async function handleRequest(message) {
       return history(owner, params)
     case 'tab.tabs':
       return tabs(owner, params)
+    case 'tab.claim':
+      return claimTab(owner, params)
+    case 'tab.upload':
+      return uploadFiles(owner, params)
+    case 'browser.downloads':
+      return listDownloads(params)
     case 'tab.select':
       return selectAgent(owner, params)
     case 'tab.get_text':
@@ -680,6 +686,72 @@ async function selectAgent(owner, params) {
     throw bridgeError('INVALID_ARGUMENT', 'provide value (select/radio) or checked (checkbox)')
   }
   return callInPage(tabId, 'select', [ref, value, checked])
+}
+
+async function claimTab(owner, params) {
+  let tab
+  if (Number.isFinite(params.tabId)) {
+    tab = await chrome.tabs.get(params.tabId)
+  } else {
+    const active = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+    tab = active[0]
+  }
+  if (!tab?.id) throw bridgeError('NO_ACTIVE_TAB', 'no active tab to claim')
+  if (!/^https?:/i.test(tab.url || '')) {
+    throw bridgeError('PROTECTED_PAGE', 'only http(s) tabs can be claimed')
+  }
+  await addTabToSession(owner, tab, { activate: false })
+  const claimed = await chrome.tabs.get(tab.id)
+  return { tabId: tab.id, url: claimed.url || '', title: claimed.title || '', claimed: true }
+}
+
+async function uploadFiles(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const ref = Number(params.ref)
+  if (!Number.isFinite(ref)) throw bridgeError('INVALID_ARGUMENT', 'ref is required')
+  const files = Array.isArray(params.files) ? params.files.map(String) : []
+  if (files.length === 0) throw bridgeError('INVALID_ARGUMENT', 'files must be a non-empty array of local paths')
+  const target = { tabId }
+  try {
+    await chrome.debugger.attach(target, '1.3')
+  } catch (error) {
+    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
+  }
+  try {
+    const { root } = await chrome.debugger.sendCommand(target, 'DOM.getDocument', { depth: 0 })
+    const { nodeId } = await chrome.debugger.sendCommand(target, 'DOM.querySelector', {
+      nodeId: root.nodeId,
+      selector: `[data-dsh-ref="${ref}"]`,
+    })
+    if (!nodeId) throw bridgeError('REF_STALE', `ref ${ref} not found; take a new snapshot`)
+    await chrome.debugger.sendCommand(target, 'DOM.setFileInputFiles', { nodeId, files })
+    return { ok: true, ref, files: files.length }
+  } finally {
+    try {
+      await chrome.debugger.detach(target)
+    } catch {
+      // tab may have navigated
+    }
+  }
+}
+
+async function listDownloads(params) {
+  if (!chrome.downloads?.search) {
+    throw bridgeError('UNSUPPORTED', 'downloads permission is not available')
+  }
+  const limit = Number.isFinite(params.limit) ? Math.min(100, Math.max(1, params.limit)) : 20
+  const items = await chrome.downloads.search({ limit, orderBy: ['-startTime'] })
+  return {
+    items: items.map((item) => ({
+      id: item.id,
+      filename: item.filename || '',
+      url: item.url || '',
+      state: item.state || '',
+      bytesReceived: item.bytesReceived || 0,
+      totalBytes: item.totalBytes || 0,
+      startTime: item.startTime || '',
+    })),
+  }
 }
 
 async function getTextAgent(owner, params) {
