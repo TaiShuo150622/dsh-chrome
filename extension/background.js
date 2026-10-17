@@ -179,6 +179,44 @@ function scheduleExtensionReload() {
   }, 800)
 }
 
+// Native-port self-heal: if Chrome keeps refusing to relaunch the host after a
+// crash, reload the extension once (a reload always restores the port in real
+// testing). Capped so a broken native-host manifest cannot cause a reload loop.
+let nativeFailureTimes = []
+let selfHealTimer = null
+
+async function maybeSelfHeal() {
+  const now = Date.now()
+  nativeFailureTimes = nativeFailureTimes.filter((time) => now - time < 120000)
+  nativeFailureTimes.push(now)
+  if (nativeFailureTimes.length < 2 || selfHealTimer) return
+  let attempts = 0
+  try {
+    const stored = await chrome.storage.local.get('dshSelfHeal')
+    attempts = stored?.dshSelfHeal?.count || 0
+  } catch {
+    attempts = 0
+  }
+  if (attempts >= 5) {
+    log('native port keeps failing; self-heal limit reached')
+    return
+  }
+  try {
+    await chrome.storage.local.set({ dshSelfHeal: { count: attempts + 1, at: now } })
+  } catch {
+    // storage unavailable; rely on in-memory guard
+  }
+  log('native port keeps failing; reloading extension to restore it')
+  selfHealTimer = setTimeout(() => {
+    selfHealTimer = null
+    try {
+      chrome.runtime.reload()
+    } catch (error) {
+      log('self-heal reload failed', error?.message || error)
+    }
+  }, 1200)
+}
+
 // ------------------------------------------------------------ native messaging
 function ensurePort() {
   if (port) return Promise.resolve(port)
@@ -247,6 +285,7 @@ function ensurePort() {
       } catch {
         // alarms unavailable; content-script keepalive still wakes us
       }
+      maybeSelfHeal().catch(() => {})
     })
     // The host answers hello-ok only after it authenticated against DSH; the
     // provider then starts sending requests. We consider the port usable now.
