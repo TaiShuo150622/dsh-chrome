@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [0.1.55] - 2026-10-17
+
+### Added / Fixed
+
+- `chrome_upload` / `chrome_select` 支持 `selector` 替代 ref（upload 用 CDP `DOM.querySelector`，结果 ref 可缺省）
+- provider 心跳 `dsh.ping` 不再每次写 console（降低空闲日志开销）
+
+## [0.1.54] - 2026-10-17
+
+### Changed
+
+- 静默 ping 日志；upload/select 增加 selector 入口（见 0.1.55）
+
 ## [0.1.53] - 2026-10-17
 
 ### Added

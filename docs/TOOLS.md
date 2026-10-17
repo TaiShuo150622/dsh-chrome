@@ -56,7 +56,8 @@ Select an option in a <select>, set a checkbox/radio, or toggle one. Takes a ref
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `ref` | number | yes | Ref of the select/checkbox/radio control. |
+| `ref` | number | no | Ref of the select/checkbox/radio control. |
+| `selector` | string | no | CSS selector alternative to ref (used when ref is omitted). |
 | `value` | string | no | Option value or visible label (for <select>). |
 | `checked` | boolean | no | Desired checked state (for checkbox/radio); defaults to toggle. |
 | `tabId` | number | no | Optional tab id owned by this session. |
@@ -235,7 +236,8 @@ Attach local files to a file input on the session page (e.g. upload a screenshot
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `ref` | number | yes | Ref of the file input element. |
+| `ref` | number | no | Ref of the file input element. |
+| `selector` | string | no | CSS selector alternative to ref (used when ref is omitted). |
 | `files` | array | yes | Absolute local file paths to attach. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 

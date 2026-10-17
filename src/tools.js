@@ -396,11 +396,11 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       type: 'object',
       properties: {
         ref: { type: 'number', description: 'Ref of the select/checkbox/radio control.' },
+        selector: { type: 'string', description: 'CSS selector alternative to ref (used when ref is omitted).' },
         value: { type: 'string', description: 'Option value or visible label (for <select>).' },
         checked: { type: 'boolean', description: 'Desired checked state (for checkbox/radio); defaults to toggle.' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
-      required: ['ref'],
       additionalProperties: false,
     },
     output: {
@@ -416,7 +416,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     async execute(args, exec) {
       const value = await call(
         'tab.select',
-        { ref: args?.ref, value: args?.value, checked: args?.checked, tabId: args?.tabId, owner: ownerOf(exec) },
+        { ref: args?.ref, selector: args?.selector, value: args?.value, checked: args?.checked, tabId: args?.tabId, owner: ownerOf(exec) },
         30000,
       )
       if (!value) throw new BridgeError('INTERNAL', 'extension returned no select result')
@@ -1193,6 +1193,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       type: 'object',
       properties: {
         ref: { type: 'number', description: 'Ref of the file input element.' },
+        selector: { type: 'string', description: 'CSS selector alternative to ref (used when ref is omitted).' },
         files: {
           type: 'array',
           items: { type: 'string' },
@@ -1200,20 +1201,23 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
-      required: ['ref', 'files'],
+      required: ['files'],
       additionalProperties: false,
     },
     output: {
       schema: outputSchema({
         ok: { type: 'boolean' },
-        ref: { type: 'number' },
+        ref: {},
+        selector: {},
         files: { type: 'number' },
       }),
-      render: (_args, value) => renderText(`Attached ${value.files} file(s) to ref ${value.ref}`),
+      render: (_args, value) =>
+        renderText(`Attached ${value.files} file(s) to ${value.ref != null ? `ref ${value.ref}` : `selector ${value.selector}`}`),
     },
     async execute(args, exec) {
       const ref = Number(args?.ref)
-      if (!Number.isFinite(ref)) throw new BridgeError('INVALID_ARGUMENT', 'ref is required')
+      const selector = args?.selector ? String(args.selector) : ''
+      if (!Number.isFinite(ref) && !selector) throw new BridgeError('INVALID_ARGUMENT', 'ref or selector is required')
       const files = Array.isArray(args?.files) ? args.files.map(String) : []
       if (files.length === 0) throw new BridgeError('INVALID_ARGUMENT', 'files must be a non-empty array')
       for (const file of files) {
@@ -1223,7 +1227,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       await guard(exec, 'chrome_upload', `upload ${files.length} file(s) to ref ${ref}`)
       const value = await call(
         'tab.upload',
-        { ref, files, tabId: args?.tabId, owner: ownerOf(exec) },
+        { ref: Number.isFinite(ref) ? ref : undefined, selector, files, tabId: args?.tabId, owner: ownerOf(exec) },
         60000,
       )
       if (!value) throw new BridgeError('INTERNAL', 'extension returned no upload result')

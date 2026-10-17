@@ -295,6 +295,7 @@ function ensurePort() {
         }
         return
       }
+      if (message?.event === 'dsh.ping') return
       if (message?.event) log('event', message.event)
       return
     }
@@ -853,13 +854,14 @@ async function tabs(owner, params) {
 async function selectAgent(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
-  if (!Number.isFinite(ref)) throw bridgeError('INVALID_ARGUMENT', 'ref is required')
+  const selector = params.selector ? String(params.selector) : ''
+  if (!Number.isFinite(ref) && !selector) throw bridgeError('INVALID_ARGUMENT', 'ref or selector is required')
   const value = params.value == null ? '' : String(params.value)
   const checked = params.checked
   if (value === '' && typeof checked !== 'boolean') {
     throw bridgeError('INVALID_ARGUMENT', 'provide value (select/radio) or checked (checkbox)')
   }
-  return callInPage(tabId, 'select', [ref, value, checked])
+  return callInPage(tabId, 'select', [Number.isFinite(ref) ? ref : null, value, checked, selector])
 }
 
 async function claimTab(owner, params) {
@@ -882,7 +884,8 @@ async function claimTab(owner, params) {
 async function uploadFiles(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
-  if (!Number.isFinite(ref)) throw bridgeError('INVALID_ARGUMENT', 'ref is required')
+  const selector = params.selector ? String(params.selector) : ''
+  if (!Number.isFinite(ref) && !selector) throw bridgeError('INVALID_ARGUMENT', 'ref or selector is required')
   const files = Array.isArray(params.files) ? params.files.map(String) : []
   if (files.length === 0) throw bridgeError('INVALID_ARGUMENT', 'files must be a non-empty array of local paths')
   const target = { tabId }
@@ -895,11 +898,11 @@ async function uploadFiles(owner, params) {
     const { root } = await chrome.debugger.sendCommand(target, 'DOM.getDocument', { depth: 0 })
     const { nodeId } = await chrome.debugger.sendCommand(target, 'DOM.querySelector', {
       nodeId: root.nodeId,
-      selector: `[data-dsh-ref="${ref}"]`,
+      selector: Number.isFinite(ref) ? `[data-dsh-ref="${ref}"]` : selector,
     })
     if (!nodeId) throw bridgeError('REF_STALE', `ref ${ref} not found; take a new snapshot`)
     await chrome.debugger.sendCommand(target, 'DOM.setFileInputFiles', { nodeId, files })
-    return { ok: true, ref, files: files.length }
+    return { ok: true, ...(Number.isFinite(ref) ? { ref } : {}), selector: selector || undefined, files: files.length }
   } finally {
     try {
       await chrome.debugger.detach(target)
@@ -1709,8 +1712,18 @@ function findInPage(query, limit, useRegex) {
   return { query, matches, truncated: matches.length >= max }
 }
 
-function selectByRef(ref, value, checked) {
-  const element = document.querySelector(`[data-dsh-ref="${ref}"]`)
+function selectByRef(ref, value, checked, selector) {
+  const element = ref
+    ? document.querySelector(`[data-dsh-ref="${ref}"]`)
+    : selector
+      ? (() => {
+          try {
+            return document.querySelector(String(selector))
+          } catch {
+            return null
+          }
+        })()
+      : null
   if (!element) return { ok: false, reason: 'REF_STALE', message: `ref ${ref} not found; take a new snapshot` }
   const tag = element.tagName.toLowerCase()
   try {
