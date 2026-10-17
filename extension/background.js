@@ -121,12 +121,18 @@ function ensurePort() {
       log('native port disconnected', lastError?.message || '')
       if (port === nativePort) port = null
       finish(null)
-      // Retry while the worker is alive; the offscreen tick and alarm are the
-      // fallback once Chrome evicts it.
+      // Retry immediately, then while the worker is alive. A one-shot alarm
+      // covers the case where Chrome evicts the worker before the timers run.
+      forceReconnect().catch(() => {})
       for (const delay of [1000, 3000, 10000]) {
         setTimeout(() => {
           if (!port) ensurePort().catch(() => {})
         }, delay)
+      }
+      try {
+        chrome.alarms.create('dsh-chrome-reconnect-once', { delayInMinutes: 0.5 })
+      } catch {
+        // alarms unavailable; offscreen/content-script keepalive still applies
       }
     })
     // The host answers hello-ok only after it authenticated against DSH; the
@@ -425,8 +431,14 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.tabs.onUpdated.addListener(() => {
   if (!port) forceReconnect().catch(() => {})
 })
+chrome.runtime.onConnect.addListener((keepalivePort) => {
+  if (keepalivePort.name !== 'dsh-keepalive') return
+  keepalivePort.onMessage.addListener(() => {
+    if (!port) forceReconnect().catch(() => {})
+  })
+})
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name !== 'dsh-chrome-reconnect') return
+  if (!alarm.name.startsWith('dsh-chrome-reconnect')) return
   // Force, not "if (!port)": a killed native host can leave a stale port
   // object behind, and then a conditional reconnect never fires.
   forceReconnect().catch(() => {})
