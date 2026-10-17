@@ -128,6 +128,20 @@ function ensurePort() {
   return connecting
 }
 
+// Force a fresh native port: used by the popup button and the reconnect alarm
+// when a stale port object would otherwise keep us from reconnecting.
+function forceReconnect() {
+  if (port) {
+    try {
+      port.disconnect()
+    } catch {
+      // port may already be gone
+    }
+    port = null
+  }
+  return ensurePort()
+}
+
 // ------------------------------------------------------------------- requests
 async function handleRequest(message) {
   const method = String(message.method || '')
@@ -362,15 +376,27 @@ function pageSnapshot(maxChars) {
 }
 
 // --------------------------------------------------------------- worker wiring
+function ensureReconnectAlarm() {
+  try {
+    chrome.alarms.create('dsh-chrome-reconnect', { periodInMinutes: 0.5 })
+  } catch {
+    // alarms are best effort; the port and popup button still work
+  }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
+  ensureReconnectAlarm()
   ensurePort().catch(() => {})
-  chrome.alarms.create('dsh-chrome-reconnect', { periodInMinutes: 0.5 })
 })
 chrome.runtime.onStartup.addListener(() => {
+  ensureReconnectAlarm()
   ensurePort().catch(() => {})
 })
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'dsh-chrome-reconnect' && !port) ensurePort().catch(() => {})
+  if (alarm.name !== 'dsh-chrome-reconnect') return
+  // Force, not "if (!port)": a killed native host can leave a stale port
+  // object behind, and then a conditional reconnect never fires.
+  forceReconnect().catch(() => {})
 })
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'dsh-status') {
@@ -384,8 +410,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     })()
     return true
   }
+  if (message?.type === 'dsh-connect') {
+    forceReconnect()
+      .catch(() => {})
+      .finally(() => {
+        setTimeout(() => {
+          sendResponse({
+            connected: Boolean(port),
+            extensionVersion: VERSION,
+            sessionTabId,
+          })
+        }, 600)
+      })
+    return true
+  }
   return false
 })
 
-// Best-effort initial connection when the worker starts.
+// Best-effort initial connection when the worker starts. Recreate the alarm on
+// every start so a worker eviction cannot silently lose the reconnect timer.
+ensureReconnectAlarm()
 ensurePort().catch(() => {})

@@ -41,6 +41,24 @@
         background: #3a1b1f;
         color: #f87171;
       }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      button {
+        margin-left: auto;
+        padding: 4px 10px;
+        border: 1px solid #2d3444;
+        border-radius: 6px;
+        background: #1b1f29;
+        color: #cfd6e6;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: #4a5670;
+      }
       dl {
         margin: 12px 0 0;
         font-size: 12px;
@@ -73,7 +91,10 @@
   <body>
     <h1>DSH Desktop Chrome</h1>
     <p class="sub">P0 spike · control stays in background tabs</p>
-    <span id="badge" class="badge bad">checking…</span>
+    <div class="row">
+      <span id="badge" class="badge bad">checking…</span>
+      <button id="reconnect">Reconnect</button>
+    </div>
     <dl>
       <dt>Extension</dt>
       <dd id="version">—</dd>
