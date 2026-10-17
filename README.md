@@ -2,8 +2,8 @@
 
 **DSH 桌面端（DeepSeek Harness Desktop）的 Chrome 操控插件**：让模型直接操作你当前已登录的 Google Chrome —— 读页面、点击、填表、开后台标签、截图看图、按会话隔离，危险动作先问你。
 
-> 状态：**设计、分阶段计划、审批说明与 P0 细化规格完成；待开工**（2026-10-17）
-> 当前目录只有文档与仓库骨架，**没有可运行代码**。
+> 状态：**P0 链路已跑通（Host 插件 + 桥接 + 工具层自动化测试通过）；真实 Chrome 待加载扩展验证**（2026-10-17）
+> 代码：`index.js` / `src/` / `host/` / `extension/`；测试：`node test/p0-bridge.mjs`、`node test/p0-tools.mjs`。
 
 ## 是什么
 

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DSH 桌面端 Chrome 控制",
+    "description": "在 DeepSeek Harness 桌面端直接操作你真实登录的 Chrome：读页面、开后台标签、点击输入、截图，按会话隔离。"
+  }
+}
