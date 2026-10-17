@@ -4,11 +4,27 @@
 
 ## [Unreleased]
 
+## [0.1.25] - 2026-10-17
+
+### Added
+
+- 独立 watchdog alarm（30s）：无端口时主动重连；`connectNative` 抛错也计入自愈
+- `npm run status`：本地诊断 bridge/host/扩展版本/日志尾部
+
+## [0.1.24] - 2026-10-17
+
+### Added
+
+- popup 一键 **Reload**（`chrome.runtime.reload()`），断开恢复不必进 chrome://extensions
+- popup 显示 Self-heal 自动重载次数
+
+## [0.1.23] - 2026-10-17
+
 ### Added
 
 - `chrome_hover`：按 ref 悬停（触发菜单/提示），带虚拟光标
 - `test/extension-manifest.mjs`：manifest 引用/扩展 ID/host 名结构测试
-- 发布清单、issue/PR 模板
+- 发布清单、issue/PR 模板、用法示例、README 演示截图
 
 ## [0.1.22] - 2026-10-17
 
