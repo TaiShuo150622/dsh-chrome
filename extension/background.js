@@ -458,6 +458,10 @@ const PAGE_ACTIONS = {
   find: findInPage,
   getText,
   select: selectByRef,
+  overlay: drawRefOverlay,
+  overlayRemove: removeRefOverlay,
+  hasSelector,
+  urlMatches,
   console: readConsole,
   consoleClear: clearConsoleBuffer,
   network: readNetwork,
@@ -623,6 +627,9 @@ async function snapshot(owner, params) {
 async function screenshot(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params?.tabId)
   const target = { tabId }
+  const highlight = Boolean(params?.highlight)
+  const fullPage = Boolean(params?.fullPage)
+  if (highlight) await callInPage(tabId, 'overlay', [], 10000).catch(() => null)
   let clip
   const rawClip = params?.clip
   if (rawClip && typeof rawClip === 'object') {
@@ -640,11 +647,22 @@ async function screenshot(owner, params) {
   } catch (error) {
     throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
   }
+  let effectiveClip = clip
   try {
+    if (fullPage) {
+      const dims = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+        expression:
+          '({ width: Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0), height: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0) })',
+        returnByValue: true,
+      })
+      const width = Math.min(20000, Math.max(1, Math.round(Number(dims?.result?.value?.width) || 0)))
+      const height = Math.min(20000, Math.max(1, Math.round(Number(dims?.result?.value?.height) || 0)))
+      effectiveClip = { x: 0, y: 0, width, height, scale: 1 }
+    }
     const response = await chrome.debugger.sendCommand(target, 'Page.captureScreenshot', {
       format: 'png',
-      captureBeyondViewport: false,
-      ...(clip ? { clip } : {}),
+      captureBeyondViewport: fullPage,
+      ...(effectiveClip ? { clip: effectiveClip } : {}),
     })
     if (!response?.data) throw bridgeError('INTERNAL', 'empty screenshot data')
     return { dataBase64: response.data }
@@ -654,6 +672,7 @@ async function screenshot(owner, params) {
     } catch {
       // tab may have navigated or closed
     }
+    if (highlight) await callInPage(tabId, 'overlayRemove', [], 10000).catch(() => null)
   }
 }
 
@@ -900,6 +919,28 @@ async function wait(owner, params) {
       await new Promise((resolve) => setTimeout(resolve, 300))
     }
     if (!found) throw bridgeError('TIMEOUT', `text not found within ${timeoutMs}ms: ${text}`)
+  } else if (until === 'selector') {
+    const selector = String(params.selector || '')
+    if (!selector) throw bridgeError('INVALID_ARGUMENT', 'selector is required when until=selector')
+    const started = Date.now()
+    let found = false
+    while (Date.now() - started < timeoutMs) {
+      found = Boolean(await callInPage(tabId, 'hasSelector', [selector], 5000))
+      if (found) break
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+    if (!found) throw bridgeError('TIMEOUT', `selector not found within ${timeoutMs}ms: ${selector}`)
+  } else if (until === 'url') {
+    const needle = String(params.url || '')
+    if (!needle) throw bridgeError('INVALID_ARGUMENT', 'url is required when until=url')
+    const started = Date.now()
+    let found = false
+    while (Date.now() - started < timeoutMs) {
+      found = Boolean(await callInPage(tabId, 'urlMatches', [needle], 5000))
+      if (found) break
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+    if (!found) throw bridgeError('TIMEOUT', `url did not contain ${needle} within ${timeoutMs}ms`)
   } else {
     throw bridgeError('UNSUPPORTED', `unknown wait target: ${until}`)
   }
@@ -1331,6 +1372,58 @@ function readNetwork(filter, limit) {
       transferSize: entry.transferSize || 0,
     })),
   }
+}
+
+function drawRefOverlay() {
+  const existing = document.getElementById('__dsh_ref_overlay__')
+  if (existing) existing.remove()
+  const overlay = document.createElement('div')
+  overlay.id = '__dsh_ref_overlay__'
+  overlay.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647'
+  let count = 0
+  for (const element of document.querySelectorAll('[data-dsh-ref]')) {
+    const ref = element.getAttribute('data-dsh-ref')
+    const rect = element.getBoundingClientRect()
+    if (rect.width < 2 || rect.height < 2) continue
+    if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) continue
+    const box = document.createElement('div')
+    box.style.cssText =
+      'position:absolute;border:2px solid rgba(0,122,255,.9);border-radius:3px;box-sizing:border-box;left:' +
+      Math.round(rect.left) +
+      'px;top:' +
+      Math.round(rect.top) +
+      'px;width:' +
+      Math.round(rect.width) +
+      'px;height:' +
+      Math.round(rect.height) +
+      'px'
+    const label = document.createElement('div')
+    label.textContent = ref
+    label.style.cssText =
+      'position:absolute;left:0;top:-16px;background:rgba(0,122,255,.95);color:#fff;font:11px/14px -apple-system,sans-serif;padding:0 4px;border-radius:3px'
+    box.appendChild(label)
+    overlay.appendChild(box)
+    count += 1
+  }
+  document.documentElement.appendChild(overlay)
+  return { count }
+}
+
+function removeRefOverlay() {
+  document.getElementById('__dsh_ref_overlay__')?.remove()
+  return { ok: true }
+}
+
+function hasSelector(selector) {
+  try {
+    return Boolean(document.querySelector(String(selector)))
+  } catch {
+    return false
+  }
+}
+
+function urlMatches(needle) {
+  return location.href.includes(String(needle))
 }
 
 function hasText(text) {

@@ -498,6 +498,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       type: 'object',
       properties: {
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+        fullPage: { type: 'boolean', description: 'Capture the full scrollable document instead of the viewport.' },
+        highlight: { type: 'boolean', description: 'Overlay labeled boxes for current snapshot refs in the capture.' },
         clip: {
           type: 'object',
           description: 'Optional viewport region to capture, in CSS pixels.',
@@ -537,7 +539,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     async execute(args, exec) {
       const shot = await call(
         'tab.screenshot',
-        { tabId: args?.tabId, clip: args?.clip, owner: ownerOf(exec) },
+        { tabId: args?.tabId, clip: args?.clip, fullPage: Boolean(args?.fullPage), highlight: Boolean(args?.highlight), owner: ownerOf(exec) },
         60000,
       )
       if (!shot?.path) throw new BridgeError('INTERNAL', 'native host did not return a screenshot path')
@@ -991,12 +993,14 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   list.push({
     name: 'chrome_wait',
     description:
-      'Wait for the current DSH session page: until=load (document complete), until=networkidle (load + short settle), or until=text with a text argument (polls page text until it appears). Fails with TIMEOUT instead of hanging.',
+      'Wait for the current DSH session page: until=load (document complete), networkidle (load + short settle), text (page text contains it), selector (CSS selector exists), or url (current URL contains it). Fails with TIMEOUT instead of hanging.',
     parameters: {
       type: 'object',
       properties: {
-        until: { type: 'string', enum: ['load', 'networkidle', 'text'] },
+        until: { type: 'string', enum: ['load', 'networkidle', 'text', 'selector', 'url'] },
         text: { type: 'string', description: 'Required when until=text.' },
+        selector: { type: 'string', description: 'Required when until=selector (CSS selector).' },
+        url: { type: 'string', description: 'Required when until=url (substring of the current URL).' },
         timeoutMs: { type: 'number', description: 'Maximum wait in ms (default 30000, max 120000).' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
@@ -1019,6 +1023,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         {
           until: String(args?.until ?? 'load'),
           text: args?.text,
+          selector: args?.selector,
+          url: args?.url,
           timeoutMs: args?.timeoutMs,
           tabId: args?.tabId,
           owner: ownerOf(exec),

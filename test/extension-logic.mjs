@@ -241,6 +241,38 @@ check('tab.history reload returns tab state', history?.tabId === 7)
 const waited = await sandbox.handleRequest({ method: 'tab.wait', params: { until: 'load', owner: 's1' }, id: 'wait' })
 check('tab.wait load returns ready state', waited?.loadState === 'complete')
 
+nextPageValue = true
+const waitedSelector = await sandbox.handleRequest({
+  method: 'tab.wait',
+  params: { until: 'selector', selector: '#x', owner: 's1' },
+  id: 'wait-selector',
+})
+check('tab.wait selector polls the page helper', waitedSelector?.loadState === 'complete')
+
+nextPageValue = true
+const waitedUrl = await sandbox.handleRequest({
+  method: 'tab.wait',
+  params: { until: 'url', url: 'example.com', owner: 's1' },
+  id: 'wait-url',
+})
+check('tab.wait url polls the page helper', waitedUrl?.loadState === 'complete')
+
+nextPageValue = { width: 120, height: 240 }
+const fullShot = await sandbox.handleRequest({
+  method: 'tab.screenshot',
+  params: { owner: 's1', fullPage: true },
+  id: 'shot-full',
+})
+check('tab.screenshot fullPage returns base64 data', typeof fullShot?.dataBase64 === 'string')
+
+nextPageValue = { count: 2 }
+const highlightedShot = await sandbox.handleRequest({
+  method: 'tab.screenshot',
+  params: { owner: 's1', highlight: true },
+  id: 'shot-highlight',
+})
+check('tab.screenshot highlight still returns base64 data', typeof highlightedShot?.dataBase64 === 'string')
+
 const claim = await sandbox.handleRequest({ method: 'tab.claim', params: { owner: 's2' }, id: 'claim' })
 check('tab.claim claims the active tab', claim?.claimed === true && tabs.get(claim.tabId) != null)
 

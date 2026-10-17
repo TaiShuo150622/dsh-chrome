@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+## [0.1.31] - 2026-10-17
+
+### Added
+
+- `chrome_screenshot {fullPage:true}`：按文档尺寸截全页（CDP `captureBeyondViewport` + clip）
+- `chrome_screenshot {highlight:true}`：先给当前 ref 控件叠编号框再截图，完成后移除覆盖层
+- `chrome_wait` 新增 `until:selector` 与 `until:url`（轮询页面/URL，TIMEOUT fail-closed）
+- 扩展逻辑测试补 wait selector/url、fullPage/highlight 用例
+
 ## [0.1.30] - 2026-10-17
 
 ### Added
