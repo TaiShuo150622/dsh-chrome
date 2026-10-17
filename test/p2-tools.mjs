@@ -65,6 +65,7 @@ host.stdout.on(
     const replies = {
       'browser.status': { extensionVersion: 'p2-fake', connected: true },
       'tab.screenshot': { dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' },
+      'tab.hover': { ok: true, tag: 'button', label: 'Menu', tabId: 7 },
       'tab.click': { ok: true, tag: 'button', label: 'Submit', tabId: 7, dialogs: [{ type: 'confirm', message: 'ok?', accepted: true }] },
       'tab.tabs': { claimed: true, tabId: 7, url: 'https://example.com/', title: 'Example Domain', remaining: 0 },
       'tab.claim': { tabId: 7, url: 'https://example.com/', title: 'Example Domain', claimed: true },
@@ -103,7 +104,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('nineteen tools registered', tools.length === 19, tools.map((t) => t.name).join(', '))
+check('twenty tools registered', tools.length === 20, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -118,6 +119,10 @@ check('find render lists matches', /ref 901/.test(rendered[0]?.text || ''))
 const shot = await byName.chrome_screenshot.execute({ clip: { x: 10, y: 20, width: 300, height: 200 } }, exec())
 check('clip screenshot executes', Boolean(shot?.path))
 check('clip envelope reaches the extension', requests.at(-1)?.method === 'tab.screenshot' && requests.at(-1)?.params?.clip?.width === 300)
+
+const hovered = await byName.chrome_hover.execute({ ref: 2 }, exec())
+check('chrome_hover executes', hovered.ok === true && hovered.tag === 'button')
+check('hover params reach the extension', requests.at(-1)?.method === 'tab.hover' && requests.at(-1)?.params?.ref === 2)
 
 const clickWithDialog = await byName.chrome_click.execute({ ref: 1, dialog: { accept: true } }, exec())
 check('click dialog option reaches the extension', requests.at(-1)?.params?.dialog?.accept === true)

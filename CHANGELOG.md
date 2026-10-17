@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- `chrome_hover`：按 ref 悬停（触发菜单/提示），带虚拟光标
+- `test/extension-manifest.mjs`：manifest 引用/扩展 ID/host 名结构测试
+- 发布清单、issue/PR 模板
+
 ## [0.1.22] - 2026-10-17
 
 ### Added

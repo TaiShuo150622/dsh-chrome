@@ -183,7 +183,7 @@ cordis.patch.yml
 - 会话结束/`chrome_close_session`：关闭本组标签并删组；不退出 Chrome、不影响其他会话组。
 - 并发保护：同会话串行队列；`chrome_status` 可并发（只读握手）。
 
-### 4.5 工具契约（V1 12 个 + P2 新增，当前共 19 个）
+### 4.5 工具契约（V1 12 个 + P2 新增，当前共 20 个）
 
 命名空间 `chrome_`；所有工具接受可选 `tabId`（缺省为本会话当前标签）；错误码见 4.5.1。
 
@@ -216,6 +216,7 @@ cordis.patch.yml
 | `chrome_tabs` op=claim | `tabId?` | 认领活动标签进会话组 |
 | `chrome_screenshot` clip | `clip{x,y,width,height}` | 区域截图（CSS px） |
 | `chrome_click/type/press` dialog | `dialog{accept,promptText}` + 输出 `dialogs[]` | alert 默认接受、confirm/prompt 默认取消 |
+| `chrome_hover` | `ref` | 悬停触发菜单/提示，虚拟光标显示在目标 |
 
 #### 4.5.1 错误码
 

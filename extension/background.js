@@ -345,6 +345,8 @@ async function handleRequest(message) {
       return screenshot(owner, params)
     case 'tab.find':
       return find(owner, params)
+    case 'tab.hover':
+      return hover(owner, params)
     case 'tab.click':
       return click(owner, params)
     case 'tab.type':
@@ -409,6 +411,7 @@ async function gotoUrl(owner, url) {
 // same channel that already captures screenshots.
 const PAGE_ACTIONS = {
   snapshot: pageSnapshot,
+  hover: hoverByRef,
   click: clickByRef,
   type: typeIntoRef,
   press: pressKey,
@@ -623,6 +626,17 @@ async function find(owner, params) {
   const value = await callInPage(tabId, 'find', [query, limit])
   if (!value) throw bridgeError('INTERNAL', 'page find returned no result')
   return value
+}
+
+async function hover(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const ref = Number(params.ref)
+  if (!Number.isFinite(ref)) throw bridgeError('REF_STALE', 'ref must be a snapshot number')
+  const result = await callInPage(tabId, 'hover', [ref])
+  if (!result?.ok) {
+    throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
+  }
+  return { ...result, tabId }
 }
 
 async function click(owner, params) {
@@ -994,6 +1008,29 @@ function pageSnapshot(maxChars) {
 
 // ------------------------------------------------------- injected page actions
 /** Runs inside the page; self-contained. */
+function hoverByRef(ref) {
+  const element = document.querySelector(`[data-dsh-ref="${ref}"]`)
+  if (!element) return { ok: false, reason: 'REF_STALE', message: `ref ${ref} not found; take a new snapshot` }
+  element.scrollIntoView({ block: 'center', inline: 'center' })
+  const rect = element.getBoundingClientRect()
+  const x = rect.left + rect.width / 2
+  const y = rect.top + rect.height / 2
+  try {
+    window.__dshCursor?.(x, y, 'hover')
+  } catch {}
+  const base = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window }
+  try { element.dispatchEvent(new PointerEvent('pointerover', { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true })) } catch {}
+  element.dispatchEvent(new MouseEvent('mouseover', base))
+  try { element.dispatchEvent(new PointerEvent('pointerenter', { ...base, bubbles: false, pointerId: 1, pointerType: 'mouse', isPrimary: true })) } catch {}
+  element.dispatchEvent(new MouseEvent('mouseenter', { ...base, bubbles: false }))
+  element.dispatchEvent(new MouseEvent('mousemove', base))
+  return {
+    ok: true,
+    tag: element.tagName.toLowerCase(),
+    label: (element.innerText || element.getAttribute('aria-label') || '').trim().slice(0, 80),
+  }
+}
+
 function clickByRef(ref) {
   const element = document.querySelector(`[data-dsh-ref="${ref}"]`)
   if (!element) return { ok: false, reason: 'REF_STALE', message: `ref ${ref} not found; take a new snapshot` }

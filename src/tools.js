@@ -561,6 +561,35 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   })
 
+  // ---------------------------------------------------------------- 5. hover
+  list.push({
+    name: 'chrome_hover',
+    description:
+      'Hover over the control with the given snapshot ref (useful to reveal menus, tooltips or hover-only actions). Take a fresh snapshot if refs may be stale. The virtual cursor is shown at the target.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'number', description: 'Control number from the latest chrome_snapshot or chrome_find.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['ref'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        ok: { type: 'boolean' },
+        tag: { type: 'string' },
+        label: { type: 'string' },
+        tabId: { type: 'number' },
+      }),
+      render: (_args, value) => renderText(`Hovered ${value.tag || 'element'} ${JSON.stringify(value.label || '')}`),
+    },
+    async execute(args, exec) {
+      await guard(exec, 'chrome_hover', `hover ref ${args?.ref}`)
+      return call('tab.hover', { ref: args?.ref, tabId: args?.tabId, owner: ownerOf(exec) })
+    },
+  })
+
   // ---------------------------------------------------------------- 5. click
   list.push({
     name: 'chrome_click',

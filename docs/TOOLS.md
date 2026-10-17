@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：19
+> 工具数量：20
 
 ### `chrome_status`
 
@@ -86,6 +86,15 @@ Capture a PNG screenshot of the current DSH session page (or tabId) and return i
 |---|---|---|---|
 | `tabId` | number | no | Optional tab id owned by this session. |
 | `clip` | object | no | Optional viewport region to capture, in CSS pixels. |
+
+### `chrome_hover`
+
+Hover over the control with the given snapshot ref (useful to reveal menus, tooltips or hover-only actions). Take a fresh snapshot if refs may be stale. The virtual cursor is shown at the target.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `ref` | number | yes | Control number from the latest chrome_snapshot or chrome_find. |
+| `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_click`
 
