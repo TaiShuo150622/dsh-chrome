@@ -84,6 +84,8 @@ host.stdout.on(
       'tab.scroll': { ok: true, y: 600, viewportHeight: 800, documentHeight: 2000 },
       'tab.history': { tabId: 7, url: 'https://example.com/', title: 'Example Domain', loadState: 'complete' },
       'tab.wait': { tabId: 7, url: 'https://example.com/', title: 'Example Domain', loadState: 'complete' },
+      'tab.console': { available: true, entries: [{ level: 'error', text: 'boom', time: 1 }] },
+      'tab.network': { available: true, entries: [{ url: 'https://example.com/a.js', type: 'script', durationMs: 12, transferSize: 340 }] },
       'tab.find': { query: String(params?.query || ''), matches: [{ ref: 1, text: 'Example Domain', tag: 'h1', x: 10, y: 20 }], truncated: false },
       'tab.close_session': { closed: 2 },
     }
@@ -120,7 +122,7 @@ const tools = chromeTools({
   approval: () => approvalService,
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('thirteen tools registered', tools.length === 13, tools.map((t) => t.name).join(', '))
+check('fifteen tools registered', tools.length === 15, tools.map((t) => t.name).join(', '))
 
 const sessionId = 'session-test-abcdef'
 const exec = () => ({

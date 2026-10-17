@@ -313,6 +313,103 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   },
   {
+    name: 'chrome_console',
+    description:
+      'Read recent console output captured from the DSH session page (log/info/warn/error/debug plus uncaught errors). Captured at document_start by the extension, so logs emitted before the call are available. Optionally clear the buffer.',
+    parameters: {
+      type: 'object',
+      properties: {
+        level: {
+          type: 'string',
+          enum: ['log', 'info', 'warn', 'error', 'debug'],
+          description: 'Optional level filter.',
+        },
+        limit: { type: 'number', description: 'Max entries, 1-120 (default 50).' },
+        clear: { type: 'boolean', description: 'Clear the buffer after reading.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        available: { type: 'boolean' },
+        entries: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              level: { type: 'string' },
+              text: { type: 'string' },
+              time: { type: 'number' },
+            },
+            additionalProperties: true,
+          },
+        },
+      }),
+      render: (_args, value) => {
+        if (!value.available) return [{ type: 'text', text: 'Console capture is not installed on this page; reload the tab and retry.' }]
+        const lines = (value.entries ?? []).map((entry) => `[${entry.level}] ${entry.text}`)
+        return [{ type: 'text', text: lines.length ? lines.join('\n') : '(no console entries)' }]
+      },
+    },
+    async execute(args, exec) {
+      const value = await call(
+        'tab.console',
+        { level: args?.level, limit: args?.limit, clear: args?.clear, tabId: args?.tabId, owner: ownerOf(exec) },
+        30000,
+      )
+      if (!value) throw new BridgeError('INTERNAL', 'extension returned no console result')
+      return value
+    },
+  },
+  {
+    name: 'chrome_network',
+    description:
+      'List resources loaded by the DSH session page (Resource Timing): URL, initiator type, duration and transfer size. Use to see what the page fetched; request status/headers are not available in this v1.',
+    parameters: {
+      type: 'object',
+      properties: {
+        filter: { type: 'string', description: 'Optional substring filter on the URL.' },
+        limit: { type: 'number', description: 'Max entries, 1-200 (default 50).' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        available: { type: 'boolean' },
+        entries: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              url: { type: 'string' },
+              type: { type: 'string' },
+              durationMs: { type: 'number' },
+              transferSize: { type: 'number' },
+            },
+            additionalProperties: true,
+          },
+        },
+      }),
+      render: (_args, value) => {
+        const lines = (value.entries ?? []).map(
+          (entry) => `${entry.type || 'resource'} ${entry.durationMs}ms ${entry.transferSize}B ${entry.url}`,
+        )
+        return [{ type: 'text', text: lines.length ? lines.join('\n') : '(no network entries)' }]
+      },
+    },
+    async execute(args, exec) {
+      const value = await call(
+        'tab.network',
+        { filter: args?.filter, limit: args?.limit, tabId: args?.tabId, owner: ownerOf(exec) },
+        30000,
+      )
+      if (!value) throw new BridgeError('INTERNAL', 'extension returned no network result')
+      return value
+    },
+  },
+  {
     name: 'chrome_screenshot',
     description:
       'Capture a PNG screenshot of the current DSH session page (or tabId) and return it as an image in this conversation. The file is also saved on disk. Use when layout or visual state matters; use chrome_snapshot for text.',

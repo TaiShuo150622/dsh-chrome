@@ -357,6 +357,10 @@ async function handleRequest(message) {
       return history(owner, params)
     case 'tab.tabs':
       return tabs(owner, params)
+    case 'tab.console':
+      return readConsoleAgent(owner, params)
+    case 'tab.network':
+      return readNetworkAgent(owner, params)
     case 'tab.wait':
       return wait(owner, params)
     case 'tab.close_session':
@@ -400,6 +404,9 @@ const PAGE_ACTIONS = {
   press: pressKey,
   scroll: scrollPage,
   find: findInPage,
+  console: readConsole,
+  consoleClear: clearConsoleBuffer,
+  network: readNetwork,
   hasText,
 }
 
@@ -655,6 +662,21 @@ async function tabs(owner, params) {
     return { closed: tabId, remaining: after.tabIds.length }
   }
   throw bridgeError('UNSUPPORTED', `unknown tabs op: ${op}`)
+}
+
+async function readConsoleAgent(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const limit = Number.isFinite(params.limit) ? Math.min(120, Math.max(1, params.limit)) : 50
+  const level = params.level ? String(params.level) : ''
+  if (params.clear) await callInPage(tabId, 'consoleClear', []).catch(() => null)
+  return callInPage(tabId, 'console', [level, limit])
+}
+
+async function readNetworkAgent(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const limit = Number.isFinite(params.limit) ? Math.min(200, Math.max(1, params.limit)) : 50
+  const filter = params.filter ? String(params.filter) : ''
+  return callInPage(tabId, 'network', [filter, limit])
 }
 
 async function wait(owner, params) {
@@ -972,6 +994,36 @@ function findInPage(query, limit) {
     })
   }
   return { query, matches, truncated: matches.length >= max }
+}
+
+function readConsole(level, limit) {
+  const state = window.__dshConsole
+  if (!state) return { available: false, entries: [] }
+  const max = Number.isFinite(limit) ? Math.max(1, Math.min(120, limit)) : 50
+  let list = state.entries
+  if (level) list = list.filter((entry) => entry.level === level)
+  return { available: true, entries: list.slice(-max) }
+}
+
+function clearConsoleBuffer() {
+  window.__dshConsole?.clear?.()
+  return { ok: true }
+}
+
+function readNetwork(filter, limit) {
+  const max = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 50
+  const needle = String(filter || '').toLowerCase()
+  let entries = performance.getEntriesByType('resource') || []
+  if (needle) entries = entries.filter((entry) => String(entry.name || '').toLowerCase().includes(needle))
+  return {
+    available: true,
+    entries: entries.slice(-max).map((entry) => ({
+      url: String(entry.name || '').slice(0, 500),
+      type: entry.initiatorType || '',
+      durationMs: Math.round(entry.duration || 0),
+      transferSize: entry.transferSize || 0,
+    })),
+  }
 }
 
 function hasText(text) {
