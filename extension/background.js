@@ -12,9 +12,6 @@ let port = null
 let connecting = null
 let lastConnectError = null
 let lastNativeSignalAt = 0
-const pagePorts = new Map()
-const pagePending = new Map()
-let pageRequestSeq = 0
 
 function log(...args) {
   console.log('[DSH Chrome]', ...args)
@@ -336,51 +333,27 @@ async function gotoUrl(owner, url) {
   }
 }
 
-function sendPage(port, action, args, timeoutMs) {
-  const id = ++pageRequestSeq
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pagePending.delete(id)
-      reject(bridgeError('TIMEOUT', `page ${action} timed out after ${timeoutMs}ms`))
-    }, timeoutMs)
-    pagePending.set(id, { resolve, reject, timer })
-    try {
-      port.postMessage({ id, action, args })
-    } catch (error) {
-      clearTimeout(timer)
-      pagePending.delete(id)
-      reject(bridgeError('PAGE_NOT_READY', error?.message || 'page port is gone'))
-    }
-  })
-}
-
-async function attachPageHelper(tabId) {
-  // Wait for the page helper port to (re)connect. Never reload the page here:
-  // a reload would silently invalidate the refs a snapshot just handed out.
-  for (let i = 0; i < 25; i += 1) {
-    const port = pagePorts.get(tabId)
-    if (port) return port
-    await new Promise((resolve) => setTimeout(resolve, 200))
-  }
-  return null
-}
-
 async function callInPage(tabId, action, args = [], timeoutMs = 10000) {
-  let port = pagePorts.get(tabId)
-  if (!port) port = await attachPageHelper(tabId)
-  if (!port) {
-    throw bridgeError('PAGE_NOT_READY', 'page helper is not attached; navigate or reload the tab and retry')
-  }
+  let response
   try {
-    return await sendPage(port, action, args, timeoutMs)
+    response = await Promise.race([
+      chrome.tabs.sendMessage(tabId, { target: 'dsh-page', action, args }),
+      new Promise((_resolve, reject) =>
+        setTimeout(() => reject(bridgeError('TIMEOUT', `page ${action} timed out after ${timeoutMs}ms`)), timeoutMs),
+      ),
+    ])
   } catch (error) {
-    if (error?.code === 'TIMEOUT' || error?.code === 'PAGE_NOT_READY') {
-      pagePorts.delete(tabId)
-      const fresh = await attachPageHelper(tabId)
-      if (fresh) return sendPage(fresh, action, args, timeoutMs)
+    if (error?.code) throw error
+    const message = String(error?.message || error)
+    if (message.includes('Receiving end does not exist') || message.includes('Could not establish connection')) {
+      throw bridgeError('PAGE_NOT_READY', 'page helper is not attached; navigate or reload the tab and retry')
     }
-    throw error
+    throw bridgeError('INTERNAL', message)
   }
+  if (response?.error) {
+    throw bridgeError(response.error.code || 'INTERNAL', response.error.message || 'page action failed')
+  }
+  return response?.result
 }
 
 async function snapshot(owner, params) {
@@ -799,28 +772,6 @@ chrome.runtime.onConnect.addListener((keepalivePort) => {
   if (keepalivePort.name !== 'dsh-keepalive') return
   keepalivePort.onMessage.addListener(() => {
     if (!port) forceReconnect().catch(() => {})
-  })
-})
-chrome.runtime.onConnect.addListener((pagePort) => {
-  if (pagePort.name !== 'dsh-page') return
-  const tabId = pagePort.sender?.tab?.id
-  if (typeof tabId !== 'number') return
-  pagePorts.set(tabId, pagePort)
-  pagePort.onMessage.addListener((message) => {
-    if (message?.type === 'keepalive') return
-    if (message?.id == null) return
-    const pending = pagePending.get(message.id)
-    if (!pending) return
-    pagePending.delete(message.id)
-    clearTimeout(pending.timer)
-    if (message.error) {
-      pending.reject(bridgeError(message.error.code || 'INTERNAL', message.error.message || 'page action failed'))
-    } else {
-      pending.resolve(message.result)
-    }
-  })
-  pagePort.onDisconnect.addListener(() => {
-    if (pagePorts.get(tabId) === pagePort) pagePorts.delete(tabId)
   })
 })
 chrome.alarms.onAlarm.addListener((alarm) => {

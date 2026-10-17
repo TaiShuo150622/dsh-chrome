@@ -8,34 +8,17 @@
 
 let port = null
 
+// Keepalive port only: keeps the service worker awake while pages are open.
 function connectPagePort() {
   if (port) return port
   try {
-    port = chrome.runtime.connect({ name: 'dsh-page' })
+    port = chrome.runtime.connect({ name: 'dsh-keepalive' })
   } catch {
     port = null
     return null
   }
-  port.onMessage.addListener((message) => {
-    if (!message || message.id == null) return
-    const handler = ACTIONS[message.action]
-    try {
-      if (!handler) throw pageError('UNSUPPORTED', `unknown page action: ${message.action}`)
-      const result = handler(message.args || [])
-      port?.postMessage({ id: message.id, result })
-    } catch (error) {
-      port?.postMessage({
-        id: message.id,
-        error: {
-          code: typeof error?.code === 'string' ? error.code : 'INTERNAL',
-          message: error?.message || String(error),
-        },
-      })
-    }
-  })
   port.onDisconnect.addListener(() => {
     port = null
-    // The service worker may have been evicted; reconnect so refs survive.
     setTimeout(connectPagePort, 1000)
   })
   return port
@@ -55,6 +38,26 @@ setInterval(() => {
     connectPagePort()
   }
 }, 15000)
+
+// Stateless action RPC: the service worker uses chrome.tabs.sendMessage, so a
+// worker restart never invalidates the helper or the refs handed out by a
+// snapshot (all refs live in this page's DOM).
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!message || message.target !== 'dsh-page') return false
+  try {
+    const handler = ACTIONS[message.action]
+    if (!handler) throw pageError('UNSUPPORTED', `unknown page action: ${message.action}`)
+    sendResponse({ result: handler(message.args || []) })
+  } catch (error) {
+    sendResponse({
+      error: {
+        code: typeof error?.code === 'string' ? error.code : 'INTERNAL',
+        message: error?.message || String(error),
+      },
+    })
+  }
+  return false
+})
 
 function pageError(code, message) {
   const error = new Error(message)
