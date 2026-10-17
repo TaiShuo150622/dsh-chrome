@@ -34,7 +34,8 @@ Find text inside the current DSH session page. Returns matching snippets with da
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `query` | string | yes | Text to search for (case-insensitive). |
+| `query` | string | no | Text or pattern to search for (case-insensitive). |
+| `regex` | boolean | no | Treat query as a regular expression (case-insensitive). |
 | `maxResults` | number | no | Optional cap, 1-50 (default 20). |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
@@ -76,6 +77,7 @@ Read recent console output captured from the DSH session page (log/info/warn/err
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `level` | enum(log | info | warn | error | debug) | no | Optional level filter. |
+| `filter` | string | no | Optional substring filter on the log text. |
 | `limit` | number | no | Max entries, 1-120 (default 50). |
 | `clear` | boolean | no | Clear the buffer after reading. |
 | `tabId` | number | no | Optional tab id owned by this session. |

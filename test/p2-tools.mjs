@@ -75,7 +75,7 @@ host.stdout.on(
       'tab.a11y': { total: 2, truncated: false, nodes: [{ role: 'button', name: 'Submit' }, { role: 'textbox', name: 'Name' }] },
       'tab.get_text': { found: true, text: 'Example Domain body', truncated: false },
       'tab.console': { available: true, entries: [{ level: 'error', text: 'boom', time: 1 }] },
-      'tab.network': { available: true, entries: [{ url: 'https://example.com/a.js', type: 'script', durationMs: 12, transferSize: 340 }] },
+      'tab.network': { available: true, entries: [{ url: 'https://example.com/a.js', type: 'script', durationMs: 12, transferSize: 340, status: 200 }] },
       'tab.find': {
         query: String(message.params?.query || ''),
         matches: [
@@ -171,13 +171,14 @@ const textValue = await byName.chrome_get_text.execute({ selector: 'main', maxCh
 check('chrome_get_text executes', textValue.found === true && textValue.text === 'Example Domain body')
 check('get_text selector reaches the extension', requests.at(-1)?.method === 'tab.get_text' && requests.at(-1)?.params?.selector === 'main')
 
-const consoleValue = await byName.chrome_console.execute({ level: 'error', limit: 10 }, exec())
+const consoleValue = await byName.chrome_console.execute({ level: 'error', limit: 10, filter: 'boom' }, exec())
 check('chrome_console executes', consoleValue.available === true && consoleValue.entries?.[0]?.text === 'boom')
-check('console level reaches the extension', requests.at(-1)?.method === 'tab.console' && requests.at(-1)?.params?.level === 'error')
+check('console level/filter reach the extension', requests.at(-1)?.method === 'tab.console' && requests.at(-1)?.params?.level === 'error' && requests.at(-1)?.params?.filter === 'boom')
 const consoleRender = byName.chrome_console.output.render({}, consoleValue)
 check('console render lists entries', /\[error\] boom/.test(consoleRender[0]?.text || ''))
 
 const networkValue = await byName.chrome_network.execute({ filter: 'a.js', limit: 5 }, exec())
+check('network status is returned', networkValue.entries?.[0]?.status === 200)
 check('chrome_network executes', networkValue.entries?.[0]?.url === 'https://example.com/a.js')
 check('network filter reaches the extension', requests.at(-1)?.params?.filter === 'a.js')
 

@@ -321,6 +321,14 @@ await sandbox.handleRequest({
 check('dialog accept:true is honored', dialogCommands.at(-1)?.accept === true)
 
 // delta snapshot + post-action snapshot
+nextPageValue = { query: 'a.*b', matches: [], truncated: false }
+const regexFind = await sandbox.handleRequest({
+  method: 'tab.find',
+  params: { query: 'a.*b', regex: true, owner: 's1' },
+  id: 'find-regex',
+})
+check('tab.find regex flag reaches the page helper', regexFind?.query === 'a.*b')
+
 nextPageValue = { mode: 'delta', controls: [{ ref: 1, tag: 'button', label: 'Greet', new: true }], changedCount: 1, sameCount: 7, removedRefs: [] }
 const delta = await sandbox.handleRequest({ method: 'tab.snapshot', params: { mode: 'delta', owner: 's1' }, id: 'snapshot-delta' })
 check('tab.snapshot delta returns changed controls', delta?.mode === 'delta' && delta?.changedCount === 1)

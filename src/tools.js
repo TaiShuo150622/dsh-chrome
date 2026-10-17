@@ -298,11 +298,11 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Text to search for (case-insensitive).' },
+        query: { type: 'string', description: 'Text or pattern to search for (case-insensitive).' },
+        regex: { type: 'boolean', description: 'Treat query as a regular expression (case-insensitive).' },
         maxResults: { type: 'number', description: 'Optional cap, 1-50 (default 20).' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
-      required: ['query'],
       additionalProperties: false,
     },
     output: {
@@ -333,7 +333,13 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     async execute(args, exec) {
       const value = await call(
         'tab.find',
-        { query: String(args?.query ?? ''), maxResults: args?.maxResults, tabId: args?.tabId, owner: ownerOf(exec) },
+        {
+          query: String(args?.query ?? ''),
+          regex: Boolean(args?.regex),
+          maxResults: args?.maxResults,
+          tabId: args?.tabId,
+          owner: ownerOf(exec),
+        },
         30000,
       )
       if (!value) throw new BridgeError('INTERNAL', 'extension returned no find result')
@@ -471,6 +477,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           enum: ['log', 'info', 'warn', 'error', 'debug'],
           description: 'Optional level filter.',
         },
+        filter: { type: 'string', description: 'Optional substring filter on the log text.' },
         limit: { type: 'number', description: 'Max entries, 1-120 (default 50).' },
         clear: { type: 'boolean', description: 'Clear the buffer after reading.' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
@@ -502,7 +509,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     async execute(args, exec) {
       const value = await call(
         'tab.console',
-        { level: args?.level, limit: args?.limit, clear: args?.clear, tabId: args?.tabId, owner: ownerOf(exec) },
+        { level: args?.level, filter: args?.filter, limit: args?.limit, clear: args?.clear, tabId: args?.tabId, owner: ownerOf(exec) },
         30000,
       )
       if (!value) throw new BridgeError('INTERNAL', 'extension returned no console result')
@@ -534,6 +541,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
               type: { type: 'string' },
               durationMs: { type: 'number' },
               transferSize: { type: 'number' },
+              status: { type: 'number' },
             },
             additionalProperties: true,
           },
@@ -541,7 +549,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       }),
       render: (_args, value) => {
         const lines = (value.entries ?? []).map(
-          (entry) => `${entry.type || 'resource'} ${entry.durationMs}ms ${entry.transferSize}B ${entry.url}`,
+          (entry) =>
+            `${entry.type || 'resource'} ${entry.status != null ? `[${entry.status}] ` : ''}${entry.durationMs}ms ${entry.transferSize}B ${entry.url}`,
         )
         return [{ type: 'text', text: lines.length ? lines.join('\n') : '(no network entries)' }]
       },

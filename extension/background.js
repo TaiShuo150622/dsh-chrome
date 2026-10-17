@@ -699,9 +699,10 @@ async function screenshot(owner, params) {
 async function find(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const query = String(params.query ?? '')
+  const useRegex = Boolean(params.regex)
   if (!query.trim()) throw bridgeError('INVALID_ARGUMENT', 'query must not be empty')
   const limit = Number.isFinite(params.maxResults) ? Math.min(50, Math.max(1, params.maxResults)) : 20
-  const value = await callInPage(tabId, 'find', [query, limit])
+  const value = await callInPage(tabId, 'find', [query, limit, useRegex])
   if (!value) throw bridgeError('INTERNAL', 'page find returned no result')
   return value
 }
@@ -962,8 +963,9 @@ async function readConsoleAgent(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const limit = Number.isFinite(params.limit) ? Math.min(120, Math.max(1, params.limit)) : 50
   const level = params.level ? String(params.level) : ''
+  const filter = params.filter ? String(params.filter) : ''
   if (params.clear) await callInPage(tabId, 'consoleClear', []).catch(() => null)
-  return callInPage(tabId, 'console', [level, limit])
+  return callInPage(tabId, 'console', [level, limit, filter])
 }
 
 async function readNetworkAgent(owner, params) {
@@ -1391,9 +1393,20 @@ function scrollPage(direction, amount) {
 }
 
 /** Runs inside the page; self-contained. */
-function findInPage(query, limit) {
-  const needle = String(query || '').toLowerCase()
-  if (!needle.trim()) return { query: '', matches: [], truncated: false }
+function findInPage(query, limit, useRegex) {
+  const raw = String(query || '')
+  if (!raw.trim()) return { query: '', matches: [], truncated: false }
+  let matcher
+  if (useRegex) {
+    try {
+      matcher = new RegExp(raw, 'i')
+    } catch {
+      return { query: raw, matches: [], truncated: false, error: 'INVALID_REGEX' }
+    }
+  } else {
+    const needle = raw.toLowerCase()
+    matcher = { test: (value) => String(value).toLowerCase().includes(needle) }
+  }
   const max = Number.isFinite(limit) ? Math.max(1, Math.min(50, limit)) : 20
   const root = document.body || document.documentElement
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
@@ -1403,7 +1416,7 @@ function findInPage(query, limit) {
   while ((node = walker.nextNode())) {
     if (matches.length >= max) break
     const value = node.nodeValue || ''
-    if (!value.toLowerCase().includes(needle)) continue
+    if (!matcher.test(value)) continue
     const element = node.parentElement
     if (!element || seen.has(element)) continue
     const style = getComputedStyle(element)
@@ -1549,12 +1562,14 @@ function getText(selector, maxChars) {
   return { found: true, text: raw.slice(0, limit), truncated: raw.length > limit }
 }
 
-function readConsole(level, limit) {
+function readConsole(level, limit, filter) {
   const state = window.__dshConsole
   if (!state) return { available: false, entries: [] }
   const max = Number.isFinite(limit) ? Math.max(1, Math.min(120, limit)) : 50
+  const needle = String(filter || '').toLowerCase()
   let list = state.entries
   if (level) list = list.filter((entry) => entry.level === level)
+  if (needle) list = list.filter((entry) => String(entry.text || '').toLowerCase().includes(needle))
   return { available: true, entries: list.slice(-max) }
 }
 
@@ -1575,6 +1590,7 @@ function readNetwork(filter, limit) {
       type: entry.initiatorType || '',
       durationMs: Math.round(entry.duration || 0),
       transferSize: entry.transferSize || 0,
+      ...(Number.isFinite(entry.responseStatus) ? { status: entry.responseStatus } : {}),
     })),
   }
 }

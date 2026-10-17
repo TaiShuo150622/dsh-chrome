@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [0.1.37] - 2026-10-17
+
+### Added
+
+- `chrome_network`：条目增加 `status`（Resource Timing `responseStatus`，Chrome 支持时）
+- `chrome_console {filter}`：按日志文本子串过滤
+- `chrome_find {regex:true}`：query 作为正则（大小写不敏感，非法正则返回 INVALID_REGEX）
+
 ## [0.1.36] - 2026-10-17
 
 ### Added
