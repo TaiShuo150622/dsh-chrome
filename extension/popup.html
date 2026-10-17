@@ -59,6 +59,14 @@
       button:hover {
         border-color: #4a5670;
       }
+      .actions {
+        margin-left: auto;
+        display: flex;
+        gap: 6px;
+      }
+      .actions button {
+        margin-left: 0;
+      }
       dl {
         margin: 12px 0 0;
         font-size: 12px;
@@ -90,16 +98,21 @@
   </head>
   <body>
     <h1>DSH Desktop Chrome</h1>
-    <p class="sub">P1 · session tabs, actions, screenshots</p>
+    <p class="sub">P2 · tabs, actions, console, virtual cursor</p>
     <div class="row">
       <span id="badge" class="badge bad">checking…</span>
-      <button id="reconnect">Reconnect</button>
+      <span class="actions">
+        <button id="reconnect">Reconnect</button>
+        <button id="reload">Reload</button>
+      </span>
     </div>
     <dl>
       <dt>Extension</dt>
       <dd id="version">—</dd>
       <dt>Session tab</dt>
       <dd id="tab">—</dd>
+      <dt>Self-heal</dt>
+      <dd id="selfheal">—</dd>
     </dl>
     <p class="hint" id="hint"></p>
     <script src="popup.js"></script>

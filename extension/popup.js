@@ -3,6 +3,8 @@ const version = document.getElementById('version')
 const tab = document.getElementById('tab')
 const hint = document.getElementById('hint')
 const reconnect = document.getElementById('reconnect')
+const reload = document.getElementById('reload')
+const selfheal = document.getElementById('selfheal')
 
 function render(status) {
   if (!status) {
@@ -21,6 +23,16 @@ function render(status) {
     hint.textContent += `\nLast error: ${status.lastError}`
   }
 }
+
+chrome.storage.local.get('dshSelfHeal', (stored) => {
+  const count = stored?.dshSelfHeal?.count || 0
+  selfheal.textContent = count > 0 ? `${count} automatic reload(s)` : 'none'
+})
+
+reload.addEventListener('click', () => {
+  badge.textContent = 'reloading…'
+  chrome.runtime.reload()
+})
 
 reconnect.addEventListener('click', () => {
   badge.textContent = 'connecting…'
