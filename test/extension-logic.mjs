@@ -146,6 +146,8 @@ const chrome = {
         dialogCommands.push(params)
         return {}
       }
+      if (method === 'Emulation.setDeviceMetricsOverride') return {}
+      if (method === 'Emulation.clearDeviceMetricsOverride') return {}
       if (method === 'DOM.getDocument') return { root: { nodeId: 1 } }
       if (method === 'DOM.querySelector') return { nodeId: 2 }
       if (method === 'DOM.setFileInputFiles') return {}
@@ -357,6 +359,17 @@ check('tab.screenshot with ref returns base64 data', typeof refShot?.dataBase64 
 
 const focus = await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'focus', tabId: 7, owner: 's1' }, id: 'tabs-focus' })
 check('tab.tabs op=focus activates the tab', focus?.focused === true && tabs.get(7)?.active === true)
+
+// drag + emulate dispatch
+nextPageValue = { ok: true, from: 1, to: 2 }
+const dragged = await sandbox.handleRequest({ method: 'tab.drag', params: { fromRef: 1, toRef: 2, owner: 's1' }, id: 'drag' })
+check('tab.drag dispatches', dragged?.ok === true)
+
+const emulated = await sandbox.handleRequest({ method: 'tab.emulate', params: { width: 375, height: 800, owner: 's1' }, id: 'emulate' })
+check('tab.emulate applies device metrics', emulated?.applied === true && emulated?.width === 375)
+
+const emulatedReset = await sandbox.handleRequest({ method: 'tab.emulate', params: { reset: true, owner: 's1' }, id: 'emulate-reset' })
+check('tab.emulate reset clears the override', emulatedReset?.applied === false)
 
 // reconnect after the host exits: the worker must issue a NEW connectNative.
 // Regression: ensurePort used to leave `connecting` non-null forever, so every

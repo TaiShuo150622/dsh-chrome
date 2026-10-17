@@ -424,6 +424,88 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   },
   {
+    name: 'chrome_drag',
+    description:
+      'Drag from one snapshot ref to another (pointer/mouse plus HTML5 drag events). Useful for sliders, sortable lists and kanban boards.',
+    parameters: {
+      type: 'object',
+      properties: {
+        fromRef: { type: 'number', description: 'Ref of the element to drag.' },
+        toRef: { type: 'number', description: 'Ref of the drop target.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['fromRef', 'toRef'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        ok: { type: 'boolean' },
+        from: { type: 'number' },
+        to: { type: 'number' },
+        tabId: { type: 'number' },
+      }),
+      render: (_args, value) => renderText(`Dragged ref ${value.from} → ref ${value.to}`),
+    },
+    async execute(args, exec) {
+      await guard(exec, 'chrome_drag', `drag ${args?.fromRef}->${args?.toRef}`)
+      return call(
+        'tab.drag',
+        { fromRef: args?.fromRef, toRef: args?.toRef, tabId: args?.tabId, owner: ownerOf(exec) },
+        30000,
+      )
+    },
+  },
+  {
+    name: 'chrome_emulate',
+    description:
+      'Override the viewport with CDP Emulation (responsive testing): set width/height/mobile, or reset to the real viewport. Layout and screenshots follow the override.',
+    parameters: {
+      type: 'object',
+      properties: {
+        width: { type: 'number', description: 'Viewport width in CSS px (>=100).' },
+        height: { type: 'number', description: 'Viewport height in CSS px (>=100).' },
+        mobile: { type: 'boolean', description: 'Emulate a mobile device.' },
+        reset: { type: 'boolean', description: 'Clear the viewport override.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        width: {},
+        height: {},
+        applied: { type: 'boolean' },
+        reloaded: { type: 'boolean' },
+        clearError: {},
+        viewport: { type: 'object', additionalProperties: true },
+      }),
+      render: (_args, value) => {
+        const inner = value.viewport ? ` (window ${value.viewport.innerWidth}x${value.viewport.innerHeight})` : ''
+        return renderText(
+          value.applied
+            ? `Viewport emulated at ${value.width}x${value.height}${inner}`
+            : `Viewport override cleared${value.reloaded ? ', page reloaded' : ''}${inner}`,
+        )
+      },
+    },
+    async execute(args, exec) {
+      const reset = Boolean(args?.reset)
+      if (!reset) {
+        const width = Number(args?.width)
+        const height = Number(args?.height)
+        if (!Number.isFinite(width) || !Number.isFinite(height)) {
+          throw new BridgeError('INVALID_ARGUMENT', 'width and height are required unless reset:true')
+        }
+      }
+      await guard(exec, 'chrome_emulate', reset ? 'reset viewport' : `emulate ${args?.width}x${args?.height}`)
+      return call(
+        'tab.emulate',
+        { width: args?.width, height: args?.height, mobile: Boolean(args?.mobile), reset, tabId: args?.tabId, owner: ownerOf(exec) },
+        30000,
+      )
+    },
+  },
+  {
     name: 'chrome_pdf',
     description:
       'Export the current DSH session page to a PDF file with CDP Page.printToPDF and return the saved path. Useful for archiving or sharing a page as it renders.',

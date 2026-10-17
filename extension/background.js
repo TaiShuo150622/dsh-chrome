@@ -405,6 +405,10 @@ async function handleRequest(message) {
       return listDownloads(params)
     case 'tab.select':
       return selectAgent(owner, params)
+    case 'tab.emulate':
+      return emulate(owner, params)
+    case 'tab.drag':
+      return drag(owner, params)
     case 'tab.pdf':
       return pdf(owner, params)
     case 'tab.a11y':
@@ -462,6 +466,7 @@ const PAGE_ACTIONS = {
   getText,
   getMarkdown,
   select: selectByRef,
+  drag: dragByRef,
   elementBox,
   overlay: drawRefOverlay,
   overlayRemove: removeRefOverlay,
@@ -920,6 +925,76 @@ async function listDownloads(params) {
   }
 }
 
+async function emulate(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params?.tabId)
+  const target = { tabId }
+  try {
+    await chrome.debugger.attach(target, '1.3')
+  } catch (error) {
+    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
+  }
+  try {
+    if (params?.reset) {
+      let clearError = null
+      try {
+        await chrome.debugger.sendCommand(target, 'Emulation.clearDeviceMetricsOverride')
+      } catch (error) {
+        clearError = error?.message || String(error)
+      }
+      // Chromium keeps the overridden layout viewport for the renderer even
+      // after clearDeviceMetricsOverride; a reload is what actually restores it.
+      try {
+        await chrome.tabs.reload(tabId)
+        await waitForComplete(tabId, 15000)
+      } catch {
+        // reload may be blocked; report what we have
+      }
+      const viewport = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+        expression:
+          '({ innerWidth: window.innerWidth, innerHeight: window.innerHeight, outerWidth: window.outerWidth, outerHeight: window.outerHeight, screenWidth: screen.width, screenHeight: screen.height, dpr: devicePixelRatio })',
+        returnByValue: true,
+      })
+      return { width: null, height: null, applied: false, clearError, reloaded: true, viewport: viewport?.result?.value ?? null }
+    }
+    const width = Math.round(Number(params?.width))
+    const height = Math.round(Number(params?.height))
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 100 || height < 100) {
+      throw bridgeError('INVALID_ARGUMENT', 'width/height must be >= 100')
+    }
+    await chrome.debugger.sendCommand(target, 'Emulation.setDeviceMetricsOverride', {
+      width,
+      height,
+      deviceScaleFactor: 1,
+      mobile: Boolean(params?.mobile),
+    })
+    const viewport = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+      expression: '({ innerWidth: window.innerWidth, innerHeight: window.innerHeight })',
+      returnByValue: true,
+    })
+    return { width, height, applied: true, viewport: viewport?.result?.value ?? null }
+  } finally {
+    try {
+      await chrome.debugger.detach(target)
+    } catch {
+      // tab may have closed
+    }
+  }
+}
+
+async function drag(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const fromRef = Number(params.fromRef)
+  const toRef = Number(params.toRef)
+  if (!Number.isFinite(fromRef) || !Number.isFinite(toRef)) {
+    throw bridgeError('INVALID_ARGUMENT', 'fromRef and toRef are required')
+  }
+  const result = await callInPage(tabId, 'drag', [fromRef, toRef], 15000)
+  if (!result?.ok) {
+    throw bridgeError(result?.reason || 'REF_STALE', result?.message || 'drag failed')
+  }
+  return { ...result, tabId }
+}
+
 async function pdf(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params?.tabId)
   const target = { tabId }
@@ -1141,6 +1216,9 @@ function pageSnapshot(maxChars, withBoxes, mode) {
     '[role="checkbox"]',
     '[role="tab"]',
     '[onclick]',
+    '[draggable="true"]',
+    '[ondrop]',
+    '[ondragover]',
   ]
   const seen = new Set()
   const elements = []
@@ -1313,6 +1391,58 @@ function hoverByRef(ref, selector) {
     tag: element.tagName.toLowerCase(),
     label: (element.innerText || element.getAttribute('aria-label') || '').trim().slice(0, 80),
   }
+}
+
+function dragByRef(fromRef, toRef) {
+  const from = document.querySelector(`[data-dsh-ref="${fromRef}"]`)
+  const to = document.querySelector(`[data-dsh-ref="${toRef}"]`)
+  if (!from || !to) {
+    return { ok: false, reason: 'REF_STALE', message: `ref ${fromRef}/${toRef} not found; take a new snapshot` }
+  }
+  const startRect = from.getBoundingClientRect()
+  const endRect = to.getBoundingClientRect()
+  const x0 = startRect.left + startRect.width / 2
+  const y0 = startRect.top + startRect.height / 2
+  const x1 = endRect.left + endRect.width / 2
+  const y1 = endRect.top + endRect.height / 2
+  try {
+    window.__dshCursor?.(x0, y0, 'click')
+  } catch {}
+  const dataTransfer = (() => {
+    try {
+      return new DataTransfer()
+    } catch {
+      return null
+    }
+  })()
+  const base = { bubbles: true, cancelable: true, composed: true, view: window, dataTransfer }
+  try {
+    from.dispatchEvent(new PointerEvent('pointerdown', { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1, clientX: x0, clientY: y0 }))
+  } catch {}
+  from.dispatchEvent(new MouseEvent('mousedown', { ...base, button: 0, buttons: 1, clientX: x0, clientY: y0 }))
+  if (typeof from.dragstart === 'object' || from.getAttribute('draggable') === 'true') {
+    from.dispatchEvent(new DragEvent('dragstart', { ...base, clientX: x0, clientY: y0 }))
+  }
+  const steps = 6
+  for (let index = 1; index <= steps; index += 1) {
+    const x = x0 + ((x1 - x0) * index) / steps
+    const y = y0 + ((y1 - y0) * index) / steps
+    try {
+      from.dispatchEvent(new PointerEvent('pointermove', { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1, clientX: x, clientY: y }))
+      to.dispatchEvent(new PointerEvent('pointermove', { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1, clientX: x, clientY: y }))
+    } catch {}
+    to.dispatchEvent(new MouseEvent('mousemove', { ...base, button: 0, buttons: 1, clientX: x, clientY: y }))
+    to.dispatchEvent(new DragEvent('dragenter', { ...base, clientX: x, clientY: y }))
+    to.dispatchEvent(new DragEvent('dragover', { ...base, clientX: x, clientY: y }))
+  }
+  to.dispatchEvent(new DragEvent('drop', { ...base, clientX: x1, clientY: y1 }))
+  from.dispatchEvent(new DragEvent('dragend', { ...base, clientX: x1, clientY: y1 }))
+  try {
+    to.dispatchEvent(new PointerEvent('pointerup', { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 0, clientX: x1, clientY: y1 }))
+  } catch {}
+  to.dispatchEvent(new MouseEvent('mouseup', { ...base, button: 0, buttons: 0, clientX: x1, clientY: y1 }))
+  to.dispatchEvent(new MouseEvent('click', { ...base, button: 0, clientX: x1, clientY: y1 }))
+  return { ok: true, from: fromRef, to: toRef }
 }
 
 function clickByRef(ref, selector, buttonName, clickCount) {

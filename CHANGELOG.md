@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [0.1.51] - 2026-10-17
+
+### Added
+
+- `chrome_drag`（第 23 个工具）：ref→ref 拖拽，派发 pointer/mouse + HTML5 drag 事件；真机 CfT 验证 "dropped"
+- `chrome_emulate`（第 24 个工具）：CDP 视口覆盖（width/height/mobile），`reset:true` 恢复；真机验证 375x800 ↔ 756x413
+- `chrome_pdf`（第 22 个工具，见 0.1.45）：`Page.printToPDF` 导出页面 PDF
+- snapshot 选择器加入 `[draggable="true"]` / `[ondrop]` / `[ondragover]`，拖拽目标可被编号
+
+### Fixed
+
+- emulate reset：Chromium 在 `clearDeviceMetricsOverride` 后仍保留渲染器布局尺寸；改为 clear + **reload 当前标签** 再回读 `window.innerWidth`（`reloaded:true`）
+
 ## [0.1.45] - 2026-10-17
 
 ### Added

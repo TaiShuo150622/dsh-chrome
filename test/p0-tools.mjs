@@ -114,7 +114,7 @@ const tools = chromeTools({
   }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('twenty-two tools registered', tools.length === 22, tools.map((t) => t.name).join(', '))
+check('twenty-four tools registered', tools.length === 24, tools.map((t) => t.name).join(', '))
 for (const definition of tools) {
   check(`${definition.name} has output schema and render`, Boolean(definition.output?.schema && definition.output?.render))
 }

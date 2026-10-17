@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：22
+> 工具数量：24
 
 ### `chrome_status`
 
@@ -59,6 +59,28 @@ Select an option in a <select>, set a checkbox/radio, or toggle one. Takes a ref
 | `ref` | number | yes | Ref of the select/checkbox/radio control. |
 | `value` | string | no | Option value or visible label (for <select>). |
 | `checked` | boolean | no | Desired checked state (for checkbox/radio); defaults to toggle. |
+| `tabId` | number | no | Optional tab id owned by this session. |
+
+### `chrome_drag`
+
+Drag from one snapshot ref to another (pointer/mouse plus HTML5 drag events). Useful for sliders, sortable lists and kanban boards.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `fromRef` | number | yes | Ref of the element to drag. |
+| `toRef` | number | yes | Ref of the drop target. |
+| `tabId` | number | no | Optional tab id owned by this session. |
+
+### `chrome_emulate`
+
+Override the viewport with CDP Emulation (responsive testing): set width/height/mobile, or reset to the real viewport. Layout and screenshots follow the override.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `width` | number | no | Viewport width in CSS px (>=100). |
+| `height` | number | no | Viewport height in CSS px (>=100). |
+| `mobile` | boolean | no | Emulate a mobile device. |
+| `reset` | boolean | no | Clear the viewport override. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_pdf`

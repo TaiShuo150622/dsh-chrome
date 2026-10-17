@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DSH Desktop Chrome",
-  "version": "0.1.45",
+  "version": "0.1.51",
   "description": "Drive your real Chrome from DeepSeek Harness Desktop: read pages, open background tabs, and take screenshots.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnYHzs8pMS3WbwkgOgWzYM7qhU9mw8sxJuOOZjFJ7NoeSob9b0TWfqFcluCS3q/sOUA3NAKiOhuuUiMolRCsuhJiZfg4o5xkoOrtEiC/uzlr6DRv4K61qCZPUz1UuMVSKLYrKTeNthADa+xooop5ti2zL9n2k0I0pUAhYmRUba1QJSo5URzzOhX3YO8e1xqvFfluNkY9cMhpEd35LxDvotqWfoj6LfDUZ3sIzO47sM18KTq1/g/0cgBBEp72POkmnVYyUAUEHsGZWdFg6r7Mn+0PQbDMy/LqeMujtkcHR+wm4GEl7mRYmlGB7n3A2OmSuuPp0by0sDOD7Ie2Y3rrNqwIDAQAB",
   "minimum_chrome_version": "116",

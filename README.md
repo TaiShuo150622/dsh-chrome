@@ -15,14 +15,14 @@
 
 完整步骤、排障与卸载：[docs/INSTALL.md](docs/INSTALL.md)。
 
-## 当前能力（扩展 0.1.45，22 个工具）
+## 当前能力（扩展 0.1.51，24 个工具）
 
 | 类别 | 能力 |
 |---|---|
 | 会话/标签 | 每会话独立后台标签组、claim 当前标签、关闭会话；不抢焦点 |
 | 导航/等待 | goto / history / wait（load、networkidle、文本） |
 | 读取 | snapshot（稳定 ref/boxes）、find、get_text（text/markdown）、a11y、console、network、区域/整页/高亮截图 |
-| 交互 | click / type / press / scroll / select / hover，带**虚拟光标**可视化 |
+| 交互 | click / type / press / scroll / select / hover / drag，带**虚拟光标**可视化 |
 | 文件 | upload（file input，走审批）/ download（最近下载列表） |
 | 体验 | follow-dsh 审批、dialog 自动处理（安全默认）、开发期扩展自动重载 |
 | 稳定性 | host 常驻重连、SW 端口自愈、provider/扩展版本握手 |
