@@ -183,7 +183,7 @@ cordis.patch.yml
 - 会话结束/`chrome_close_session`：关闭本组标签并删组；不退出 Chrome、不影响其他会话组。
 - 并发保护：同会话串行队列；`chrome_status` 可并发（只读握手）。
 
-### 4.5 工具契约（V1，12 个）
+### 4.5 工具契约（V1 12 个 + P2 新增，当前共 19 个）
 
 命名空间 `chrome_`；所有工具接受可选 `tabId`（缺省为本会话当前标签）；错误码见 4.5.1。
 
@@ -202,9 +202,31 @@ cordis.patch.yml
 | 11 | `chrome_screenshot` | `fullPage?`, `attach: auto\|always\|never` | 附件引用（视觉路由可用时）或落盘路径 |
 | 12 | `chrome_close_session` | `keepGroup?` | 关闭的标签数 |
 
+当前实现新增（P2）：
+
+| 工具 | 参数（概要） | 说明 |
+|---|---|---|
+| `chrome_find` | `query`, `maxResults?` | 文本命中 + ref/坐标 + 1.5s 高亮 |
+| `chrome_get_text` | `selector?`, `maxChars?` | 正文/元素可见文本 |
+| `chrome_select` | `ref`, `value?`, `checked?` | select / checkbox / radio |
+| `chrome_console` | `level?`, `limit?`, `clear?` | MAIN world hook，120 条环形缓冲 |
+| `chrome_network` | `filter?`, `limit?` | Performance Resource Timing（v1 无状态码） |
+| `chrome_upload` | `ref`, `files[]` | file input；走审批；provider 校验本地文件 |
+| `chrome_download` | `limit?` | chrome.downloads.search 最近下载 |
+| `chrome_tabs` op=claim | `tabId?` | 认领活动标签进会话组 |
+| `chrome_screenshot` clip | `clip{x,y,width,height}` | 区域截图（CSS px） |
+| `chrome_click/type/press` dialog | `dialog{accept,promptText}` + 输出 `dialogs[]` | alert 默认接受、confirm/prompt 默认取消 |
+
 #### 4.5.1 错误码
 
 `NOT_CONNECTED`（扩展/host 未连）、`HOST_VERSION_MISMATCH`、`NO_SESSION_TAB`、`TAB_NOT_FOUND`、`TAB_GONE`、`REF_STALE`（快照后页面变化）、`PROTECTED_PAGE`、`BLOCKED_BY_POLICY`、`APPROVAL_DENIED`、`NAV_FAILED`、`TIMEOUT`、`UNSUPPORTED`。
+
+### 4.5.2 P2 体验与稳定性（已实现，真机验证进行中）
+
+- **虚拟光标**：click/type/press/scroll 前在页面注入 DSH 蓝色光标（纯 DOM 浮层，`pointer-events:none`），900ms 淡出；截图可捕获。
+- **自动重载（开发期）**：provider 写 `dev.json{watch,extensionDir}` → native host `fs.watch(extension/)` → `ext.changed` 事件 → SW 去抖 `chrome.runtime.reload()`。
+- **native port 生命周期**：host 常驻并重连 provider；扩展侧端口连续失败时自愈 reload（上限 5 次）。
+- **dialog 安全默认**：alert 接受；confirm/prompt/beforeunload 取消，需显式 `accept:true`。
 
 ### 4.6 安全与审批
 

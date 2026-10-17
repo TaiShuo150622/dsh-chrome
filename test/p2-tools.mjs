@@ -123,6 +123,22 @@ const clickWithDialog = await byName.chrome_click.execute({ ref: 1, dialog: { ac
 check('click dialog option reaches the extension', requests.at(-1)?.params?.dialog?.accept === true)
 check('click returns captured dialogs', clickWithDialog.dialogs?.[0]?.type === 'confirm')
 
+let emptyUploadRejected = false
+try {
+  await byName.chrome_upload.execute({ ref: 5, files: [] }, exec())
+} catch (error) {
+  emptyUploadRejected = error?.code === 'INVALID_ARGUMENT'
+}
+check('upload rejects empty file list', emptyUploadRejected)
+
+let missingUploadRejected = false
+try {
+  await byName.chrome_upload.execute({ ref: 5, files: [path.join(home, 'missing.bin')] }, exec())
+} catch (error) {
+  missingUploadRejected = error?.code === 'INVALID_ARGUMENT'
+}
+check('upload rejects missing local file', missingUploadRejected)
+
 const uploadPath = path.join(home, 'upload.txt')
 await fsp.writeFile(uploadPath, 'hello')
 const uploadValue = await byName.chrome_upload.execute({ ref: 5, files: [uploadPath] }, exec())
