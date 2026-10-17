@@ -357,6 +357,8 @@ async function handleRequest(message) {
       return history(owner, params)
     case 'tab.tabs':
       return tabs(owner, params)
+    case 'tab.get_text':
+      return getTextAgent(owner, params)
     case 'tab.console':
       return readConsoleAgent(owner, params)
     case 'tab.network':
@@ -404,6 +406,7 @@ const PAGE_ACTIONS = {
   press: pressKey,
   scroll: scrollPage,
   find: findInPage,
+  getText,
   console: readConsole,
   consoleClear: clearConsoleBuffer,
   network: readNetwork,
@@ -662,6 +665,13 @@ async function tabs(owner, params) {
     return { closed: tabId, remaining: after.tabIds.length }
   }
   throw bridgeError('UNSUPPORTED', `unknown tabs op: ${op}`)
+}
+
+async function getTextAgent(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const maxChars = Number.isFinite(params.maxChars) ? Math.min(200000, Math.max(500, params.maxChars)) : 20000
+  const selector = params.selector ? String(params.selector) : ''
+  return callInPage(tabId, 'getText', [selector, maxChars])
 }
 
 async function readConsoleAgent(owner, params) {
@@ -934,6 +944,9 @@ function scrollPage(direction, amount) {
   const step = Number.isFinite(amount) ? amount : 600
   const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
   const deltas = { down: step, up: -step, top: -maxY, bottom: maxY }
+  try {
+    window.__dshCursor?.(window.innerWidth / 2, window.innerHeight / 2, 'scroll')
+  } catch {}
   window.scrollBy({ top: deltas[direction] ?? step, left: 0, behavior: 'instant' })
   return {
     ok: true,
@@ -994,6 +1007,19 @@ function findInPage(query, limit) {
     })
   }
   return { query, matches, truncated: matches.length >= max }
+}
+
+function getText(selector, maxChars) {
+  const limit = Number.isFinite(maxChars) ? maxChars : 20000
+  let node = null
+  try {
+    node = selector ? document.querySelector(selector) : document.querySelector('main,article,[role="main"]') || document.body
+  } catch {
+    return { found: false, error: 'INVALID_SELECTOR', text: '', truncated: false }
+  }
+  if (!node) return { found: false, text: '', truncated: false }
+  const raw = (node.innerText || node.textContent || '').replace(/\n{3,}/g, '\n\n').trim()
+  return { found: true, text: raw.slice(0, limit), truncated: raw.length > limit }
 }
 
 function readConsole(level, limit) {

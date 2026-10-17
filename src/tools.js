@@ -313,6 +313,45 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   },
   {
+    name: 'chrome_get_text',
+    description:
+      'Read the visible text of the DSH session page (or one element via a CSS selector). Useful for long articles / lazy-loaded content where a full snapshot of controls is unnecessary.',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'Optional CSS selector; defaults to main/article/[role=main]/body.' },
+        maxChars: { type: 'number', description: 'Max characters, 500-200000 (default 20000).' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        found: { type: 'boolean' },
+        text: { type: 'string' },
+        truncated: { type: 'boolean' },
+      }),
+      render: (_args, value) => {
+        if (!value.found) return [{ type: 'text', text: 'No matching element found for the requested selector.' }]
+        return [
+          {
+            type: 'text',
+            text: `${value.truncated ? '(truncated) ' : ''}${value.text}`,
+          },
+        ]
+      },
+    },
+    async execute(args, exec) {
+      const value = await call(
+        'tab.get_text',
+        { selector: args?.selector, maxChars: args?.maxChars, tabId: args?.tabId, owner: ownerOf(exec) },
+        30000,
+      )
+      if (!value) throw new BridgeError('INTERNAL', 'extension returned no text result')
+      return value
+    },
+  },
+  {
     name: 'chrome_console',
     description:
       'Read recent console output captured from the DSH session page (log/info/warn/error/debug plus uncaught errors). Captured at document_start by the extension, so logs emitted before the call are available. Optionally clear the buffer.',
