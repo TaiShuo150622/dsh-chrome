@@ -25,6 +25,7 @@ Return a text snapshot of the current DSH session page: title, URL, a numbered l
 |---|---|---|---|
 | `maxChars` | number | no | Maximum page-text characters to return (default 100000). |
 | `boxes` | boolean | no | Include each control viewport box [x,y,width,height] in CSS px. |
+| `mode` | enum(full | delta) | no | delta returns only controls that changed since the previous snapshot in this page. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_find`
@@ -108,6 +109,8 @@ Hover over the control with the given snapshot ref (useful to reveal menus, tool
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `ref` | number | no | Control number from the latest chrome_snapshot or chrome_find. |
+| `selector` | string | no | CSS selector alternative to ref (used when ref is omitted). |
+| `snapshot` | boolean | no | Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip). |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_click`
@@ -118,6 +121,7 @@ Click the interactive control with the given snapshot ref number on the current 
 |---|---|---|---|
 | `ref` | number | no | Control number from the latest chrome_snapshot. |
 | `selector` | string | no | CSS selector alternative to ref (used when ref is omitted). |
+| `snapshot` | boolean | no | Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip). |
 | `dialog` | object | no | How to answer a JS dialog (confirm/prompt/beforeunload) triggered by this action. Default: dismiss. Set accept:true to accept; promptText fills a prompt. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
@@ -132,6 +136,7 @@ Type text into the input/textarea with the given snapshot ref number (React/Vue-
 | `text` | string | yes | Text to enter. |
 | `replace` | boolean | no | Replace the existing value instead of appending. |
 | `submit` | boolean | no | Submit the form after typing. |
+| `snapshot` | boolean | no | Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip). |
 | `dialog` | object | no | How to answer a JS dialog (confirm/prompt/beforeunload) triggered by this action. Default: dismiss. Set accept:true to accept; promptText fills a prompt. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
@@ -142,6 +147,7 @@ Dispatch a keyboard key (Enter, Tab, Escape, ArrowUp/Down/Left/Right, PageUp/Pag
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `key` | string | yes | Key to press, e.g. Enter or Escape. |
+| `snapshot` | boolean | no | Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip). |
 | `dialog` | object | no | How to answer a JS dialog (confirm/prompt/beforeunload) triggered by this action. Default: dismiss. Set accept:true to accept; promptText fills a prompt. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
@@ -151,6 +157,7 @@ Scroll the current DSH session page: direction up/down/top/bottom, optional pixe
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
+| `snapshot` | boolean | no | Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip). |
 | `direction` | enum(up | down | top | bottom) | yes |  |
 | `amount` | number | no | Pixels to scroll for up/down (default 600). |
 | `tabId` | number | no | Optional tab id owned by this session. |

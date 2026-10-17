@@ -320,6 +320,15 @@ await sandbox.handleRequest({
 })
 check('dialog accept:true is honored', dialogCommands.at(-1)?.accept === true)
 
+// delta snapshot + post-action snapshot
+nextPageValue = { mode: 'delta', controls: [{ ref: 1, tag: 'button', label: 'Greet', new: true }], changedCount: 1, sameCount: 7, removedRefs: [] }
+const delta = await sandbox.handleRequest({ method: 'tab.snapshot', params: { mode: 'delta', owner: 's1' }, id: 'snapshot-delta' })
+check('tab.snapshot delta returns changed controls', delta?.mode === 'delta' && delta?.changedCount === 1)
+
+nextPageValue = { ok: true, tag: 'button', label: 'Greet' }
+const clickWithSnapshot = await sandbox.handleRequest({ method: 'tab.click', params: { ref: 1, snapshot: true, owner: 's1' }, id: 'click-with-snapshot' })
+check('click can attach a post-action snapshot', clickWithSnapshot?.page?.mode === 'delta' || clickWithSnapshot?.page != null)
+
 // selector fallback, element screenshot, tabs focus
 nextPageValue = { ok: true, tag: 'button', label: 'BySelector' }
 const clickSelector = await sandbox.handleRequest({

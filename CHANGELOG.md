@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [0.1.36] - 2026-10-17
+
+### Added
+
+- `chrome_snapshot {mode:"delta"}`：只返回与上次快照相比新增/变化的控件（ref 稳定后才有意义），附 `changedCount`/`sameCount`/`removedRefs`
+- 动作后可附带新快照：`chrome_click/type/press/scroll/hover {snapshot:true}` → 结果增加 `page` 字段（对齐 Playwright MCP 每次动作回快照的交互）
+- 扩展逻辑测试覆盖 delta 与 post-action snapshot
+
 ## [0.1.35] - 2026-10-17
 
 ### Added

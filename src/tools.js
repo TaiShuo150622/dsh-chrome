@@ -217,6 +217,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       properties: {
         maxChars: { type: 'number', description: 'Maximum page-text characters to return (default 100000).' },
         boxes: { type: 'boolean', description: 'Include each control viewport box [x,y,width,height] in CSS px.' },
+        mode: { type: 'string', enum: ['full', 'delta'], description: 'delta returns only controls that changed since the previous snapshot in this page.' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
       additionalProperties: false,
@@ -227,6 +228,10 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         url: { type: 'string' },
         text: { type: 'string' },
         truncated: { type: 'boolean' },
+        mode: { type: 'string' },
+        changedCount: { type: 'number' },
+        sameCount: { type: 'number' },
+        removedRefs: { type: 'array', items: { type: 'number' } },
         controls: {
           type: 'array',
           items: {
@@ -246,6 +251,15 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       }),
       render: (_args, value) => {
         const controls = Array.isArray(value.controls) ? value.controls : []
+        if (value.mode === 'delta') {
+          const lines = controls.map(
+            (control) =>
+              `${control.new ? '+ ' : '~ '}[${control.ref}] ${control.tag} ${JSON.stringify(control.label)}${control.value ? ` value=${JSON.stringify(control.value)}` : ''}`,
+          )
+          return renderText(
+            `Delta snapshot: ${value.changedCount ?? 0} changed, ${value.sameCount ?? 0} unchanged, removed refs [${(value.removedRefs ?? []).join(',')}]\n${lines.join('\n')}`,
+          )
+        }
         const controlLines = controls.map(
           (control) =>
             `${control.new ? '+ ' : ''}[${control.ref}] ${control.tag}${control.kind ? ` (${control.kind})` : ''} ${JSON.stringify(control.label)}${control.value ? ` value=${JSON.stringify(control.value)}` : ''}${control.box ? ` box=[${control.box.join(',')}]` : ''}`,
@@ -270,7 +284,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         : 100000
       return call(
         'tab.snapshot',
-        { maxChars, boxes: Boolean(args?.boxes), tabId: args?.tabId, owner: ownerOf(exec) },
+        { maxChars, boxes: Boolean(args?.boxes), mode: args?.mode || 'full', tabId: args?.tabId, owner: ownerOf(exec) },
         30000,
       )
     },
@@ -632,6 +646,11 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       type: 'object',
       properties: {
         ref: { type: 'number', description: 'Control number from the latest chrome_snapshot or chrome_find.' },
+        selector: { type: 'string', description: 'CSS selector alternative to ref (used when ref is omitted).' },
+        snapshot: {
+          type: 'boolean',
+          description: 'Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip).',
+        },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
       additionalProperties: false,
@@ -642,12 +661,13 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         tag: { type: 'string' },
         label: { type: 'string' },
         tabId: { type: 'number' },
+        page: { type: 'object', additionalProperties: true },
       }),
       render: (_args, value) => renderText(`Hovered ${value.tag || 'element'} ${JSON.stringify(value.label || '')}`),
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_hover', `hover ref ${args?.ref}`)
-      return call('tab.hover', { ref: args?.ref, selector: args?.selector, tabId: args?.tabId, owner: ownerOf(exec) })
+      return call('tab.hover', { ref: args?.ref, selector: args?.selector, snapshot: Boolean(args?.snapshot), tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
 
@@ -661,6 +681,10 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       properties: {
         ref: { type: 'number', description: 'Control number from the latest chrome_snapshot.' },
         selector: { type: 'string', description: 'CSS selector alternative to ref (used when ref is omitted).' },
+        snapshot: {
+          type: 'boolean',
+          description: 'Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip).',
+        },
         dialog: {
           type: 'object',
           description:
@@ -693,12 +717,13 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
             additionalProperties: true,
           },
         },
+        page: { type: 'object', additionalProperties: true },
       }),
       render: (_args, value) => renderText(`Clicked ${value.tag || 'element'} ${JSON.stringify(value.label || '')}`),
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_click', `click ref ${args?.ref}`)
-      return call('tab.click', { ref: args?.ref, selector: args?.selector, dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
+      return call('tab.click', { ref: args?.ref, selector: args?.selector, snapshot: Boolean(args?.snapshot), dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
 
@@ -715,6 +740,10 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         text: { type: 'string', description: 'Text to enter.' },
         replace: { type: 'boolean', description: 'Replace the existing value instead of appending.' },
         submit: { type: 'boolean', description: 'Submit the form after typing.' },
+        snapshot: {
+          type: 'boolean',
+          description: 'Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip).',
+        },
         dialog: {
           type: 'object',
           description:
@@ -748,6 +777,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
             additionalProperties: true,
           },
         },
+        page: { type: 'object', additionalProperties: true },
       }),
       render: (_args, value) =>
         renderText(
@@ -762,6 +792,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         text: String(args?.text ?? ''),
         replace: Boolean(args?.replace),
         submit: Boolean(args?.submit),
+        snapshot: Boolean(args?.snapshot),
         dialog: args?.dialog,
         tabId: args?.tabId,
         owner: ownerOf(exec),
@@ -778,6 +809,10 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       type: 'object',
       properties: {
         key: { type: 'string', description: 'Key to press, e.g. Enter or Escape.' },
+        snapshot: {
+          type: 'boolean',
+          description: 'Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip).',
+        },
         dialog: {
           type: 'object',
           description:
@@ -807,12 +842,13 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
             additionalProperties: true,
           },
         },
+        page: { type: 'object', additionalProperties: true },
       }),
       render: (_args, value) => renderText(`Pressed ${value.key} on <${value.target}>`),
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_press', `press ${args?.key}`)
-      return call('tab.press', { key: String(args?.key ?? ''), dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
+      return call('tab.press', { key: String(args?.key ?? ''), snapshot: Boolean(args?.snapshot), dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
 
@@ -824,6 +860,10 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     parameters: {
       type: 'object',
       properties: {
+        snapshot: {
+          type: 'boolean',
+          description: 'Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip).',
+        },
         direction: { type: 'string', enum: ['up', 'down', 'top', 'bottom'] },
         amount: { type: 'number', description: 'Pixels to scroll for up/down (default 600).' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
@@ -837,6 +877,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         y: { type: 'number' },
         viewportHeight: { type: 'number' },
         documentHeight: { type: 'number' },
+        page: { type: 'object', additionalProperties: true },
       }),
       render: (_args, value) =>
         renderText(`Scrolled to y=${value.y} (viewport ${value.viewportHeight}, document ${value.documentHeight})`),
@@ -845,6 +886,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       return call('tab.scroll', {
         direction: String(args?.direction ?? 'down'),
         amount: args?.amount,
+        snapshot: Boolean(args?.snapshot),
         tabId: args?.tabId,
         owner: ownerOf(exec),
       })

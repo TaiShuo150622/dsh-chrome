@@ -58,6 +58,7 @@
 | Markdown 阅读 | browser-use | ✅ 已实现（0.1.34）：`chrome_get_text {format:"markdown"}` |
 | 自动更新（开发期） | 自研 | ✅ host 监听 extension/ → ext.changed → reload；0.1.34 起连接时 host 上报磁盘版本（ext.state），SW 发现不一致自动 reload |
 | 动作观察/缓存（observe） | Stagehand | P3 评估（需要模型侧配合，工具层只提供候选动作列表） |
+| 快照 delta / 动作后自动回快照 | browser-use / Playwright MCP | ✅ 已实现（0.1.36）：`chrome_snapshot {mode:"delta"}`、动作 `{snapshot:true}` |
 
 ## 6. 自动更新的现实约束
 

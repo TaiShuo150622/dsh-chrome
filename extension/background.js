@@ -616,12 +616,22 @@ async function callInPage(tabId, action, args = [], timeoutMs = 15000, dialogOpt
   return value
 }
 
+async function attachSnapshotIfRequested(tabId, result, params, timeoutMs = 8000) {
+  if (!params?.snapshot) return result
+  try {
+    const page = await callInPage(tabId, 'snapshot', [20000, false, 'full'], timeoutMs)
+    return { ...result, page }
+  } catch (error) {
+    return { ...result, pageError: error?.message || String(error) }
+  }
+}
+
 async function snapshot(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const limit = Number.isFinite(params.maxChars)
     ? Math.max(1000, Math.min(200000, params.maxChars))
     : 100000
-  const value = await callInPage(tabId, 'snapshot', [limit, Boolean(params.boxes)])
+  const value = await callInPage(tabId, 'snapshot', [limit, Boolean(params.boxes), String(params.mode || 'full')])
   if (!value) throw bridgeError('INTERNAL', 'page snapshot returned no result')
   return value
 }
@@ -707,7 +717,7 @@ async function hover(owner, params) {
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
   }
-  return { ...result, tabId }
+  return attachSnapshotIfRequested(tabId, { ...result, tabId }, params)
 }
 
 async function click(owner, params) {
@@ -721,7 +731,7 @@ async function click(owner, params) {
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
   }
-  return { ...result, tabId }
+  return attachSnapshotIfRequested(tabId, { ...result, tabId }, params)
 }
 
 async function typeText(owner, params) {
@@ -741,7 +751,7 @@ async function typeText(owner, params) {
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
   }
-  return { ...result, tabId }
+  return attachSnapshotIfRequested(tabId, { ...result, tabId }, params)
 }
 
 async function press(owner, params) {
@@ -749,7 +759,7 @@ async function press(owner, params) {
   const key = String(params.key || '')
   if (!key) throw bridgeError('INTERNAL', 'key is required')
   const result = await callInPage(tabId, 'press', [key], 15000, params.dialog)
-  return { ...result, tabId }
+  return attachSnapshotIfRequested(tabId, { ...result, tabId }, params)
 }
 
 async function scroll(owner, params) {
@@ -757,7 +767,7 @@ async function scroll(owner, params) {
   const direction = String(params.direction || 'down')
   const amount = Number.isFinite(params.amount) ? Number(params.amount) : 600
   const result = await callInPage(tabId, 'scroll', [direction, amount])
-  return { ...result, tabId }
+  return attachSnapshotIfRequested(tabId, { ...result, tabId }, params)
 }
 
 async function history(owner, params) {
@@ -1049,8 +1059,9 @@ function waitForComplete(tabId, timeoutMs) {
  * Runs inside the page. Must stay self-contained: Chrome serializes this
  * function and its arguments into the page's isolated world.
  */
-function pageSnapshot(maxChars, withBoxes) {
+function pageSnapshot(maxChars, withBoxes, mode) {
   const limit = Number.isFinite(maxChars) ? maxChars : 100000
+  const deltaMode = String(mode || 'full') === 'delta'
   // Refs are stable across snapshots: an element that already has one keeps it;
   // only new elements get the next number. (Adopted from browser-use's stable
   // backend-node handles and Playwright MCP's per-page refs.)
@@ -1171,6 +1182,31 @@ function pageSnapshot(maxChars, withBoxes) {
     controls.push(control)
   }
 
+  const currentMap = new Map(controls.map((control) => [control.ref, control]))
+  const previousMap = window.__dshLastMap instanceof Map ? window.__dshLastMap : new Map()
+  window.__dshLastMap = currentMap
+  if (deltaMode) {
+    const changed = controls.filter((control) => {
+      const previous = previousMap.get(control.ref)
+      if (!previous) return true
+      return previous.label !== control.label || previous.value !== control.value || previous.kind !== control.kind
+    })
+    const removedRefs = []
+    for (const ref of previousMap.keys()) {
+      if (!currentMap.has(ref)) removedRefs.push(ref)
+    }
+    return {
+      title: document.title || '',
+      url: location.href,
+      mode: 'delta',
+      controls: changed,
+      changedCount: changed.length,
+      removedRefs,
+      sameCount: controls.length - changed.length,
+      text: '',
+      truncated: false,
+    }
+  }
   const bodyText = (document.body ? document.body.innerText : '')
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]+\n/g, '\n')
@@ -1179,6 +1215,7 @@ function pageSnapshot(maxChars, withBoxes) {
   return {
     title: document.title || '',
     url: location.href,
+    mode: 'full',
     controls,
     text: truncated ? bodyText.slice(0, limit) : bodyText,
     truncated,
