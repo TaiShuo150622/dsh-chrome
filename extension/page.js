@@ -27,6 +27,16 @@ function connectPagePort() {
 connectPagePort()
 
 setInterval(() => {
+  // A port message does NOT wake a terminated service worker, but
+  // chrome.runtime.sendMessage does. This is what brings the SW back so it can
+  // re-open the native port after Chrome evicted it.
+  try {
+    chrome.runtime.sendMessage({ type: 'dsh-page-tick' }, () => {
+      void chrome.runtime.lastError
+    })
+  } catch {
+    // extension context invalidated; reload of the page re-injects us
+  }
   if (!port) {
     connectPagePort()
     return

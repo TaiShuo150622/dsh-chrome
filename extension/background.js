@@ -836,6 +836,10 @@ chrome.runtime.onConnect.addListener((keepalivePort) => {
     if (!port) forceReconnect().catch(() => {})
   })
 })
+// Every service-worker start (install/startup/event wake) should try to
+// re-open the native port; this is the last line of the reconnect defense.
+if (!port) forceReconnect().catch(() => {})
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (!alarm.name.startsWith('dsh-chrome-reconnect')) return
   // Force, not "if (!port)": a killed native host can leave a stale port
@@ -843,6 +847,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   forceReconnect().catch(() => {})
 })
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === 'dsh-page-tick') {
+    if (!port) forceReconnect().catch(() => {})
+    sendResponse({ ok: true })
+    return
+  }
   if (message?.type === 'dsh-status') {
     ;(async () => {
       const sessionTabId = await firstActiveTabId()
