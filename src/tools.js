@@ -506,6 +506,63 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   },
   {
+    name: 'chrome_storage',
+    description:
+      'Read or change the session page storage (localStorage / sessionStorage): get one key, several keys or all entries; set/remove/clear (mutations require approval). Values are JSON-encoded when not strings.',
+    parameters: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['get', 'set', 'remove', 'clear'] },
+        scope: { type: 'string', enum: ['local', 'session'], description: 'Storage area (default local).' },
+        key: { type: 'string', description: 'Key for get/set.' },
+        value: { description: 'Value for set (string or JSON-serializable value).' },
+        keys: { type: 'array', items: { type: 'string' }, description: 'Keys for get/remove batches.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['op'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        ok: { type: 'boolean' },
+        scope: { type: 'string' },
+        value: {},
+        items: { type: 'object', additionalProperties: true },
+        set: { type: 'number' },
+        removed: { type: 'number' },
+        cleared: { type: 'boolean' },
+        tabId: { type: 'number' },
+      }),
+      render: (_args, value) => {
+        if (value.items) {
+          const lines = Object.entries(value.items).map(([key, item]) => `${key}=${JSON.stringify(item)}`)
+          return renderText(`${value.scope}Storage: ${lines.join(', ') || '(empty)'}`)
+        }
+        if (value.value !== undefined) return renderText(`${value.scope}Storage ${JSON.stringify(value.value)}`)
+        if (value.set != null) return renderText(`Set ${value.set} key(s) in ${value.scope}Storage`)
+        if (value.removed != null) return renderText(`Removed ${value.removed} key(s) from ${value.scope}Storage`)
+        return renderText(`Cleared ${value.scope}Storage`)
+      },
+    },
+    async execute(args, exec) {
+      const op = String(args?.op ?? 'get')
+      if (op !== 'get') await guard(exec, 'chrome_storage', `storage ${op}`)
+      return call(
+        'tab.storage',
+        {
+          op,
+          scope: args?.scope,
+          key: args?.key,
+          value: args?.value,
+          keys: args?.keys,
+          tabId: args?.tabId,
+          owner: ownerOf(exec),
+        },
+        30000,
+      )
+    },
+  },
+  {
     name: 'chrome_pdf',
     description:
       'Export the current DSH session page to a PDF file with CDP Page.printToPDF and return the saved path. Useful for archiving or sharing a page as it renders.',

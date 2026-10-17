@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [0.1.53] - 2026-10-17
+
+### Added
+
+- popup **Show tab**：一键把本会话标签切到前台（`dsh-focus-tab`）
+- `docs/AUTO-UPDATE.md`：开发期自动重载链路、ext.state 版本核对、发布形态与恢复手册
+
+## [0.1.52] - 2026-10-17
+
+### Added
+
+- `chrome_storage`（第 25 个工具）：localStorage/sessionStorage 的 get/set/remove/clear；写入走审批，值 JSON 编码；真机 CfT 验证 set/get/all/clear
+
 ## [0.1.51] - 2026-10-17
 
 ### Added

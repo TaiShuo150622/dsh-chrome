@@ -72,6 +72,7 @@ host.stdout.on(
       'tab.upload': { ok: true, ref: 5, files: 1 },
       'browser.downloads': { items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z' }] },
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
+      'tab.storage': { ok: true, scope: 'local', value: 'hello' },
       'tab.drag': { ok: true, from: 1, to: 2, tabId: 7 },
       'tab.emulate': { width: 375, height: 800, applied: true },
       'tab.pdf': { dataBase64: Buffer.from('%PDF-1.4\n%%EOF\n').toString('base64') },
@@ -108,7 +109,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('twenty-four tools registered', tools.length === 24, tools.map((t) => t.name).join(', '))
+check('twenty-five tools registered', tools.length === 25, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -165,6 +166,10 @@ check('claim params reach the extension', requests.at(-1)?.method === 'tab.tabs'
 const selectValue = await byName.chrome_select.execute({ ref: 4, checked: true }, exec())
 check('chrome_select executes', selectValue.ok === true && selectValue.value === 'checked')
 check('select params reach the extension', requests.at(-1)?.method === 'tab.select' && requests.at(-1)?.params?.checked === true)
+
+const storageValue = await byName.chrome_storage.execute({ op: 'get', key: 'k' }, exec())
+check('chrome_storage get executes', storageValue.value === 'hello')
+check('storage params reach the extension', requests.at(-1)?.method === 'tab.storage' && requests.at(-1)?.params?.op === 'get')
 
 const dragValue = await byName.chrome_drag.execute({ fromRef: 1, toRef: 2 }, exec())
 check('chrome_drag executes', dragValue.ok === true)

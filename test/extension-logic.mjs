@@ -34,6 +34,7 @@ const eventListeners = new Set()
 let nextPageValue = { ok: true, tag: 'button', label: 'OK' }
 let nextTabId = 100
 
+const runtimeMessageListeners = []
 let connectNativeCalls = 0
 let runtimeReloads = 0
 const nativePortListeners = { message: [], disconnect: [] }
@@ -70,7 +71,11 @@ const chrome = {
     onConnect: { addListener() {} },
     onInstalled: { addListener() {} },
     onStartup: { addListener() {} },
-    onMessage: { addListener() {} },
+    onMessage: {
+      addListener(listener) {
+        runtimeMessageListeners.push(listener)
+      },
+    },
   },
   storage: {
     session: {
@@ -370,6 +375,14 @@ check('tab.emulate applies device metrics', emulated?.applied === true && emulat
 
 const emulatedReset = await sandbox.handleRequest({ method: 'tab.emulate', params: { reset: true, owner: 's1' }, id: 'emulate-reset' })
 check('tab.emulate reset clears the override', emulatedReset?.applied === false)
+
+// popup focus-tab message activates the session tab
+const focusResponse = await new Promise((resolve) => {
+  for (const listener of runtimeMessageListeners) {
+    if (listener({ type: 'dsh-focus-tab' }, {}, resolve) === true) break
+  }
+})
+check('dsh-focus-tab activates the session tab', focusResponse?.ok === true && focusResponse?.tabId === 7)
 
 // reconnect after the host exits: the worker must issue a NEW connectNative.
 // Regression: ensurePort used to leave `connecting` non-null forever, so every

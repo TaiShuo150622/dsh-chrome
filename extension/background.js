@@ -405,6 +405,8 @@ async function handleRequest(message) {
       return listDownloads(params)
     case 'tab.select':
       return selectAgent(owner, params)
+    case 'tab.storage':
+      return storage(owner, params)
     case 'tab.emulate':
       return emulate(owner, params)
     case 'tab.drag':
@@ -466,6 +468,7 @@ const PAGE_ACTIONS = {
   getText,
   getMarkdown,
   select: selectByRef,
+  storage: pageStorage,
   drag: dragByRef,
   elementBox,
   overlay: drawRefOverlay,
@@ -923,6 +926,20 @@ async function listDownloads(params) {
       startTime: item.startTime || '',
     })),
   }
+}
+
+async function storage(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const op = String(params.op || 'get')
+  const scope = params.scope === 'session' ? 'session' : 'local'
+  const key = params.key == null ? '' : String(params.key)
+  const rawValue = params.value
+  const keys = Array.isArray(params.keys) ? params.keys.map(String) : []
+  const result = await callInPage(tabId, 'storage', [op, scope, key, rawValue, keys], 10000)
+  if (!result?.ok) {
+    throw bridgeError(result?.reason || 'INTERNAL', result?.message || 'storage operation failed')
+  }
+  return { ...result, tabId }
 }
 
 async function emulate(owner, params) {
@@ -1390,6 +1407,53 @@ function hoverByRef(ref, selector) {
     ok: true,
     tag: element.tagName.toLowerCase(),
     label: (element.innerText || element.getAttribute('aria-label') || '').trim().slice(0, 80),
+  }
+}
+
+function pageStorage(op, scope, key, value, keys) {
+  const area = scope === 'session' ? sessionStorage : localStorage
+  const encode = (input) => (typeof input === 'string' ? input : JSON.stringify(input))
+  try {
+    if (op === 'get') {
+      if (key) return { ok: true, scope, value: area.getItem(key) }
+      if (keys.length > 0) {
+        const items = {}
+        for (const name of keys) items[name] = area.getItem(name)
+        return { ok: true, scope, items }
+      }
+      const items = {}
+      for (let index = 0; index < area.length && index < 100; index += 1) {
+        const name = area.key(index)
+        items[name] = area.getItem(name)
+      }
+      return { ok: true, scope, items }
+    }
+    if (op === 'set') {
+      if (keys.length > 0) {
+        let count = 0
+        for (const name of keys) {
+          if (key === '') break
+          area.setItem(name, encode(value))
+          count += 1
+        }
+        return { ok: true, scope, set: count }
+      }
+      if (!key) return { ok: false, reason: 'INVALID_ARGUMENT', message: 'key is required for set' }
+      area.setItem(key, encode(value))
+      return { ok: true, scope, set: 1 }
+    }
+    if (op === 'remove') {
+      const names = keys.length ? keys : key ? [key] : []
+      for (const name of names) area.removeItem(name)
+      return { ok: true, scope, removed: names.length }
+    }
+    if (op === 'clear') {
+      area.clear()
+      return { ok: true, scope, cleared: true }
+    }
+    return { ok: false, reason: 'UNSUPPORTED', message: `unsupported storage op: ${op}` }
+  } catch (error) {
+    return { ok: false, reason: 'STORAGE_ERROR', message: error?.message || String(error) }
   }
 }
 
@@ -1919,6 +1983,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sessionTabId,
         lastError: lastConnectError,
       })
+    })()
+    return true
+  }
+  if (message?.type === 'dsh-focus-tab') {
+    ;(async () => {
+      const sessions = await loadSessions()
+      let tabId = null
+      for (const entry of Object.values(sessions || {})) {
+        if (Number.isFinite(entry?.activeTabId)) {
+          tabId = entry.activeTabId
+          break
+        }
+      }
+      if (!tabId) {
+        sendResponse({ ok: false, error: 'no session tab yet' })
+        return
+      }
+      try {
+        await chrome.tabs.update(tabId, { active: true })
+        const tab = await chrome.tabs.get(tabId)
+        sendResponse({ ok: true, tabId, url: tab.url || '', title: tab.title || '' })
+      } catch (error) {
+        sendResponse({ ok: false, error: error?.message || String(error) })
+      }
     })()
     return true
   }

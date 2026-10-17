@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：24
+> 工具数量：25
 
 ### `chrome_status`
 
@@ -81,6 +81,19 @@ Override the viewport with CDP Emulation (responsive testing): set width/height/
 | `height` | number | no | Viewport height in CSS px (>=100). |
 | `mobile` | boolean | no | Emulate a mobile device. |
 | `reset` | boolean | no | Clear the viewport override. |
+| `tabId` | number | no | Optional tab id owned by this session. |
+
+### `chrome_storage`
+
+Read or change the session page storage (localStorage / sessionStorage): get one key, several keys or all entries; set/remove/clear (mutations require approval). Values are JSON-encoded when not strings.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `op` | enum(get | set | remove | clear) | yes |  |
+| `scope` | enum(local | session) | no | Storage area (default local). |
+| `key` | string | no | Key for get/set. |
+| `value` | object | no | Value for set (string or JSON-serializable value). |
+| `keys` | array | no | Keys for get/remove batches. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_pdf`

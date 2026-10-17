@@ -15,7 +15,7 @@
 
 完整步骤、排障与卸载：[docs/INSTALL.md](docs/INSTALL.md)。
 
-## 当前能力（扩展 0.1.51，24 个工具）
+## 当前能力（扩展 0.1.53，25 个工具）
 
 | 类别 | 能力 |
 |---|---|
@@ -66,6 +66,7 @@
 - [P2 功能规划：竞品能力盘点与待办优先级](docs/P2-PLAN.md)
 - [安装指南（macOS 本地/开发者）](docs/INSTALL.md) · [工具参考（自动生成）](docs/TOOLS.md)
 - [用法示例：典型任务的工具序列](docs/EXAMPLES.md) · [FAQ](docs/FAQ.md)
+- [自动更新说明](docs/AUTO-UPDATE.md)
 - [安全模型](docs/SECURITY.md) · [贡献指南](CONTRIBUTING.md) · [发布检查清单](docs/RELEASE.md) · [变更日志](CHANGELOG.md) · [第三方说明](NOTICE.md)
 
 ## 分阶段（摘要）

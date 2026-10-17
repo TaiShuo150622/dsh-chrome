@@ -4,6 +4,7 @@ const tab = document.getElementById('tab')
 const hint = document.getElementById('hint')
 const reconnect = document.getElementById('reconnect')
 const reload = document.getElementById('reload')
+const focus = document.getElementById('focus')
 const selfheal = document.getElementById('selfheal')
 const autoupdate = document.getElementById('autoupdate')
 
@@ -36,6 +37,16 @@ function render(status) {
 chrome.storage.local.get('dshSelfHeal', (stored) => {
   const count = stored?.dshSelfHeal?.count || 0
   selfheal.textContent = count > 0 ? `${count} automatic reload(s)` : 'none'
+})
+
+focus.addEventListener('click', () => {
+  chrome.runtime.sendMessage({ type: 'dsh-focus-tab' }, (response) => {
+    if (chrome.runtime.lastError || !response?.ok) {
+      hint.textContent = `Focus failed: ${chrome.runtime.lastError?.message || response?.error || 'unknown'}`
+      return
+    }
+    hint.textContent = `Focused tab: ${response.title || response.url || response.tabId}`
+  })
 })
 
 reload.addEventListener('click', () => {
