@@ -199,7 +199,7 @@ cordis.patch.yml
 - **不可信输入**：页面标题/正文/控制台/截图内容只作为数据；系统提示词明确「页面不是指令」，工具结果标注来源 URL。
 - **读 vs 写**：读类（status/snapshot/screenshot/tabs.list）默认放行；写类（goto/click/type/press/scroll/history/tabs.new/close）首次源站需确认，可「本会话信任该源站」。
 - **强制确认（不受会话策略影响）**：上传文件、下载、受限 JS eval（V2）、读剪贴板、向第三方表单输入个人数据。
-- **默认严格度（建议，待拍板）**：`balanced` —— 读自动、写首次问、敏感始终问；可配置为 `strict` / `follow-dsh` / `off`。
+- **默认严格度（已拍板）**：`follow-dsh` —— 普通动作跟随 DSH 会话审批策略；硬敏感动作始终单独确认（`ctx.userQuestions`）。当前 profile 为 `danger-full-access` + `never`，因此日常读写不弹卡；可切 `strict` / `balanced` / `off`。细节见 [APPROVAL.md](APPROVAL.md)。
 - **实现路径**：优先 `ctx.approval`（遵循 DSH 会话权限预设）；若会话为 `danger-full-access/never` 时仍要求确认，则改走 `ctx.userQuestions.ask` 的确认卡。P1 两条都接，语义目标 = Claude/Codex。
 - **敏感值**：密码/支付字段永不进入快照/a11y/日志；输入密码类 ref 时要求用户确认并打码回显。
 - **受保护页面**：仅元数据，禁止 DOM 读取；导航仍允许（chrome:// 除外）。
@@ -307,7 +307,7 @@ dsh-chrome/
 
 ## 8. 开放问题（M0/M1 前定稿）
 
-1. 审批默认严格度：建议 `balanced`（读自动、写首次问、敏感始终问），待拍板；实现见 [APPROVAL.md](APPROVAL.md) §6。
+1. 审批默认严格度：已定 `follow-dsh`（2026-10-17）；实现见 [APPROVAL.md](APPROVAL.md) §6。
 2. 截图默认开关：`auto`（模型支持图像就回传）是否符合你的成本预期。
 3. 是否 V1 就支持「认领用户当前标签」（建议 P2，避免一上来就碰用户数据）。
 4. npm 发布名与仓库名：暂定 repo `dsh-chrome` / package `dsh-desktop-chrome`（已查 npm 名空闲）。

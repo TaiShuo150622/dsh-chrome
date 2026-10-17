@@ -56,21 +56,28 @@ DSH Chrome 请求操作浏览器
 
 ## 5. 严格度模式（配置项 `approval.mode`）
 
+**已拍板（2026-10-17）：默认 `follow-dsh`。** 含义：普通动作跟随 DSH 会话的审批策略；硬敏感动作不受策略影响、始终问。
+
 | 模式 | 读取 | 普通写入 | 硬敏感 | 适用 |
 |---|---|---|---|---|
 | `strict` | 新站点首次询问 | 每次询问（可信任站点） | 始终问 | 首次使用、敏感账号 |
-| **`balanced`（P1 默认）** | 自动 | 新站点首次询问，可本会话信任 | 始终问 | 日常个人使用 |
-| `follow-dsh` | 自动 | 跟随 DSH 审批策略 | 始终问 | 严格遵循会话预设者 |
+| `balanced` | 自动 | 新站点首次询问，可本会话信任 | 始终问 | 日常个人使用（备选） |
+| **`follow-dsh`（当前默认，已选定）** | 跟随 DSH 策略 | 跟随 DSH 策略 | **始终问**（`ctx.userQuestions`，仅根会话） | 信任 DSH 会话预设、追求顺畅 |
 | `off` | 自动 | 自动 | 自动（仅日志） | 仅隔离测试环境，不推荐 |
+
+> **当前环境的实际后果**：桌面 profile 默认 `danger-full-access` + 审批 `never`，所以在 `follow-dsh` 下，**日常读/写动作不会弹卡**（等于你授权模型操作浏览器）；只有上传/下载/eval/剪贴板/密码等硬敏感动作会单独弹确认。若想日常更稳，随时可切 `balanced`/`strict`。
+>
+> **硬敏感的实现注意**：`ctx.approval.request` 在 `never` 策略下会被自动放行，不能用来兜住硬敏感；硬敏感改走 `ctx.userQuestions.ask`（根会话可用；子代理会话调用会得到 `DELEGATED_CALLER`，此时直接失败并提示在根会话处理）。
 
 其他相关配置：`approval.timeoutMs`（默认 120000）、`approval.trustScope`（`session` 默认 / `persistent` 后续）、`approval.sensitive`（硬敏感清单，后续可在设置页调整）。
 
 ## 6. 实现路径（P1 定稿）
 
-1. **优先 `ctx.approval.request`**：DSH 原生审批卡，语义最正；但要注意 `danger-full-access/never` 会被自动通过。
-2. **兜底 `ctx.userQuestions.ask`**：在 DSH 桌面 GUI 弹问题卡，选项为允许一次/本会话信任/拒绝；返回答案后执行或拒绝。
-3. **P1 选择**：两种都接，按会话策略选路径；验收标准是「审批卡确实出现在桌面 GUI、拒绝路径返回 `APPROVAL_DENIED`、超时 fail closed」。
+1. **普通动作**：`ctx.approval.request({agent, toolName, callId, reason, displayReason, signal})` —— 由 DSH 会话策略决定是否弹卡；`allowed-once` 是唯一放行结果，`rejected/cancelled/unavailable` 都按失败处理（fail closed）。
+2. **硬敏感动作**：`ctx.userQuestions.ask({questions, agent, signal})` —— 无论会话策略如何都弹确认卡（根会话）；子代理会话（`DELEGATED_CALLER`）直接返回失败并提示到根会话处理。
+3. **超时**：`AbortController` + `approval.timeoutMs`；超时 = 失败，不是默认允许。
 4. 模型侧提示：系统提示词明确「审批被拒绝时不得重试同一动作，先向用户说明」。
+5. 验收标准：普通动作在 `never` 下不弹卡（符合 `follow-dsh`）；硬敏感动作无论策略如何都会弹卡、拒绝路径返回明确错误、超时 fail closed。
 
 ## 7. 超时、无人值守与并发
 
@@ -101,6 +108,7 @@ DSH Chrome 请求操作浏览器
 | 登录/CAPTCHA 交还 | ✅ 暂停等人工 | ✅ handoff | ✅ 截图 + 提示 |
 | 审批被拒后行为 | 停止并说明 | 遵循确认策略 | `APPROVAL_DENIED` + 说明 |
 
-## 11. 待拍板
+## 11. 拍板记录
 
-P1 默认用哪个模式？我的建议是 **`balanced`（平衡）**：读自动、写首次问、敏感始终问——日常最顺手，风险面也守住了。若你的使用场景更谨慎，选 `strict`。
+- **2026-10-17：默认模式定为 `follow-dsh`**（用户选择）。已知后果：当前 profile 默认 `danger-full-access` + 审批 `never`，因此日常读写不弹卡；硬敏感动作仍会走 `ctx.userQuestions` 单独确认。备选 `balanced`/`strict` 可随时切换。
+- 后续若真实使用中出现误操作或误触站点，优先把模式调到 `balanced`，而不是给插件加更多特判。
