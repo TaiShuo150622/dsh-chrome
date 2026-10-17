@@ -164,6 +164,21 @@ async function closeSessionTabs(owner) {
   return { closed }
 }
 
+// Development auto-reload: the native host watches extension/ and emits
+// ext.changed; debounce so a burst of file writes reloads once.
+let extensionReloadTimer = null
+function scheduleExtensionReload() {
+  if (extensionReloadTimer) clearTimeout(extensionReloadTimer)
+  extensionReloadTimer = setTimeout(() => {
+    extensionReloadTimer = null
+    try {
+      chrome.runtime.reload()
+    } catch (error) {
+      log('extension reload failed', error?.message || error)
+    }
+  }, 800)
+}
+
 // ------------------------------------------------------------ native messaging
 function ensurePort() {
   if (port) return Promise.resolve(port)
@@ -188,6 +203,11 @@ function ensurePort() {
     nativePort.onMessage.addListener((message) => {
       lastNativeSignalAt = Date.now()
       if (message?.id == null) {
+        if (message?.event === 'ext.changed') {
+          log('extension files changed; reloading', message.params?.file || '')
+          scheduleExtensionReload()
+          return
+        }
         if (message?.event) log('event', message.event)
         return
       }

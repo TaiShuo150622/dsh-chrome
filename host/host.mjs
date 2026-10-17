@@ -65,6 +65,40 @@ function readDiscovery() {
   }
 }
 
+// ------------------------------------------------------- extension auto-reload
+// Developer convenience: when the provider wrote dev.json, watch the unpacked
+// extension directory and tell the extension to reload itself. This is how a
+// code change in extension/ reaches Chrome without a manual ⟳.
+let watcher = null
+let watchTimer = null
+
+function sendNativeEvent(event, params) {
+  if (!authed || !socket || socket.destroyed) return
+  writeNative({ event, params })
+}
+
+function startExtensionWatcher() {
+  try {
+    const dev = JSON.parse(fs.readFileSync(path.join(cacheDir, 'dev.json'), 'utf8'))
+    if (!dev?.watch || typeof dev.extensionDir !== 'string') return
+    if (!fs.existsSync(dev.extensionDir)) return
+    watcher = fs.watch(dev.extensionDir, { recursive: true }, (_event, filename) => {
+      const name = String(filename || '')
+      if (!/\.(js|json|html|css|png|svg)$/.test(name)) return
+      if (watchTimer) clearTimeout(watchTimer)
+      watchTimer = setTimeout(() => {
+        watchTimer = null
+        log(`extension change detected: ${name}`)
+        sendNativeEvent('ext.changed', { file: name })
+      }, 500)
+    })
+    watcher.on('error', (error) => log(`extension watcher error: ${error.message}`))
+    log(`watching extension dir ${dev.extensionDir}`)
+  } catch (error) {
+    log(`extension watcher off: ${error.message}`)
+  }
+}
+
 // ---------------------------------------------------------------- native frames
 let stdinBuffer = Buffer.alloc(0)
 
@@ -143,6 +177,7 @@ function scheduleReconnect(reason) {
     retryTimer = null
     log(`host started pid=${process.pid}`)
 connectBridge()
+startExtensionWatcher()
   }, delay)
   retryDelay = Math.min(retryDelay * 2, 5000)
   log(`will reconnect in ${delay}ms (${reason})`)

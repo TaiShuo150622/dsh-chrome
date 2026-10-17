@@ -117,6 +117,16 @@ export async function ensureInstallAssets({ root, logger }) {
   const instructionsPath = path.join(cacheDir, 'INSTALL.md')
   await fsp.writeFile(instructionsPath, instructions, { mode: 0o600 })
 
+  // Development convenience: the native host watches the extension directory
+  // and asks Chrome to reload the unpacked extension when files change. Release
+  // installs should not write this file.
+  const devConfigPath = path.join(cacheDir, 'dev.json')
+  await fsp.writeFile(
+    devConfigPath,
+    `${JSON.stringify({ watch: true, extensionDir }, null, 2)}\n`,
+    { mode: 0o600 },
+  )
+
   logger?.info?.('dsh-chrome: extension dir %s (id %s)', extensionDir, extensionId)
   return {
     extensionId,
