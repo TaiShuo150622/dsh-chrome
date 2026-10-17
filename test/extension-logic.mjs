@@ -231,6 +231,9 @@ check('tab.wait load returns ready state', waited?.loadState === 'complete')
 const claim = await sandbox.handleRequest({ method: 'tab.claim', params: { owner: 's2' }, id: 'claim' })
 check('tab.claim claims the active tab', claim?.claimed === true && tabs.get(claim.tabId) != null)
 
+const claimViaTabs = await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'claim', owner: 's3' }, id: 'tabs-claim' })
+check('tab.tabs op=claim routes to claim', claimViaTabs?.claimed === true)
+
 const downloads = await sandbox.handleRequest({ method: 'browser.downloads', params: { limit: 5 }, id: 'downloads' })
 check('browser.downloads lists items', downloads?.items?.[0]?.filename === '/tmp/report.pdf')
 

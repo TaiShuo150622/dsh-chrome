@@ -734,6 +734,9 @@ async function tabs(owner, params) {
     await saveSessions()
     return { closed: tabId, remaining: after.tabIds.length }
   }
+  if (op === 'claim') {
+    return claimTab(owner, params)
+  }
   throw bridgeError('UNSUPPORTED', `unknown tabs op: ${op}`)
 }
 
