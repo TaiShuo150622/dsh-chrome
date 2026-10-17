@@ -1,17 +1,14 @@
 /**
  * DSH Desktop Chrome — MV3 service worker (P0).
  *
- * Keeps one native messaging port to the DSH native host and executes the
- * browser requests the provider sends: status, background-tab navigation,
- * text snapshots, and screenshots via the DevTools protocol.
+ * Executes the browser requests the provider sends: status, background-tab
+ * navigation, text snapshots, actions and screenshots via the DevTools
+ * protocol. The native messaging port itself is owned by the offscreen
+ * document (offscreen.js) so it survives service-worker eviction.
  */
-const HOST_NAME = 'com.deepseek.dsh.chrome'
 const VERSION = chrome.runtime.getManifest().version
 
-let port = null
-let connecting = null
-let lastConnectError = null
-let lastNativeSignalAt = 0
+let nativeStatus = { connected: false, lastError: null, lastPingAt: 0 }
 
 function log(...args) {
   console.log('[DSH Chrome]', ...args)
@@ -179,115 +176,62 @@ function scheduleExtensionReload() {
   }, 800)
 }
 
-// ------------------------------------------------------------ native messaging
-function ensurePort() {
-  if (port) return Promise.resolve(port)
-  if (connecting) return connecting
-  connecting = new Promise((resolve) => {
-    let settled = false
-    let nativePort
-    const finish = (value) => {
-      if (settled) return
-      settled = true
-      connecting = null
-      resolve(value)
-    }
-    try {
-      nativePort = chrome.runtime.connectNative(HOST_NAME)
-    } catch (error) {
-      lastConnectError = error?.message || String(error)
-      log('connectNative failed', error)
-      finish(null)
-      return
-    }
-    nativePort.onMessage.addListener((message) => {
-      lastNativeSignalAt = Date.now()
-      if (message?.id == null) {
-        if (message?.event === 'ext.changed') {
-          log('extension files changed; reloading', message.params?.file || '')
-          scheduleExtensionReload()
-          return
-        }
-        if (message?.event) log('event', message.event)
-        return
-      }
-      handleRequest(message)
-        .then((result) => {
-          try {
-            nativePort.postMessage({ id: message.id, result })
-          } catch (error) {
-            log('postMessage result failed', error)
-          }
-        })
-        .catch((error) => {
-          try {
-            nativePort.postMessage({
-              id: message.id,
-              error: {
-                code: typeof error?.code === 'string' ? error.code : 'INTERNAL',
-                message: error?.message || String(error),
-              },
-            })
-          } catch (postError) {
-            log('postMessage error failed', postError)
-          }
-        })
-    })
-    nativePort.onDisconnect.addListener(() => {
-      const lastError = chrome.runtime.lastError
-      if (lastError?.message) lastConnectError = lastError.message
-      log('native port disconnected', lastError?.message || '')
-      if (port === nativePort) port = null
-      finish(null)
-      // Do NOT reconnect from inside this dying worker context: Chrome tears
-      // down the freshly spawned host together with the old context. A fresh
-      // wake-up (alarm / keepalive message / tab update) reconnects instead.
-      try {
-        chrome.alarms.create('dsh-chrome-reconnect-once', { delayInMinutes: 0.2 })
-      } catch {
-        // alarms unavailable; content-script keepalive still wakes us
-      }
-    })
-    // The host answers hello-ok only after it authenticated against DSH; the
-    // provider then starts sending requests. We consider the port usable now.
-    port = nativePort
-    lastNativeSignalAt = Date.now()
-    lastConnectError = null
-    finish(nativePort)
-  })
-  return connecting
-}
+// ------------------------------------------------- native messaging (offscreen)
+// The offscreen document owns the native port; the worker only relays browser
+// requests to it. This is what makes host death / worker eviction recoverable.
 
-// Force a fresh native port: used by the popup button and the reconnect alarm
-// when a stale port object would otherwise keep us from reconnecting.
-function forceReconnect({ force = false } = {}) {
-  if (port && !force) return Promise.resolve(port)
-  if (port) {
-    try {
-      port.disconnect()
-    } catch {
-      // port may already be gone
-    }
-    port = null
-  }
-  return ensurePort()
-}
-
-// MV3 worker eviction is the main reason a dead native port goes unnoticed:
-// keep a tiny offscreen document that pings the worker every 15s.
 async function ensureOffscreen() {
-  if (!chrome.offscreen?.createDocument) return
+  if (!chrome.offscreen?.createDocument) return false
   try {
     const existing = await chrome.offscreen.hasDocument?.()
-    if (existing) return
+    if (existing) return true
     await chrome.offscreen.createDocument({
       url: 'offscreen.html',
       reasons: ['BLOBS'],
-      justification: 'Keep the DSH native messaging reconnect loop alive.',
+      justification: 'Own the DSH native messaging port so it survives worker eviction.',
     })
+    return true
   } catch (error) {
-    log('offscreen keepalive unavailable', error?.message || error)
+    log('offscreen unavailable', error?.message || error)
+    return false
   }
+}
+
+function sendOffscreen(message, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    let done = false
+    const timer = setTimeout(() => {
+      if (done) return
+      done = true
+      resolve(null)
+    }, timeoutMs)
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        void chrome.runtime.lastError
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        resolve(response ?? null)
+      })
+    } catch {
+      if (!done) {
+        done = true
+        clearTimeout(timer)
+        resolve(null)
+      }
+    }
+  })
+}
+
+async function reconnectNative(force = false) {
+  await ensureOffscreen()
+  return sendOffscreen({ type: 'dsh-native-reconnect', force }, 3000)
+}
+
+async function nativeStatusReport() {
+  const status = await sendOffscreen({ type: 'dsh-native-status' }, 1200)
+  if (status) nativeStatus = { ...nativeStatus, ...status }
+  return { ...nativeStatus }
 }
 
 // ------------------------------------------------------------------- requests
@@ -864,85 +808,100 @@ function hasText(text) {
 // --------------------------------------------------------------- worker wiring
 function ensureReconnectAlarm() {
   try {
-    chrome.alarms.create('dsh-chrome-reconnect', { periodInMinutes: 1 })
+    chrome.alarms.create('dsh-chrome-reconnect', { periodInMinutes: 0.5 })
   } catch {
-    // alarms are best effort; the port and popup button still work
+    // alarms unavailable; offscreen health check still reconnects
   }
+}
+
+function makeStatus(sessionTabId = null) {
+  return {
+    connected: Boolean(nativeStatus.connected),
+    extensionVersion: VERSION,
+    sessionTabId,
+    lastError: nativeStatus.lastError || null,
+  }
+}
+
+async function popupStatus() {
+  await nativeStatusReport()
+  return makeStatus(await firstActiveTabId())
+}
+
+function kickReconnect() {
+  if (!nativeStatus.connected) reconnectNative().catch(() => {})
+  return { ok: true }
 }
 
 chrome.runtime.onInstalled.addListener(() => {
   ensureReconnectAlarm()
-  ensureOffscreen().catch(() => {})
-  ensurePort().catch(() => {})
+  ensureOffscreen().then(() => reconnectNative()).catch(() => {})
 })
 chrome.runtime.onStartup.addListener(() => {
   ensureReconnectAlarm()
-  ensureOffscreen().catch(() => {})
-  ensurePort().catch(() => {})
+  ensureOffscreen().then(() => reconnectNative()).catch(() => {})
 })
 chrome.tabs.onUpdated.addListener(() => {
-  if (!port) forceReconnect().catch(() => {})
+  kickReconnect()
 })
 chrome.runtime.onConnect.addListener((keepalivePort) => {
   if (keepalivePort.name !== 'dsh-keepalive') return
   keepalivePort.onMessage.addListener(() => {
-    if (!port) forceReconnect().catch(() => {})
+    kickReconnect()
   })
 })
-// Every service-worker start (install/startup/event wake) should try to
-// re-open the native port; this is the last line of the reconnect defense.
-if (!port) forceReconnect().catch(() => {})
+
+// Every worker start (install/startup/event wake) ensures the offscreen owner
+// exists and asks it to (re)connect the native port.
+ensureOffscreen().then(() => reconnectNative()).catch(() => {})
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (!alarm.name.startsWith('dsh-chrome-reconnect')) return
-  // Force, not "if (!port)": a killed native host can leave a stale port
-  // object behind, and then a conditional reconnect never fires.
-  forceReconnect().catch(() => {})
+  reconnectNative().catch(() => {})
 })
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === 'dsh-page-tick') {
-    if (!port) forceReconnect().catch(() => {})
-    sendResponse({ ok: true })
-    return
-  }
-  if (message?.type === 'dsh-status') {
-    ;(async () => {
-      const sessionTabId = await firstActiveTabId()
-      sendResponse({
-        connected: Boolean(port),
-        extensionVersion: VERSION,
-        sessionTabId,
-        lastError: lastConnectError,
-      })
-    })()
+  if (message?.type === 'dsh-native-request') {
+    handleRequest(message.message)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: {
+            code: typeof error?.code === 'string' ? error.code : 'INTERNAL',
+            message: error?.message || String(error),
+          },
+        }),
+      )
     return true
   }
-  if (message?.type === 'dsh-tick') {
-    // Silence for 30s (provider heartbeats every 10s) means the port object is
-    // stale even though Chrome never fired onDisconnect.
-    if (!port || Date.now() - lastNativeSignalAt > 30000) forceReconnect().catch(() => {})
+  if (message?.type === 'dsh-native-status-changed') {
+    nativeStatus = { ...nativeStatus, ...(message.status || {}) }
+    sendResponse({ ok: true })
     return false
   }
+  if (message?.type === 'dsh-ext-changed') {
+    log('extension files changed; reloading', message.file || '')
+    scheduleExtensionReload()
+    sendResponse({ ok: true })
+    return false
+  }
+  if (message?.type === 'dsh-page-tick') {
+    sendResponse(kickReconnect())
+    return false
+  }
+  if (message?.type === 'dsh-status') {
+    popupStatus().then(sendResponse, () => sendResponse(makeStatus()))
+    return true
+  }
   if (message?.type === 'dsh-connect') {
-    forceReconnect()
-      .catch(() => {})
-      .finally(() => {
-        setTimeout(async () => {
-          sendResponse({
-            connected: Boolean(port),
-            extensionVersion: VERSION,
-            sessionTabId: await firstActiveTabId(),
-            lastError: lastConnectError,
-          })
-        }, 600)
-      })
+    reconnectNative(true)
+      .then(() => new Promise((resolve) => setTimeout(resolve, 400)))
+      .then(() => popupStatus())
+      .then(sendResponse, () => sendResponse(makeStatus()))
     return true
   }
   return false
 })
 
-// Best-effort initial connection when the worker starts. Recreate the alarm on
-// every start so a worker eviction cannot silently lose the reconnect timer.
 ensureReconnectAlarm()
-ensureOffscreen().catch(() => {})
-ensurePort().catch(() => {})
