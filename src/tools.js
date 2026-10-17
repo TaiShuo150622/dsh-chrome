@@ -570,6 +570,16 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       type: 'object',
       properties: {
         ref: { type: 'number', description: 'Control number from the latest chrome_snapshot.' },
+        dialog: {
+          type: 'object',
+          description:
+            'How to answer a JS dialog (confirm/prompt/beforeunload) triggered by this action. Default: dismiss. Set accept:true to accept; promptText fills a prompt.',
+          properties: {
+            accept: { type: 'boolean' },
+            promptText: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
       required: ['ref'],
@@ -581,12 +591,24 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         tag: { type: 'string' },
         label: { type: 'string' },
         tabId: { type: 'number' },
+        dialogs: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              type: { type: 'string' },
+              message: { type: 'string' },
+              accepted: { type: 'boolean' },
+            },
+            additionalProperties: true,
+          },
+        },
       }),
       render: (_args, value) => renderText(`Clicked ${value.tag || 'element'} ${JSON.stringify(value.label || '')}`),
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_click', `click ref ${args?.ref}`)
-      return call('tab.click', { ref: args?.ref, tabId: args?.tabId, owner: ownerOf(exec) })
+      return call('tab.click', { ref: args?.ref, dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
 
@@ -602,6 +624,16 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         text: { type: 'string', description: 'Text to enter.' },
         replace: { type: 'boolean', description: 'Replace the existing value instead of appending.' },
         submit: { type: 'boolean', description: 'Submit the form after typing.' },
+        dialog: {
+          type: 'object',
+          description:
+            'How to answer a JS dialog (confirm/prompt/beforeunload) triggered by this action. Default: dismiss. Set accept:true to accept; promptText fills a prompt.',
+          properties: {
+            accept: { type: 'boolean' },
+            promptText: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
       required: ['ref', 'text'],
@@ -613,6 +645,18 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         value: { type: 'string' },
         submitted: { type: 'boolean' },
         tabId: { type: 'number' },
+        dialogs: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              type: { type: 'string' },
+              message: { type: 'string' },
+              accepted: { type: 'boolean' },
+            },
+            additionalProperties: true,
+          },
+        },
       }),
       render: (_args, value) =>
         renderText(
@@ -626,6 +670,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         text: String(args?.text ?? ''),
         replace: Boolean(args?.replace),
         submit: Boolean(args?.submit),
+        dialog: args?.dialog,
         tabId: args?.tabId,
         owner: ownerOf(exec),
       })
@@ -641,18 +686,41 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       type: 'object',
       properties: {
         key: { type: 'string', description: 'Key to press, e.g. Enter or Escape.' },
+        dialog: {
+          type: 'object',
+          description:
+            'How to answer a JS dialog (confirm/prompt/beforeunload) triggered by this action. Default: dismiss. Set accept:true to accept; promptText fills a prompt.',
+          properties: {
+            accept: { type: 'boolean' },
+            promptText: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
       required: ['key'],
       additionalProperties: false,
     },
     output: {
-      schema: outputSchema({ ok: { type: 'boolean' }, key: { type: 'string' }, target: { type: 'string' } }),
+      schema: outputSchema({ ok: { type: 'boolean' }, key: { type: 'string' }, target: { type: 'string' },
+        dialogs: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              type: { type: 'string' },
+              message: { type: 'string' },
+              accepted: { type: 'boolean' },
+            },
+            additionalProperties: true,
+          },
+        },
+      }),
       render: (_args, value) => renderText(`Pressed ${value.key} on <${value.target}>`),
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_press', `press ${args?.key}`)
-      return call('tab.press', { key: String(args?.key ?? ''), tabId: args?.tabId, owner: ownerOf(exec) })
+      return call('tab.press', { key: String(args?.key ?? ''), dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
 

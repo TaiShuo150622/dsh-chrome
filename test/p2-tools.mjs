@@ -65,6 +65,7 @@ host.stdout.on(
     const replies = {
       'browser.status': { extensionVersion: 'p2-fake', connected: true },
       'tab.screenshot': { dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' },
+      'tab.click': { ok: true, tag: 'button', label: 'Submit', tabId: 7, dialogs: [{ type: 'confirm', message: 'ok?', accepted: true }] },
       'tab.tabs': { claimed: true, tabId: 7, url: 'https://example.com/', title: 'Example Domain', remaining: 0 },
       'tab.claim': { tabId: 7, url: 'https://example.com/', title: 'Example Domain', claimed: true },
       'tab.upload': { ok: true, ref: 5, files: 1 },
@@ -117,6 +118,10 @@ check('find render lists matches', /ref 901/.test(rendered[0]?.text || ''))
 const shot = await byName.chrome_screenshot.execute({ clip: { x: 10, y: 20, width: 300, height: 200 } }, exec())
 check('clip screenshot executes', Boolean(shot?.path))
 check('clip envelope reaches the extension', requests.at(-1)?.method === 'tab.screenshot' && requests.at(-1)?.params?.clip?.width === 300)
+
+const clickWithDialog = await byName.chrome_click.execute({ ref: 1, dialog: { accept: true } }, exec())
+check('click dialog option reaches the extension', requests.at(-1)?.params?.dialog?.accept === true)
+check('click returns captured dialogs', clickWithDialog.dialogs?.[0]?.type === 'confirm')
 
 const uploadPath = path.join(home, 'upload.txt')
 await fsp.writeFile(uploadPath, 'hello')

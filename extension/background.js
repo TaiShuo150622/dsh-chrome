@@ -471,9 +471,37 @@ function withTimeout(promise, timeoutMs, code, message) {
   ])
 }
 
-async function evalInTab(tabId, fn, args, timeoutMs) {
+function dialogPolicy(dialogOptions, opening) {
+  const options = dialogOptions && typeof dialogOptions === 'object' ? dialogOptions : {}
+  const type = String(opening?.type || 'alert')
+  if (typeof options.accept === 'boolean') {
+    return { accept: options.accept, promptText: String(options.promptText ?? '') }
+  }
+  // Safe defaults: alerts are dismissed (they carry no decision); confirms and
+  // prompts are dismissed unless the model explicitly opts into accepting.
+  if (type === 'alert') return { accept: true, promptText: '' }
+  return { accept: false, promptText: '' }
+}
+
+async function evalInTab(tabId, fn, args, timeoutMs, dialogOptions) {
   const target = { tabId }
   let attached = false
+  const dialogs = []
+  const onEvent = (source, method, params) => {
+    if (source?.tabId !== tabId || method !== 'Page.javascriptDialogOpening') return
+    const policy = dialogPolicy(dialogOptions, params)
+    dialogs.push({
+      type: String(params?.type || 'alert'),
+      message: String(params?.message || '').slice(0, 500),
+      accepted: policy.accept,
+    })
+    chrome.debugger
+      .sendCommand(target, 'Page.handleJavaScriptDialog', {
+        accept: policy.accept,
+        promptText: policy.promptText,
+      })
+      .catch(() => {})
+  }
   try {
     await chrome.debugger.attach(target, '1.3')
     attached = true
@@ -481,6 +509,12 @@ async function evalInTab(tabId, fn, args, timeoutMs) {
     // A previous detach may have raced; try to use the existing session.
   }
   try {
+    try {
+      await chrome.debugger.sendCommand(target, 'Page.enable')
+      chrome.debugger.onEvent.addListener(onEvent)
+    } catch {
+      // dialog interception unavailable; evaluation still works
+    }
     const expression = `(() => { ${CURSOR_HELPER_SRC}
       return (${fn.toString()})(...${JSON.stringify(args)})
     })()`
@@ -498,8 +532,13 @@ async function evalInTab(tabId, fn, args, timeoutMs) {
       const text = response.exceptionDetails.exception?.description || response.exceptionDetails.text || 'page action failed'
       throw bridgeError('INTERNAL', String(text))
     }
-    return response?.result?.value
+    return { value: response?.result?.value, dialogs }
   } finally {
+    try {
+      chrome.debugger.onEvent.removeListener(onEvent)
+    } catch {
+      // listener may not have been added
+    }
     if (attached) {
       try {
         await chrome.debugger.detach(target)
@@ -510,17 +549,23 @@ async function evalInTab(tabId, fn, args, timeoutMs) {
   }
 }
 
-async function callInPage(tabId, action, args = [], timeoutMs = 15000) {
+async function callInPage(tabId, action, args = [], timeoutMs = 15000, dialogOptions = null) {
   const fn = PAGE_ACTIONS[action]
   if (!fn) throw bridgeError('UNSUPPORTED', `unknown page action: ${action}`)
+  let result
   try {
-    return await evalInTab(tabId, fn, args, timeoutMs)
+    result = await evalInTab(tabId, fn, args, timeoutMs, dialogOptions)
   } catch (error) {
     if (error?.code !== 'TIMEOUT') throw error
     // First attach after a page load / worker wake can be slow; retry once.
     await new Promise((resolve) => setTimeout(resolve, 400))
-    return evalInTab(tabId, fn, args, timeoutMs)
+    result = await evalInTab(tabId, fn, args, timeoutMs, dialogOptions)
   }
+  const value = result?.value
+  if (value && typeof value === 'object' && Array.isArray(result.dialogs) && result.dialogs.length > 0) {
+    value.dialogs = result.dialogs
+  }
+  return value
 }
 
 async function snapshot(owner, params) {
@@ -584,7 +629,7 @@ async function click(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
   if (!Number.isFinite(ref)) throw bridgeError('REF_STALE', 'ref must be a snapshot number')
-  const result = await callInPage(tabId, 'click', [ref])
+  const result = await callInPage(tabId, 'click', [ref], 15000, params.dialog)
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
   }
@@ -595,12 +640,13 @@ async function typeText(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
   if (!Number.isFinite(ref)) throw bridgeError('REF_STALE', 'ref must be a snapshot number')
-  const result = await callInPage(tabId, 'type', [
-    ref,
-    String(params.text ?? ''),
-    Boolean(params.replace),
-    Boolean(params.submit),
-  ])
+  const result = await callInPage(
+    tabId,
+    'type',
+    [ref, String(params.text ?? ''), Boolean(params.replace), Boolean(params.submit)],
+    15000,
+    params.dialog,
+  )
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
   }
@@ -611,7 +657,7 @@ async function press(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const key = String(params.key || '')
   if (!key) throw bridgeError('INTERNAL', 'key is required')
-  const result = await callInPage(tabId, 'press', [key])
+  const result = await callInPage(tabId, 'press', [key], 15000, params.dialog)
   return { ...result, tabId }
 }
 
