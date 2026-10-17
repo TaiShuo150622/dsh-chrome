@@ -505,7 +505,7 @@ export function chromeTools({ bridge, attachments, assets, approval }) {
             additionalProperties: true,
           },
         },
-        groupId: { type: 'number' },
+        groupId: {},
         tabId: { type: 'number' },
         url: { type: 'string' },
         title: { type: 'string' },

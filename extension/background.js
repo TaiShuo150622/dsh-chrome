@@ -727,8 +727,9 @@ function pressKey(key) {
 /** Runs inside the page; self-contained. */
 function scrollPage(direction, amount) {
   const step = Number.isFinite(amount) ? amount : 600
-  const deltas = { down: step, up: -step, top: -1e9, bottom: 1e9 }
-  window.scrollBy({ top: deltas[direction] ?? step, left: 0, behavior: 'smooth' })
+  const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
+  const deltas = { down: step, up: -step, top: -maxY, bottom: maxY }
+  window.scrollBy({ top: deltas[direction] ?? step, left: 0, behavior: 'instant' })
   return {
     ok: true,
     y: window.scrollY,

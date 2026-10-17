@@ -3,7 +3,15 @@
 // reconnect without waiting for an unrelated browser event.
 const TICK_MS = 15000
 function tick() {
-  chrome.runtime.sendMessage({ type: 'dsh-tick' }).catch(() => {})
+  try {
+    chrome.runtime.sendMessage({ type: 'dsh-tick' }, () => {
+      // Reading lastError prevents Chrome from logging an unchecked-error entry
+      // when the worker happens to be asleep.
+      void chrome.runtime.lastError
+    })
+  } catch {
+    // offscreen being torn down
+  }
 }
 setInterval(tick, TICK_MS)
 tick()
