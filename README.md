@@ -6,6 +6,29 @@
 > 代码：`index.js` / `src/` / `host/` / `extension/`；测试：`npm test`（p0-bridge / p0-tools / p1-tools）。
 > P1 记录与遗留技术债：[docs/records/2026-10-17-code-p1-core-tools](docs/records/2026-10-17-code-p1-core-tools/record.md)。
 
+## 快速开始（macOS）
+
+1. 启用 `dsh-desktop-chrome` bundle（provider 自动写 native host manifest 与 discovery）；
+2. `chrome://extensions` → 开发者模式 → 「加载已解压的扩展程序」→ 选 `extension/`；
+3. 若 native manifest 是 Chrome 启动后才写的，⌘Q 退出 Chrome 再打开；
+4. 点工具栏 DSH Chrome 图标，显示 **Connected** 即可。
+
+完整步骤、排障与卸载：[docs/INSTALL.md](docs/INSTALL.md)。
+
+## 当前能力（扩展 0.1.22，19 个工具）
+
+| 类别 | 能力 |
+|---|---|
+| 会话/标签 | 每会话独立后台标签组、claim 当前标签、关闭会话；不抢焦点 |
+| 导航/等待 | goto / history / wait（load、networkidle、文本） |
+| 读取 | snapshot（编号 ref 与文本）、find、get_text、console、network、区域/整页截图 |
+| 交互 | click / type / press / scroll / select，带**虚拟光标**可视化 |
+| 文件 | upload（file input，走审批）/ download（最近下载列表） |
+| 体验 | follow-dsh 审批、dialog 自动处理（安全默认）、开发期扩展自动重载 |
+| 稳定性 | host 常驻重连、SW 端口自愈、provider/扩展版本握手 |
+
+工具参数与说明见 [docs/TOOLS.md](docs/TOOLS.md)（自动生成）。
+
 ## 是什么
 
 - 目标形态：**Chrome MV3 扩展 + Chrome 原生消息（native messaging）+ DSH 桌面 provider 插件**。
@@ -32,6 +55,7 @@
 - [P1 阶段记录：实现、真机验收、通道排障与遗留债](docs/records/2026-10-17-code-p1-core-tools/record.md)
 - [P2 功能规划：竞品能力盘点与待办优先级](docs/P2-PLAN.md)
 - [安装指南（macOS 本地/开发者）](docs/INSTALL.md) · [工具参考（自动生成）](docs/TOOLS.md)
+- [安全模型](docs/SECURITY.md) · [贡献指南](CONTRIBUTING.md) · [变更日志](CHANGELOG.md) · [第三方说明](NOTICE.md)
 
 ## 分阶段（摘要）
 
