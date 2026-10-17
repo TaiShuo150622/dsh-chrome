@@ -7,14 +7,14 @@
  */
 const HOST_NAME = 'com.deepseek.dsh.chrome'
 const VERSION = chrome.runtime.getManifest().version
-const SESSION_TAB_KEY = 'dshSessionTabId'
 
 let port = null
 let connecting = null
 let lastConnectError = null
 let lastNativeSignalAt = 0
-let sessionTabId = null
-let sessionTabLoaded = false
+const pagePorts = new Map()
+const pagePending = new Map()
+let pageRequestSeq = 0
 
 function log(...args) {
   console.log('[DSH Chrome]', ...args)
