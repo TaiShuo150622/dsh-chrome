@@ -1,0 +1,50 @@
+name: Bug report
+description: 报告安装、连接或工具行为的问题
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先确认：`chrome://extensions` 里扩展已加载且 popup 显示 Connected；
+        `~/.dsh/cache/dsh-chrome/host.log` 里有最近的日志。
+  - type: input
+    id: versions
+    attributes:
+      label: 版本
+      description: DSH Desktop / Chrome / 扩展版本（chrome://extensions 卡片上）
+      placeholder: "DSH 0.2.1-rc.1, Chrome 155, extension 0.1.22"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 出问题的区域
+      options:
+        - 安装 / native manifest
+        - 连接（Not connected / connectNative）
+        - 页面读取（snapshot/find/get_text/console/network）
+        - 交互（click/type/press/scroll/select/upload）
+        - 标签组 / claim / close_session
+        - 截图 / 虚拟光标
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 模型调用了哪些工具、参数是什么、页面是什么
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望 vs 实际
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: host.log 相关片段、popup 的 Last error、工具错误码
+      render: text
