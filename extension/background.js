@@ -219,18 +219,13 @@ function ensurePort() {
       log('native port disconnected', lastError?.message || '')
       if (port === nativePort) port = null
       finish(null)
-      // Retry immediately, then while the worker is alive. A one-shot alarm
-      // covers the case where Chrome evicts the worker before the timers run.
-      forceReconnect().catch(() => {})
-      for (const delay of [1000, 3000, 10000]) {
-        setTimeout(() => {
-          if (!port) ensurePort().catch(() => {})
-        }, delay)
-      }
+      // Do NOT reconnect from inside this dying worker context: Chrome tears
+      // down the freshly spawned host together with the old context. A fresh
+      // wake-up (alarm / keepalive message / tab update) reconnects instead.
       try {
-        chrome.alarms.create('dsh-chrome-reconnect-once', { delayInMinutes: 0.5 })
+        chrome.alarms.create('dsh-chrome-reconnect-once', { delayInMinutes: 0.2 })
       } catch {
-        // alarms unavailable; offscreen/content-script keepalive still applies
+        // alarms unavailable; content-script keepalive still wakes us
       }
     })
     // The host answers hello-ok only after it authenticated against DSH; the

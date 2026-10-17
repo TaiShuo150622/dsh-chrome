@@ -42,6 +42,15 @@ function log(line) {
   }
 }
 
+process.on('uncaughtException', (error) => {
+  log(`uncaught exception: ${error?.stack || error?.message || error}`)
+})
+process.stdout.on('error', (error) => {
+  // Chrome closed the native port; exit quietly instead of crashing the host.
+  log(`stdout error: ${error.message}`)
+  process.exit(0)
+})
+
 function fail(message) {
   log(`FATAL ${message}`)
   process.stderr.write(`dsh-chrome-host: ${message}\n`)
@@ -117,7 +126,7 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', () => {
   stdinEnded = true
   log('stdin ended')
-  shutdown(0)
+  shutdown(0, 'stdin ended')
 })
 process.stdin.on('error', (error) => fail(`stdin error: ${error.message}`))
 
@@ -132,7 +141,8 @@ function scheduleReconnect(reason) {
   const delay = retryDelay
   retryTimer = setTimeout(() => {
     retryTimer = null
-    connectBridge()
+    log(`host started pid=${process.pid}`)
+connectBridge()
   }, delay)
   retryDelay = Math.min(retryDelay * 2, 5000)
   log(`will reconnect in ${delay}ms (${reason})`)
@@ -231,7 +241,8 @@ function materializeScreenshot(result) {
   return { path: file, mediaType: 'image/png', width, height, bytes: bytes.length }
 }
 
-function shutdown(code) {
+function shutdown(code, reason = 'shutdown') {
+  log(reason)
   if (retryTimer) {
     clearTimeout(retryTimer)
     retryTimer = null
@@ -244,5 +255,5 @@ function shutdown(code) {
   process.exit(code)
 }
 
-process.on('SIGTERM', () => shutdown(0))
-process.on('SIGINT', () => shutdown(0))
+process.on('SIGTERM', () => shutdown(0, 'SIGTERM'))
+process.on('SIGINT', () => shutdown(0, 'SIGINT'))
