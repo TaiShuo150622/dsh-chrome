@@ -11,9 +11,13 @@
     "scripting",
     "storage",
     "debugger",
-    "alarms"
+    "alarms",
+    "offscreen"
   ],
-  "host_permissions": ["http://*/*", "https://*/*"],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
   "background": {
     "service_worker": "background.js",
     "type": "module"

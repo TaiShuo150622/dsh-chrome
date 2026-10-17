@@ -17,6 +17,9 @@ function render(status) {
   hint.textContent = status.connected
     ? 'The DSH provider can open background tabs. Nothing is focused automatically.'
     : 'Start DSH Desktop with the dsh-chrome plugin, then press Reconnect. If it still fails, quit and reopen Chrome once so it reads the native messaging manifest.'
+  if (!status.connected && status.lastError) {
+    hint.textContent += `\nLast error: ${status.lastError}`
+  }
 }
 
 reconnect.addEventListener('click', () => {
