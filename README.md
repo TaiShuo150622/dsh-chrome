@@ -2,8 +2,9 @@
 
 **DSH 桌面端（DeepSeek Harness Desktop）的 Chrome 操控插件**：让模型直接操作你当前已登录的 Google Chrome —— 读页面、点击、填表、开后台标签、截图看图、按会话隔离，危险动作先问你。
 
-> 状态：**P0 链路已跑通（Host 插件 + 桥接 + 工具层自动化测试通过）；真实 Chrome 待加载扩展验证**（2026-10-17）
-> 代码：`index.js` / `src/` / `host/` / `extension/`；测试：`node test/p0-bridge.mjs`、`node test/p0-tools.mjs`。
+> 状态：**P1 真机可用（12 个 `chrome_*` 工具在 Chrome 155 上跑通；扩展 0.1.5）**（2026-10-17）
+> 代码：`index.js` / `src/` / `host/` / `extension/`；测试：`npm test`（p0-bridge / p0-tools / p1-tools）。
+> P1 记录与遗留技术债：[docs/records/2026-10-17-code-p1-core-tools](docs/records/2026-10-17-code-p1-core-tools/record.md)。
 
 ## 是什么
 
@@ -28,6 +29,7 @@
 - [分阶段实施计划：个人用 → 开源 → 官方，核心工具 → 全工具](docs/ROADMAP.md)
 - [审批说明：什么动作会问人、你会看到什么、拒绝后怎样](docs/APPROVAL.md)
 - [P0 技术验证细化规格：检查点、文件清单、协议契约、验证矩阵](docs/M0.md)
+- [P1 阶段记录：实现、真机验收、通道排障与遗留债](docs/records/2026-10-17-code-p1-core-tools/record.md)
 
 ## 分阶段（摘要）
 

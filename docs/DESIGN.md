@@ -99,9 +99,9 @@
 │   Service Worker                                                     │
 │    ├─ nativeMessaging.connectNative()   ←→ host                      │
 │    ├─ tabs / tabGroups                 标签创建(active:false)/分组/清理 │
-│    ├─ scripting + content scripts      快照、ref、点击、输入、滚动       │
-│    └─ chrome.debugger（默认不 attach）  console/network/upload/dialog   │
-│   content script：编号控件、React/Vue-safe 赋值、元素可见性               │
+│    ├─ chrome.debugger                 截图 + 页面动作（snapshot/click/type）│
+│    └─ scripting / content script      保活端口；页面动作兜底（P2 评估）   │
+│   content script page.js：keepalive（SW 保活）                            │
 │   popup：连接状态 / 版本 / 本会话标签组                                  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -125,25 +125,38 @@ Native Host ──connect(socket) + hello{token,version}──▶ Provider Bridg
 ```
 
 - **Chrome 侧鉴权**：Chrome 只允许 NativeMessagingHosts manifest 中 `allowed_origins` 列出的扩展 ID 调用 host —— 这是 Chrome 保证的通道；扩展 ID 用 manifest `key` 固定。
-- **host ↔ DSH 侧鉴权**：provider 启动时生成随机 token，写入 `$DSH_HOME/cache/dsh-chrome/bridge-<pid>.json`（`0600`，含 socket 路径、pid、版本）；host 读取最新文件并 hello；provider 校验 token。
-- **socket 路径**：`$TMPDIR/dsh-chrome-<uid>/bridge.sock`（避开 macOS UNIX socket 104 字符路径限制）。
+- **host ↔ DSH 侧鉴权**：provider 启动时生成随机 token，写入 `$DSH_HOME/cache/dsh-chrome/bridge.json`（`0600`，含 socket 路径、pid、版本）；host 读取最新文件并 hello；provider 校验 token。
+- **socket 路径**：`$DSH_HOME/cache/dsh-chrome/bridge.sock`（实测可用；macOS 上 UNIX socket 路径上限 104 字符，当前长度约 50）。
 - **帧格式**：newline-delimited JSON；`{"id","method","params"}` / `{"id","result"}` / `{"id","error"}`；事件 `{"event","params"}`（例如 `tab.updated`）。
-- **重连**：
-  - Chrome SW 休眠后重新 `connectNative` → Chrome 重新拉起 host → host 重新连 socket（provider 常驻监听）。
-  - DSH 重启：扩展重试 connectNative；host 找不到 socket 时以明确错误退出，SW 退避重试（1s/2s/5s/10s，上限 30s）。
+- **重连**（P1 实测结论）：
+  - **host 常驻**：provider 的 socket 断开时 host 不退出，重读 `bridge.json` 按 0.5s→5s 退避重连；DSH 重启 / 插件重载对扩展透明。
+  - 扩展侧自动重连（SW 被回收后重新 `connectNative`）仍不可靠——P0 遗留、P2 稳定性专项；缓解手段是 host 常驻 + 内容脚本保活端口。
   - launcher 用**安装时写入的 DSH app 内 Electron-as-Node 绝对路径**，不依赖用户 shell 环境；系统 node（`/opt/homebrew/bin/node`）仅作兜底。
 - 选择理由：无端口冲突/发现；不暴露 loopback 端口；Chrome 按需拉起；与 Claude/Codex 同构（本机已有两份可参照的 host manifest）。
 
 ### 4.2 Chrome 扩展
 
-- **manifest（MV3）**：`nativeMessaging, tabs, tabGroups, scripting, storage, activeTab`；`host_permissions: ["http://*/*","https://*/*"]`；`minimum_chrome_version: 116`；`key` 固定扩展 ID。
-- **`debugger` 权限**：V1 不需要。V2 的控制台/网络/上传/弹窗能力再评估：可接受「manifest 含 debugger，但仅用户显式开启高级功能后才 `attach`」，避免默认出现「正在调试」横幅。
+- **manifest（MV3，P1 实测）**：`nativeMessaging, tabs, scripting, storage, debugger, alarms, offscreen, tabGroups, webNavigation`；`host_permissions: ["http://*/*","https://*/*"]`；`minimum_chrome_version: 116`；`key` 固定扩展 ID。
+- **`debugger` 权限（P1 已必需）**：截图与页面动作都走 `chrome.debugger`（`Page.captureScreenshot` / `Runtime.evaluate`）。后台且折叠标签组上的 `executeScript`/content-script 消息会无限挂起，故页面动作最终选 CDP；每次动作 attach→evaluate→detach，Chrome 可能闪「正在调试」提示（P2 优化）。
 - **content script**：`document_idle`、`all_frames: false`（V1 只做顶层文档；iframe/shadow DOM V2）。
-  - 快照：可见性过滤 → 交互控件编号（`data-dsh-ref`，按 DOM 顺序稳定编号；同文档内从 1 开始，快照之间重排）→ 文本摘要 → 密码/支付字段 `••••`。
-  - 操作：原生 setter + `input`/`change` 事件（React/Vue 兼容）；点击派发 pointer/mouse 序列并校验可点击性；滚动默认 viewport。
-- **tab 组**：每个 DSH 会话一个组 `DSH · <session short id>`；新标签 `active:false` + `collapsed:true`；**永不调用 bringToFront/activate**（macOS 上避免抢焦点）。
-- **截图**：`chrome.tabs.captureVisibleTab`（V1，不 attach debugger）；需要整页/element 截图时 V2 用 debugger。
+  - 现状（P1）：`page.js` 只做 **keepalive 端口**（防 SW 被回收），不承载页面动作。
+  - 快照/操作实现（由 SW 通过 CDP 注入执行）：可见性过滤 → 交互控件编号（`data-dsh-ref`，按 DOM 顺序稳定编号）→ 文本摘要 → 密码/支付字段 `••••`；原生 setter + `input`/`change`（React/Vue 兼容）；点击派发 pointer/mouse 序列；滚动 instant。
+- **tab 组**：每个 DSH 会话一个组 `DSH · <session short id>`；新标签 `active:false` + `collapsed:true`；**永不调用 bringToFront/activate**（macOS 上避免抢焦点）。已知例外：`chrome_tabs op=new` 当前会激活新标签（P2 债）。
+- **截图**：`chrome.debugger` 的 `Page.captureScreenshot`（PNG base64 → native host 物化到 `~/.dsh/cache/dsh-chrome/screenshots/`），provider 只拿路径 + 尺寸。
 - **popup**：Connected/版本/本会话标签数 + 「安装/重载扩展」提示；不含聊天。
+
+### 4.2.1 P1 实测：页面动作通道选型（重要）
+
+同一份动作代码在三种通道上的实测结果（标签均为「后台 + 折叠标签组」）：
+
+| 通道 | 结果 | 现象 |
+|---|---|---|
+| `chrome.scripting.executeScript` | 不可用 | snapshot 30s 超时；scroll 45s 超时；不 settle |
+| content-script port RPC | 不可用 | SW 回收后端口失效；自动 reload 清掉 `data-dsh-ref`，click/type 报 REF_STALE |
+| `chrome.tabs.sendMessage`（无状态） | 不可用 | 首次偶发成功，随后 10s 超时（消息不 settle） |
+| **CDP `Runtime.evaluate`** | **可用** | 与截图同通道；真机全序列通过 |
+
+结论：页面动作固定走 CDP；`page.js` 仅保活。验收必须覆盖「后台 + 折叠标签组」，只在活动标签验证会漏掉这个问题（P0 的教训）。
 
 ### 4.3 Host 插件（bundle）
 

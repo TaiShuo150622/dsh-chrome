@@ -73,7 +73,9 @@ DSH Chrome 请求操作浏览器
 
 ## 6. 实现路径（P1 定稿）
 
-1. **普通动作**：`ctx.approval.request({agent, toolName, callId, reason, displayReason, signal})` —— 由 DSH 会话策略决定是否弹卡；`allowed-once` 是唯一放行结果，`rejected/cancelled/unavailable` 都按失败处理（fail closed）。
+1. **普通动作（P1 已实现）**：先读会话的 sandbox 模式——`ctx.sessions.get(exec.agent.id)` + `ctx.sandboxPolicy.resolve({session}).mode`；若为 `danger-full-access`，直接放行（会话预设已表达完全访问，不再额外问）。其他模式才调 `ctx.approval.request({agent, toolName, callId, reason, displayReason, signal})`；`allowed-once` 是唯一放行结果，`rejected/cancelled/unavailable` 都按失败处理（fail closed）。
+   - 为什么不能只靠 `ctx.approval`：P1 真机实测，本会话的 approval answerer 会对插件发起的请求**自动拒绝**（返回 `rejected`），而 GUI 会话已是「完全权限」；只问 approval 会导致所有写操作不可用。
+   - 当前硬敏感动作（上传/下载/eval/剪贴板/密码）尚未接入，P2 补 `ctx.userQuestions.ask`。
 2. **硬敏感动作**：`ctx.userQuestions.ask({questions, agent, signal})` —— 无论会话策略如何都弹确认卡（根会话）；子代理会话（`DELEGATED_CALLER`）直接返回失败并提示到根会话处理。
 3. **超时**：`AbortController` + `approval.timeoutMs`；超时 = 失败，不是默认允许。
 4. 模型侧提示：系统提示词明确「审批被拒绝时不得重试同一动作，先向用户说明」。

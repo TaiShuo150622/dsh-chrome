@@ -85,9 +85,17 @@
   4. 审批卡在 DSH GUI 正常出现、拒绝路径正确；
   5. 卸载/重装不残留（native manifest、host、标签组）。
 
+#### P1 实施结果（2026-10-17，记录见 [records/2026-10-17-code-p1-core-tools](records/2026-10-17-code-p1-core-tools/record.md)）
+
+- **已完成**：12 个 `chrome_*` 工具；会话标签组与 owner 隔离；follow-dsh 审批门（先读会话 sandbox 模式）；native host 常驻重连；工具层测试 3 条脚本（`npm test`）；真机全序列验收（状态/导航/快照/输入/点击/等待/滚动/截图/标签新开与关闭/历史/关会话）。
+- **关键实测结论**：后台且折叠标签组上，`executeScript` 与 content-script 消息都会无限挂起；页面动作最终固定走 CDP `Runtime.evaluate`（与截图同通道）。详见 [DESIGN 4.2.1](DESIGN.md)。
+- **Gate 缺口**：Gate 1「10 个真实场景」尚未逐项留证；Gate 2「连续 3 天真实使用」未开始；Gate 3 有例外（`chrome_tabs new` 会激活新标签）；Gate 4 在本会话是 `danger-full-access`，审批卡未真实弹出过；Gate 5 未验证。
+- **技术债**（P2 优先）：扩展侧自动重连、CDP 首次动作超时重试、tabs.new 后台打开、A2 browser-use seam、TS/vitest 迁移。
+
 ### P2 个人主力（全工具，3–5 天）
 
 - **目标**：能力上不再需要 Claude/Codex 作为替代；处理复杂任务。
+- **前置（P2-1 稳定性，先于广度）**：扩展自动重连（免人工 ⟳）、CDP 首次动作超时自动重试、`chrome_tabs new` 后台打开、扩展版本/死代码清理、V9/V10（DSH 重启/关闭）验证。
 - **范围**：全工具矩阵（约 24 个工具），重点：
   - 调试与数据：`chrome_console` / `chrome_network` / `chrome_html` / `chrome_a11y` / `chrome_find` / `chrome_get_text`；
   - 账号与文件：`chrome_upload` / `chrome_download` / `chrome_dialog` / `chrome_select` / `chrome_evaluate`（默认关）；
