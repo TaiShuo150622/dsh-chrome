@@ -45,6 +45,7 @@ export class BridgeServer {
     this.hostVersion = null
     this.extensionVersion = null
     this.startedAt = Date.now()
+    this.pingTimer = null
   }
 
   get connected() {
@@ -104,6 +105,10 @@ export class BridgeServer {
       if (this.socket === socket) {
         this.socket = null
         this.authed = false
+        if (this.pingTimer) {
+          clearInterval(this.pingTimer)
+          this.pingTimer = null
+        }
         this.#failPending('NOT_CONNECTED', 'Chrome native host disconnected')
       }
     })
@@ -138,6 +143,16 @@ export class BridgeServer {
         clearTimeout(helloTimer)
         if (typeof message.hostVersion === 'string') this.hostVersion = message.hostVersion
         socket.write(`${JSON.stringify({ type: 'hello-ok', protocol: PROTOCOL_VERSION })}\n`)
+        // Heartbeat: lets the extension notice a silently dead native port
+        // (Chrome does not always deliver onDisconnect immediately).
+        this.pingTimer = setInterval(() => {
+          if (!this.socket || this.socket.destroyed) return
+          try {
+            this.socket.write(`${JSON.stringify({ event: 'dsh.ping', params: { at: Date.now() } })}\n`)
+          } catch {
+            // the close handler tears down the timer
+          }
+        }, 10000)
         continue
       }
       if (message?.id != null) {
@@ -195,6 +210,10 @@ export class BridgeServer {
   }
 
   async stop() {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer)
+      this.pingTimer = null
+    }
     this.#failPending('NOT_CONNECTED', 'bridge stopped')
     if (this.socket) {
       try {

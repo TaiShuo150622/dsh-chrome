@@ -12,6 +12,7 @@ const SESSION_TAB_KEY = 'dshSessionTabId'
 let port = null
 let connecting = null
 let lastConnectError = null
+let lastNativeSignalAt = 0
 let sessionTabId = null
 let sessionTabLoaded = false
 
@@ -87,6 +88,7 @@ function ensurePort() {
       return
     }
     nativePort.onMessage.addListener((message) => {
+      lastNativeSignalAt = Date.now()
       if (message?.id == null) {
         if (message?.event) log('event', message.event)
         return
@@ -130,6 +132,7 @@ function ensurePort() {
     // The host answers hello-ok only after it authenticated against DSH; the
     // provider then starts sending requests. We consider the port usable now.
     port = nativePort
+    lastNativeSignalAt = Date.now()
     lastConnectError = null
     finish(nativePort)
   })
@@ -442,7 +445,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true
   }
   if (message?.type === 'dsh-tick') {
-    if (!port) forceReconnect().catch(() => {})
+    // Silence for 30s (provider heartbeats every 10s) means the port object is
+    // stale even though Chrome never fired onDisconnect.
+    if (!port || Date.now() - lastNativeSignalAt > 30000) forceReconnect().catch(() => {})
     return false
   }
   if (message?.type === 'dsh-connect') {
