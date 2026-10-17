@@ -53,7 +53,8 @@ provider 启用时会写 `~/.dsh/cache/dsh-chrome/dev.json`；native host 会监
 |---|---|
 | popup 显示 Not connected | 先 ⟳ 重载扩展；再不行重启 Chrome（让 native manifest 生效） |
 | `Last error: chrome.runtime.connectNative is not a function` | 该错误不应再出现（native port 由 SW 持有）；若出现请重载扩展并反馈 |
-| 工具报 `Chrome extension is not connected` | 看 `~/.dsh/cache/dsh-chrome/host.log` 是否在长；确认扩展版本与磁盘一致 |
+| 工具报 `Chrome extension is not connected` | 看 `~/.dsh/cache/dsh-chrome/host.log` 是否在长；确认扩展版本与磁盘一致；`npm run status` 可一次查看 bridge/host/扩展版本 |
+| 连接断开但不想进 chrome://extensions | 点扩展图标 → popup 里的 **Reload**（0.1.24+）；老版本仍需 ⟳ |
 | 页面动作超时 | 确认页面是 http(s)；首次动作偶发超时会自动重试一次 |
 | 想彻底卸载 | 移除 native manifest `com.deepseek.dsh.chrome.json`、删除 `~/.dsh/cache/dsh-chrome/`、在 chrome://extensions 移除扩展 |
 

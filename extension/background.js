@@ -236,6 +236,7 @@ function ensurePort() {
       lastConnectError = error?.message || String(error)
       log('connectNative failed', error)
       finish(null)
+      maybeSelfHeal().catch(() => {})
       return
     }
     nativePort.onMessage.addListener((message) => {
@@ -1260,6 +1261,9 @@ function hasText(text) {
 function ensureReconnectAlarm() {
   try {
     chrome.alarms.create('dsh-chrome-reconnect', { periodInMinutes: 1 })
+    // Independent watchdog: even when no other event wakes the worker, retry
+    // the native port every 30s and let the self-heal path reload if needed.
+    chrome.alarms.create('dsh-chrome-watchdog', { periodInMinutes: 0.5 })
   } catch {
     // alarms are best effort; the port and popup button still work
   }
@@ -1289,6 +1293,12 @@ chrome.runtime.onConnect.addListener((keepalivePort) => {
 if (!port) forceReconnect().catch(() => {})
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'dsh-chrome-watchdog') {
+    if (!port) {
+      forceReconnect().catch(() => {})
+    }
+    return
+  }
   if (!alarm.name.startsWith('dsh-chrome-reconnect')) return
   // Force, not "if (!port)": a killed native host can leave a stale port
   // object behind, and then a conditional reconnect never fires.
