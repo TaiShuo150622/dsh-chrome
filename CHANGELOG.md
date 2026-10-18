@@ -13,6 +13,13 @@
 
 ## [Unreleased]
 
+### Added（F1 viewer 方案 A：实时画面 URL）
+
+- `chrome_screencast {op:"viewer"}` 返回 loopback 实时画面；`webServer` 注册 `/dsh-chrome/live` + `/dsh-chrome/live/frame`
+- 随机 token（0600 文件）、仅 loopback、GET only、frame 300ms 轮询、no-store
+- 实测：HTML 200、frame JPEG 1280x642、错误 token 403
+- provider 0.1.84；`test/liveview.mjs`；docs/SCREENCAST-SPIKE.md 更新
+
 ### Added（后台浏览器 H1.2：capture + CPU 基线）
 
 - headless 支持 `chrome_capture_start/requests/stop`：Network 域抓包（XHR/fetch/document）、URL/body 脱敏、8MiB body 预算、10 分钟自动停

@@ -14,6 +14,7 @@ import { BackendRouter, wrapToolsForBackend } from './src/backend.js'
 import { BridgeServer } from './src/bridge.js'
 import { HeadlessDriver, headlessSupported } from './src/headless.js'
 import { ensureInstallAssets } from './src/install.js'
+import { registerLiveView, unregisterLiveView } from './src/liveview.js'
 import { chromeTools } from './src/tools.js'
 
 export const name = 'dsh-chrome'
@@ -107,6 +108,16 @@ export function apply(ctx) {
     'dsh-chrome: provider config loaded (allowEvaluate=%s)',
     providerConfig?.allowEvaluate === true,
   )
+
+  ctx.effect(() => {
+    const webServer = ctx.get('webServer')
+    if (webServer) {
+      registerLiveView({ webServer, home, logger })
+    } else {
+      logger?.warn?.('dsh-chrome: webServer is not available; the live viewer is disabled')
+    }
+    return () => unregisterLiveView()
+  })
 
   ctx.effect(() => {
     const ready = bridge.start().catch((error) => {

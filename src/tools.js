@@ -12,6 +12,7 @@ import path from 'node:path'
 
 import { BridgeError } from './bridge.js'
 import { appendAudit, dshHome, loadPolicy, originOf, policyPath, readAudit, readProviderConfig, resolvePolicy } from './policy.js'
+import { getLiveViewUrl } from './liveview.js'
 
 const MUTATION_TIMEOUT_MS = 45000
 
@@ -1346,11 +1347,11 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   list.push({
     name: 'chrome_screencast',
     description:
-      'Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image, op="stop" ends the stream; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.',
+      'Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image, op="stop" ends the stream; op="viewer" returns the loopback live-view URL; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.',
     parameters: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['start', 'stop', 'status', 'diag'] },
+        op: { type: 'string', enum: ['start', 'stop', 'status', 'diag', 'viewer'] },
         format: { type: 'string', enum: ['jpeg', 'png'], description: 'start: frame format (default jpeg).' },
         quality: { type: 'number', description: 'start: JPEG quality 1-100 (default 60).' },
         everyNthFrame: { type: 'number', description: 'start: deliver every Nth frame, 1-10 (default 2).' },
@@ -1372,11 +1373,20 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         path: { type: 'string' },
         metaPath: { type: 'string' },
         image: {},
+        url: { type: 'string' },
+        enabled: { type: 'boolean' },
       }),
       render: (args, value) => {
         if (args?.op === 'diag') {
           const entries = Array.isArray(value?.entries) ? value.entries : []
           return renderText(JSON.stringify(entries.slice(-12), null, 1))
+        }
+        if (args?.op === 'viewer') {
+          return renderText(
+            value.enabled
+              ? `Live viewer: ${value.url}\nOpen it in a browser; it polls the latest screencast frame (300ms). Only reachable on loopback with the token.`
+              : 'Live viewer is disabled (Host webServer is unavailable).',
+          )
         }
         const blocks = []
         if (value.image) blocks.push({ type: 'image', attachment: value.image })
@@ -1418,6 +1428,10 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       }
       if (op === 'diag') {
         return call('tab.debug_diag', { owner }, 15000)
+      }
+      if (op === 'viewer') {
+        const url = getLiveViewUrl()
+        return { enabled: Boolean(url), url }
       }
       if (op === 'status') {
         const status = await call('tab.screencast_status', { owner }, 15000)

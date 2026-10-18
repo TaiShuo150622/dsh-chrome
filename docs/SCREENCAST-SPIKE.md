@@ -37,6 +37,19 @@ meta.json: {"format":"jpg","bytes":6493,"frames":20,
 | worker 重启后旧 debugger 会话成孤儿，attach 失败 | MV3 SW 被回收后 Chrome 侧 debugger 仍 attached（同一扩展） | worker 启动 `getTargets()` 清扫孤儿；attach 失败时 detach 后重试一次 |
 | 帧写盘无文件 | native host 之前只转发带 id 的响应 | host 拦截 `type:"screencast-frame"` 写 latest 帧 + meta（原子 rename） |
 
+## 2.1 Viewer（方案 A）已实现
+
+`chrome_screencast {op:"viewer"}` 返回 loopback 的实时画面 URL：
+
+```text
+http://127.0.0.1:<DSH web 端口>/dsh-chrome/live?token=<随机 token>
+```
+
+- provider 通过 Host `webServer.register` 注册 `/dsh-chrome/live`（HTML 轮询）与 `/dsh-chrome/live/frame`（最新 JPEG）；
+- token 随机 48 hex，存 `~/.dsh/cache/dsh-chrome/live-token`（0600）；只接受 loopback 请求 + 正确 token；
+- 页面每 300ms 拉一次帧（`cache-control: no-store`），帧来自 native host 写入的 `latest.jpg`；
+- 实测：HTML 200、frame `image/jpeg 1280x642 6493B`、错误 token 403、非 loopback 403；`HEAD` 返回 405（只接受 GET）。
+
 ## 3. 「实时画面」还缺什么
 
 现在的形态是 **轮询式最新帧**（status 取一张图），不是 UI 上的实时画面。两条路：
@@ -57,10 +70,8 @@ meta.json: {"format":"jpg","bytes":6493,"frames":20,
 
 ## 4. 建议
 
-1. 先做 **方案 A viewer**（约 0.5–1 天）：webServer 路由 + token + HTML 轮询；`chrome_screencast` 返回 viewer URL。
-2. 加自动停止（默认 5 分钟无查看者 / 10 分钟硬上限），避免长期占 CPU。
-3. 做一次 CPU/帧率测量（同页面滚动 30s，记录 fps、Chrome CPU、host CPU），再决定是否做方案 B。
-4. 若要嵌入 GUI 再做客户端面板。
+1. 方案 A viewer 已完成（见 §2.1）；剩余：自动停止（默认 5 分钟无查看者 / 10 分钟硬上限）与帧率/CPU 测量。
+2. 若要嵌入 GUI 再做客户端面板（方案 B）。
 
 ## 5. 代码位置
 
