@@ -23,6 +23,7 @@
  *                                   [--no-optimize] [--gap-ms 0] [--static]
  *                                   [--readonly-eval] [--noop-click] [--press]
  *                                   [--click-at] [--shot-chain] [--drag]
+ *                                   [--type-same] [--select-same]
  *                                   [--mixed]
  *                                   [--idle-seconds 0] [--idle-settle-seconds 0]
  *
@@ -184,6 +185,14 @@ let shotChainPoints = null
 // screenshot must reuse the cached frame instead of paying the repaint window.
 const TYPE_SAME = hasFlag('--type-same')
 const TYPE_SAME_VALUE = 'same'
+// Same-option re-select scenario (docs/HEADLESS.md §4.1.17): snapshot +
+// `tab.select` of the option the select already shows + screenshot. The value
+// and every tracker counter stay as they were, so the select cannot repaint and
+// the screenshot must reuse the cached frame instead of paying the repaint
+// window. The select only exists on the page in this scenario, so every other
+// scenario's snapshot payload is unchanged.
+const SELECT_SAME = hasFlag('--select-same')
+const SELECT_SAME_VALUE = 'a'
 // Element/region screenshot scenarios. Clip coordinates are CSS px like the
 // `clip` tool parameter; ref mode uses the input control from the same snapshot
 // the round already takes, so it measures ref resolution + crop end to end.
@@ -212,6 +221,7 @@ const html = `<!doctype html><html><head><title>Headless Bench</title></head><bo
 <button id="go" onclick="document.getElementById('out').textContent=document.getElementById('q').value">Go</button>
 <div id="out">ready</div>
 <div id="noop" style="padding:6px;border:1px solid #999;width:120px">noop</div>
+${SELECT_SAME ? '<label>Pick <select id="pick"><option value="a">alpha</option><option value="b">bravo</option><option value="c">charlie</option></select></label>' : ''}
 <button id="drag-from" type="button">drag-from</button>
 <button id="drag-to" type="button">drag-to</button>
 <div id="bulk">${'<p>row</p>'.repeat(40)}</div>
@@ -270,8 +280,8 @@ function processStats() {
 // Wall-clock accumulator per action kind; Chrome CPU is sampled only around the
 // whole loop, but wall time isolates which request dominates a round.
 function createTimer() {
-  const buckets = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0, clickAt: 0, drag: 0 }
-  const counts = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0, clickAt: 0, drag: 0 }
+  const buckets = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0, clickAt: 0, drag: 0, select: 0 }
+  const counts = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0, clickAt: 0, drag: 0, select: 0 }
   return {
     buckets,
     counts,
@@ -392,6 +402,7 @@ try {
     const snap = await timed('snapshot', () => driver.request('tab.snapshot', { owner: 'bench', maxChars: SNAPSHOT_MAX_CHARS }))
     if (measured) recordSnapshotBytes(snap)
     const input = snap.controls.find((control) => control.tag === 'input')
+    const select = SELECT_SAME ? snap.controls.find((control) => control.tag === 'select') : null
     if (MIXED) {
       const kind = mixedKindFor(index)
       if (measured) mixedStats.kinds[kind] += 1
@@ -432,6 +443,10 @@ try {
       // Every round types the value the field already holds at the same caret:
       // the probe proves it paint-free, so the screenshot is a cache hit.
       await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: TYPE_SAME_VALUE, replace: true }))
+    } else if (SELECT_SAME) {
+      // Every round re-selects the option the select already shows: the probe
+      // proves it paint-free, so the screenshot is a cache hit.
+      await timed('select', () => driver.request('tab.select', { owner: 'bench', ref: select.ref, value: SELECT_SAME_VALUE }))
     } else if (input && !STATIC) {
       await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${index}`, replace: true }))
     }
@@ -445,7 +460,7 @@ try {
     // viewport offset, otherwise half the rounds would fall back to capture
     // because the element left the viewport (the honest off-screen case, but
     // not what this scenario is measuring).
-    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK && !PRESS && !CLICK_AT && !SHOT_CHAIN && !DRAG && !TYPE_SAME) {
+    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK && !PRESS && !CLICK_AT && !SHOT_CHAIN && !DRAG && !TYPE_SAME && !SELECT_SAME) {
       await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: SHOT_REF ? 60 : 200 }))
     }
   }
@@ -465,7 +480,7 @@ try {
   // The read-only evaluate, no-op click, pointer and chained-screenshot
   // scenarios are orders of magnitude cheaper per round, so they need a much
   // higher cap to stay time-bound.
-  const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK || PRESS || CLICK_AT || SHOT_CHAIN || DRAG || TYPE_SAME ? 2000 : 50)
+  const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK || PRESS || CLICK_AT || SHOT_CHAIN || DRAG || TYPE_SAME || SELECT_SAME ? 2000 : 50)
   while (Date.now() < until && actions < ACTION_CAP) {
     await runRound(timer, actions, true)
     actions += 1
@@ -489,7 +504,7 @@ try {
   const cpuMsPerAction = round((cpuSeconds * 1000) / Math.max(1, actions), 2)
   const perActionMs = timer.averages()
   const roundTotalMs = round(
-    (timer.buckets.snapshot + timer.buckets.type + timer.buckets.evaluate + timer.buckets.click + timer.buckets.screenshot + timer.buckets.scroll + timer.buckets.press + timer.buckets.clickAt + timer.buckets.drag) /
+    (timer.buckets.snapshot + timer.buckets.type + timer.buckets.evaluate + timer.buckets.click + timer.buckets.screenshot + timer.buckets.scroll + timer.buckets.press + timer.buckets.clickAt + timer.buckets.drag + timer.buckets.select) /
       Math.max(1, actions),
     2,
   )
@@ -555,7 +570,9 @@ try {
                         ? 'snapshot/drag(handler-free buttons)/screenshot (page never repaints)'
                         : TYPE_SAME
                           ? 'snapshot/type(same value)/screenshot (page never repaints)'
-                          : READONLY_EVAL
+                          : SELECT_SAME
+                            ? 'snapshot/select(same option)/screenshot (page never repaints)'
+                            : READONLY_EVAL
                             ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)'
                             : STATIC
                               ? 'snapshot/screenshot (static page)'
@@ -575,6 +592,8 @@ try {
         ...(DRAG && dragRefs ? { drag: { shotsPerRound: 1, refs: dragRefs } } : {}),
         typeSameMode: TYPE_SAME,
         ...(TYPE_SAME ? { typeSame: { text: TYPE_SAME_VALUE, replace: true } } : {}),
+        selectSameMode: SELECT_SAME,
+        ...(SELECT_SAME ? { selectSame: { value: SELECT_SAME_VALUE } } : {}),
         shotChainMode: SHOT_CHAIN,
         ...(SHOT_CHAIN && shotChainPoints
           ? { shotChain: { shotsPerRound: SHOT_CHAIN_SHOTS, points: shotChainPoints } }

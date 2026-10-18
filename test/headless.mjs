@@ -1256,6 +1256,111 @@ try {
   await driver.request('tab.screenshot', { owner: 's1' })
   await settle()
 
+  // Same-value re-selects (docs/HEADLESS.md §4.1.17). `tab.select` dispatches
+  // input/change whether or not the state moved, so choosing the option a select
+  // already shows (or setting a checkbox to the state it already has) changes
+  // nothing and cannot repaint: the next screenshot must reuse the cached frame
+  // instead of paying the repaint window. A real value change, a canvas pixel
+  // source and a page handler's work keep the conservative wait.
+  // The earlier scroll/click blocks left the page scrolled far down; the select
+  // sits at the top, and a viewport screenshot only shows a select repaint when
+  // the control is inside the viewport.
+  await driver.request('tab.scroll', { owner: 's1', direction: 'top' })
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const selectSnap = await driver.request('tab.snapshot', { owner: 's1', maxChars: 5000 })
+  const selectProbe = selectSnap.controls.find((control) => control.tag === 'select')
+  const checkProbe = selectSnap.controls.find((control) => control.kind === 'checkbox')
+  assert.ok(selectProbe && checkProbe, `select probe controls missing: ${JSON.stringify(selectSnap.controls)}`)
+  // The select already holds "two" and the checkbox is checked from the
+  // interaction block above; repeating them is a state no-op.
+  const selectBaseBytes = await stableFrameBytes()
+  const selectBaseDiag = await tabDiag()
+  const selectSameStartedAt = performance.now()
+  const selectSame = await driver.request('tab.select', { owner: 's1', ref: selectProbe.ref, value: 'two' })
+  const selectSameShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const selectSameMs = performance.now() - selectSameStartedAt
+  const selectSameDiag = await tabDiag()
+  assert.equal(selectSame.value, 'two', 'a same-value select changed the selected option')
+  assert.equal(
+    selectSameDiag.visualSkips,
+    selectBaseDiag.visualSkips + 1,
+    `a same-value select did not skip the repaint window: ${JSON.stringify({ before: selectBaseDiag.visualSkips, after: selectSameDiag.visualSkips })}`,
+  )
+  assert.equal(
+    selectSameDiag.screenshotStream.repaintMisses,
+    selectBaseDiag.screenshotStream.repaintMisses,
+    'a same-value select ran into the repaint window',
+  )
+  assert.ok(selectSameMs < 25, `a same-value select + screenshot paid the repaint window (${selectSameMs.toFixed(1)}ms)`)
+  assert.deepEqual(fs.readFileSync(selectSameShot.path), selectBaseBytes, 'a same-value select returned a different frame')
+  // The checkbox half of the same probe: an unchanged `checked` value.
+  const checkSameStartedAt = performance.now()
+  const checkSame = await driver.request('tab.select', { owner: 's1', ref: checkProbe.ref, checked: true })
+  const checkSameShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const checkSameMs = performance.now() - checkSameStartedAt
+  const checkSameDiag = await tabDiag()
+  assert.equal(checkSame.value, 'true')
+  assert.equal(
+    checkSameDiag.visualSkips,
+    selectSameDiag.visualSkips + 1,
+    `a same-state checkbox did not skip the repaint window: ${JSON.stringify({ before: selectSameDiag.visualSkips, after: checkSameDiag.visualSkips })}`,
+  )
+  assert.ok(checkSameMs < 25, `a same-state checkbox + screenshot paid the repaint window (${checkSameMs.toFixed(1)}ms)`)
+  assert.deepEqual(fs.readFileSync(checkSameShot.path), selectBaseBytes, 'a same-state checkbox returned a different frame')
+  // A real option change keeps the conservative wait; the select's rendered
+  // text changes, so the later frame must differ from the base one.
+  const selectChange = await driver.request('tab.select', { owner: 's1', ref: selectProbe.ref, value: 'one' })
+  const selectChangeDiag = await tabDiag()
+  assert.equal(selectChange.value, 'one')
+  assert.equal(
+    selectChangeDiag.visualSkips,
+    checkSameDiag.visualSkips,
+    'a value-changing select must keep the conservative wait',
+  )
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  const selectChangeBytes = await stableFrameBytes()
+  assert.notDeepEqual(selectChangeBytes, selectBaseBytes, 'a value-changing select was served a stale frame')
+  // Toggling the checkbox is a real change too.
+  const checkToggle = await driver.request('tab.select', { owner: 's1', ref: checkProbe.ref, checked: false })
+  const checkToggleDiag = await tabDiag()
+  assert.equal(checkToggle.value, 'false')
+  assert.equal(
+    checkToggleDiag.visualSkips,
+    selectChangeDiag.visualSkips,
+    'a checkbox toggle must keep the conservative wait',
+  )
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  // Canvas pixels repaint with no DOM mutation the tracker can see: the
+  // same-value select must keep the wait there.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: '(() => { const c = document.createElement("canvas"); c.id = "select-probe-canvas"; c.width = 40; c.height = 10; document.body.appendChild(c); return true })()',
+  })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const canvasSelectBaseDiag = await tabDiag()
+  const canvasSelect = await driver.request('tab.select', { owner: 's1', ref: selectProbe.ref, value: 'one' })
+  const canvasSelectDiag = await tabDiag()
+  assert.equal(canvasSelect.value, 'one')
+  assert.equal(
+    canvasSelectDiag.visualSkips,
+    canvasSelectBaseDiag.visualSkips,
+    'a page with a canvas must keep the conservative wait for same-value selects',
+  )
+  await driver.request('tab.screenshot', { owner: 's1' })
+  const canvasSelectShotDiag = await tabDiag()
+  assert.equal(
+    canvasSelectShotDiag.screenshotStream.repaintMisses,
+    canvasSelectBaseDiag.screenshotStream.repaintMisses + 1,
+    'the vetoed same-value select did not pay the repaint window once',
+  )
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("select-probe-canvas").remove()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+
   // Frame-stream keep-alive (docs/HEADLESS.md §4.1.3): an unchanged visible
   // page that produced no frame for longer than the idle window must keep its
   // cached frame and its screencast instead of restarting, so the next

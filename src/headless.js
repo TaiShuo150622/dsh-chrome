@@ -407,6 +407,26 @@ function typeProbeEligible(before) {
   return true
 }
 
+// `tab.select` (docs/HEADLESS.md §4.1.17) sets a select's option or a
+// checkbox/radio's checked flag and dispatches `input`/`change` either way.
+// Choosing the option a select already shows, or setting a checkbox to the
+// state it already has, changes no state and repaints nothing (probe,
+// /tmp/probe-paint-r15.mjs: the frame bytes are identical for the repeated
+// action and differ for the real one), while the next screenshot used to wait
+// out the full repaint window for a frame that cannot come. The state change is
+// answered by the action's own page-side result, so the same vetoes apply as
+// for `tab.type`: a handler's DOM work is a tracker counter, and only the
+// surfaces the tracker cannot see at all (canvas pixels, media surfaces,
+// same-origin subframes), a still-loading tab and a fullscreen document keep
+// the conservative wait.
+function selectProbeEligible(before) {
+  if (!before) return false
+  if (before.readyState !== 'complete') return false
+  if (before.broken || before.canvas || before.media || before.frames) return false
+  if (before.fullscreen) return false
+  return true
+}
+
 // Every request that can change what the page renders bumps the owning tab's
 // change marker. `tab.screenshot` only reuses a streamed frame (or waits for a
 // new one) whose composition timestamp is at least this marker.
@@ -1097,7 +1117,7 @@ function findPage(query, regex, maxResults) {
   return { query: needle, matches, truncated }
 }
 
-function selectPage(ref, selector, value, checked) {
+function selectPage(ref, selector, value, checked, probe) {
   const el = selector
     ? document.querySelector(selector)
     : document.querySelector(`[data-dsh-ref="${Number(ref)}"]`)
@@ -1109,17 +1129,27 @@ function selectPage(ref, selector, value, checked) {
       (candidate) => candidate.value === String(value) || (candidate.textContent || '').trim() === String(value),
     )
     if (!option) return { ok: false, code: 'INVALID_ARGUMENT', message: `option not found: ${value}` }
+    // Selects and checkboxes dispatch `change` (and `input`) whether or not the
+    // state actually moved, so the caller cannot tell an idempotent re-select
+    // from a real one by the result alone (docs/HEADLESS.md §4.1.17). Answer
+    // "did the state change" from the values around the write; the optional
+    // pre-action tracker snapshot rides in this same evaluate (the same form
+    // `typePage` uses), so the paint-free case costs no extra round trip.
+    const probeBefore = probe === true && window.__dshVisual ? window.__dshVisual.snapshot() : null
+    const valueBefore = el.value
     el.value = option.value
     el.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
     el.dispatchEvent(new Event('change', { bubbles: true }))
-    return { ok: true, tag, value: el.value }
+    return { ok: true, tag, value: el.value, changed: el.value !== valueBefore, changeEvents: 1, probeBefore }
   }
   if (tag === 'input' && ['checkbox', 'radio'].includes(String(el.type).toLowerCase())) {
     const next = typeof checked === 'boolean' ? checked : !el.checked
+    const probeBefore = probe === true && window.__dshVisual ? window.__dshVisual.snapshot() : null
+    const checkedBefore = el.checked
     el.checked = next
     el.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
     el.dispatchEvent(new Event('change', { bubbles: true }))
-    return { ok: true, tag, value: next ? 'true' : 'false' }
+    return { ok: true, tag, value: next ? 'true' : 'false', changed: el.checked !== checkedBefore, changeEvents: 1, probeBefore }
   }
   return { ok: false, code: 'INVALID_ARGUMENT', message: `element <${tag}> is not a select/checkbox/radio` }
 }
@@ -2575,7 +2605,32 @@ export class HeadlessDriver {
       }
       case 'tab.select': {
         const tab = await this.ensureTab(owner, params.tabId)
-        const result = await this.pageAction(tab, 'selectPage', [params.ref ?? null, params.selector ?? null, params.value ?? null, params.checked])
+        // Re-selecting the option a select already shows (or setting a checkbox
+        // to the state it is already in) dispatches the same input/change events
+        // as a real change but moves no state, so it cannot repaint: keep the
+        // change marker and let the next screenshot reuse the cached frame
+        // (docs/HEADLESS.md §4.1.17). The page-side result reports whether the
+        // state actually moved and carries the pre-action tracker snapshot back
+        // in the same evaluate, so a real change — the common case — pays only
+        // the page-side snapshot work and is vetoed before the second snapshot.
+        // The single synthetic `change` event is declared to the verdict as the
+        // action's own counter; a handler dispatching another one still vetoes.
+        const result = await this.visualProbeAction(
+          tab,
+          () =>
+            this.pageAction(tab, 'selectPage', [
+              params.ref ?? null,
+              params.selector ?? null,
+              params.value ?? null,
+              params.checked,
+              VISUAL_PROBE_ENABLED,
+            ]),
+          (value) => value?.ok === true && value.changed === false,
+          (before) => selectProbeEligible(before),
+          null,
+          (value) => ({ changes: Number(value?.changeEvents) === 1 ? 1 : 0 }),
+          (value) => (value?.ok === true && value.probeBefore ? value.probeBefore : null),
+        )
         if (!result?.ok) throw error(result?.code || 'REF_NOT_FOUND', result?.message || 'select failed')
         return { ok: true, tag: result.tag, value: result.value }
       }

@@ -217,4 +217,45 @@ assert.equal(
   `type-same rounds paid the repaint window: ${JSON.stringify(typeSame.screenshotStream)}`,
 )
 
+
+// `--select-same` (docs/HEADLESS.md §4.1.17): every round re-selects the option
+// the select already shows. The page-side result proves the value did not move,
+// so every round must skip the repaint window; a driver without the select
+// probe pays it on every round instead.
+const selectSameRun = spawnSync(
+  process.execPath,
+  [path.join(root, 'scripts', 'headless-bench.mjs'), '--seconds', '4', '--select-same'],
+  { cwd: root, encoding: 'utf8', timeout: 120000 },
+)
+assert.equal(
+  selectSameRun.status,
+  0,
+  `select-same bench exited ${selectSameRun.status}\nstdout: ${selectSameRun.stdout}\nstderr: ${selectSameRun.stderr}`,
+)
+const selectSame = JSON.parse(selectSameRun.stdout)
+assert.equal(selectSame.selectSameMode, true)
+assert.ok(
+  selectSame.scenario.includes('snapshot/select(same option)'),
+  `unexpected select-same scenario: ${selectSame.scenario}`,
+)
+assert.equal(selectSame.selectSame.value, 'a')
+assert.ok(selectSame.actions >= 100, `too few select-same rounds: ${selectSame.actions}`)
+assert.ok(
+  selectSame.perActionMs.select > 0 && selectSame.perActionMs.screenshot > 0,
+  `select-same timings missing: ${JSON.stringify(selectSame.perActionMs)}`,
+)
+assert.ok(
+  selectSame.perActionMs.screenshot < 5,
+  `select-same screenshots still pay the repaint window: ${selectSame.perActionMs.screenshot}ms`,
+)
+assert.ok(
+  selectSame.visualSkips >= selectSame.actions,
+  `select-same rounds were not proven paint-free: ${JSON.stringify({ visualSkips: selectSame.visualSkips, actions: selectSame.actions })}`,
+)
+assert.equal(
+  selectSame.screenshotStream.repaintMisses,
+  0,
+  `select-same rounds paid the repaint window: ${JSON.stringify(selectSame.screenshotStream)}`,
+)
+
 console.log('BENCH SCENARIO TEST: PASS')
