@@ -9,8 +9,7 @@
 |---|---|---|---|
 | `allowEvaluate` | `false` | 为 `true` 时注册第 33 个工具 `chrome_evaluate`；关闭时工具**不存在** | 高：页面内任意 JS |
 | `evaluateConfirmTimeoutMs` | `120000` | evaluate 硬确认等待上限；超时 → `APPROVAL_TIMEOUT` | 低 |
-| `captureConfirm` | `"hard"` | `"hard"`：每次 `chrome_capture_start` 弹确认卡；`"follow-dsh"`：跟随会话策略（**仅本地自动化验证用逃逸口**，danger-full-access 下等于无确认） | 高：抓包含页面数据 |
-| `captureConfirmTimeoutMs` | `120000` | 抓包确认等待上限 | 低 |
+| `captureConfirmTimeoutMs` | `120000` | 抓包确认等待上限（start 固定硬确认，没有配置逃逸口） | 低 |
 
 ## 示例
 
@@ -23,13 +22,7 @@
 }
 ```
 
-本地自动化验证抓包（**不要长期保留**）：
-
-```json
-{
-  "captureConfirm": "follow-dsh"
-}
-```
+> 抓包 start 没有 `captureConfirm` 逃逸口：每次必须用户在 GUI 确认（0.1.76 起固定 hard）；`captureConfirmTimeoutMs` 只控制等待上限。
 
 ## 硬确认行为
 

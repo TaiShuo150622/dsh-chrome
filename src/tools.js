@@ -100,9 +100,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   const captureConfirmTimeoutMs = Number.isFinite(pluginConfig.captureConfirmTimeoutMs)
     ? Math.max(1000, Math.min(600000, Number(pluginConfig.captureConfirmTimeoutMs)))
     : 120000
-  // Default "hard": every capture start asks the human. "follow-dsh" is a
-  // development/test escape hatch; it never skips the tool registration.
-  const captureConfirmMode = pluginConfig.captureConfirm === 'follow-dsh' ? 'follow-dsh' : 'hard'
+  // Capture start is always hard-confirmed; there is no config escape hatch.
 
   const sessionLabel = (exec) => {
     try {
@@ -208,6 +206,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   }
 
   async function hardConfirmAsk(exec, toolName, { header, question, detail, timeoutMs }) {
+    const site = await currentSite(exec)
+    const auditConfirm = (decision, reason) => writeAudit(exec, toolName, header, site, decision, reason)
     const service = userQuestions?.()
     if (!service || typeof service.ask !== 'function') {
       throw new BridgeError('APPROVAL_DENIED', 'hard confirmation service is unavailable; refusing sensitive action')
@@ -243,12 +243,17 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       const selected = answer?.answers?.[0]?.selected
       const choice = Array.isArray(selected) ? selected.join(' ') : ''
       if (!choice.includes('允许')) {
+        auditConfirm('denied', 'hard-confirm-refused')
         throw new BridgeError('APPROVAL_DENIED', 'sensitive browser action was not approved')
       }
+      auditConfirm('allowed', 'hard-confirm')
     } catch (error) {
       if (error instanceof BridgeError) throw error
       const code = String(error?.code || error?.name || '')
-      if (timedOut) throw new BridgeError('APPROVAL_TIMEOUT', 'confirmation timed out')
+      if (timedOut) {
+        auditConfirm('denied', 'hard-confirm-timeout')
+        throw new BridgeError('APPROVAL_TIMEOUT', 'confirmation timed out')
+      }
       if (code === 'DELEGATED_CALLER') {
         throw new BridgeError('DELEGATED_CALLER', 'delegated agents cannot confirm this browser action')
       }
@@ -1234,7 +1239,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
             `provider config: ${value.path}`,
             `allowEvaluate: ${config.allowEvaluate === true}`,
             `evaluateConfirmTimeoutMs: ${config.evaluateConfirmTimeoutMs ?? 'default (120000)'}`,
-            `captureConfirm: ${config.captureConfirm ?? 'hard'}`,
+            'captureConfirm: hard (fixed)',
             `captureConfirmTimeoutMs: ${config.captureConfirmTimeoutMs ?? 'default (120000)'}`,
             ...(value.error ? [`WARNING: ${value.error}`] : []),
           ].join('\n'),
@@ -1634,15 +1639,13 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         ),
     },
     async execute(args, exec) {
-      if (captureConfirmMode === 'hard') {
-        const tabHint = Number.isFinite(args?.tabId) ? `标签 ${args.tabId}` : '当前会话标签'
-        await hardConfirmAsk(exec, 'chrome_capture_start', {
-          header: '开始抓取网络请求（高敏感）',
-          question: `允许抓取${tabHint} 的网络请求吗？会记录 URL/状态/脱敏后的请求与响应体（默认不含 Cookie/Authorization 等 headers），可能包含个人信息。`,
-          detail: '停止：chrome_capture_stop；最长 10 分钟自动停止；抓包期间 Chrome 会显示「正在调试此浏览器」横幅',
-          timeoutMs: captureConfirmTimeoutMs,
-        })
-      }
+      const tabHint = Number.isFinite(args?.tabId) ? `标签 ${args.tabId}` : '当前会话标签'
+      await hardConfirmAsk(exec, 'chrome_capture_start', {
+        header: '开始抓取网络请求（高敏感）',
+        question: `允许抓取${tabHint} 的网络请求吗？会记录 URL/状态/脱敏后的请求与响应体（默认不含 Cookie/Authorization 等 headers），可能包含个人信息。`,
+        detail: '停止：chrome_capture_stop；最长 10 分钟自动停止；抓包期间 Chrome 会显示「正在调试此浏览器」横幅',
+        timeoutMs: captureConfirmTimeoutMs,
+      })
       return call(
         'tab.capture_start',
         {

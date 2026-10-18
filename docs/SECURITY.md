@@ -28,7 +28,7 @@
 | download | `chrome.downloads.search` | 只读列表，不自动打开文件 |
 | dialog | CDP 对话框拦截 | 默认策略：alert 接受；confirm/prompt/beforeunload 取消（需显式 `accept:true`） |
 | evaluate（默认关） | CDP `Runtime.evaluate` + CDP timeout | 配置 `allowEvaluate` 才注册；每次调用 `ctx.userQuestions` 硬确认，不受 danger-full-access 影响；拒绝/超时/子代理 fail-closed |
-| capture（默认 always registered） | CDP `Network.enable` 事件缓冲 | start 每次硬确认（默认）；**不采集 headers**；URL/body 脱敏 `«redacted»`；10 分钟自动停；body 预算 8 MiB；worker 回收报 `CAPTURE_LOST` |
+| capture（always registered） | CDP `Network.enable` 事件缓冲 | start **固定硬确认，无配置旁路**（0.1.76 起）；允许/拒绝/超时写审计；不采集 headers；URL/body 脱敏 `«redacted»`；10 分钟自动停；body 预算 8 MiB；worker 回收报 `CAPTURE_LOST` |
 
 ## 明确不做
 

@@ -678,6 +678,41 @@ try {
 }
 check('capture buffers are owner-isolated', /CAPTURE_NOT_FOUND/.test(otherOwnerCode || ''))
 
+// F4: URL userinfo + form body redaction
+emitNetwork('Network.requestWillBeSent', {
+  requestId: 'e4',
+  request: { url: 'https://user:pass@api.test/secure?token=SECRET&q=1', method: 'GET' },
+  type: 'Fetch',
+  timestamp: 210,
+})
+emitNetwork('Network.responseReceived', { requestId: 'e4', response: { status: 200, mimeType: 'application/json' }, timestamp: 211 })
+emitNetwork('Network.loadingFinished', { requestId: 'e4', timestamp: 210.5 })
+emitNetwork('Network.requestWillBeSent', {
+  requestId: 'e5',
+  request: { url: 'https://api.test/form', method: 'POST', hasPostData: true, postData: 'token=T0K3N&user=u1' },
+  type: 'XHR',
+  timestamp: 220,
+})
+emitNetwork('Network.responseReceived', { requestId: 'e5', response: { status: 200, mimeType: 'application/json' }, timestamp: 221 })
+emitNetwork('Network.loadingFinished', { requestId: 'e5', timestamp: 220.5 })
+await new Promise((resolve) => setTimeout(resolve, 30))
+
+const redactedRequests = await sandbox.handleRequest({ method: 'tab.capture_requests', params: { owner: 's1' }, id: 'capture-redacted' })
+const userinfoEntry = redactedRequests?.entries?.find((entry) => entry.id === 'e4')
+const formEntry = redactedRequests?.entries?.find((entry) => entry.id === 'e5')
+check(
+  'capture redacts URL userinfo and query secrets',
+  typeof userinfoEntry?.url === 'string' &&
+    userinfoEntry.url.includes('«redacted»') &&
+    !userinfoEntry.url.includes('SECRET'),
+  JSON.stringify(userinfoEntry?.url),
+)
+check(
+  'capture redacts form-urlencoded secret fields',
+  typeof formEntry?.requestBody === 'string' && formEntry.requestBody.includes('token="«redacted»"'),
+  JSON.stringify(formEntry?.requestBody),
+)
+
 for (const listener of debuggerDetachListeners) listener({ tabId: 7 }, 'target_closed')
 const detachedRequests = await sandbox.handleRequest({ method: 'tab.capture_requests', params: { owner: 's1' }, id: 'capture-detached' })
 check(

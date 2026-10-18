@@ -270,6 +270,22 @@ const cancelValue = await byName.chrome_pick.execute({ cancel: true }, exec())
 check('chrome_pick cancel returns canceled', cancelValue?.canceled === true)
 check('chrome_pick cancel reaches the extension', requests.at(-1)?.method === 'tab.pick_cancel')
 
+// F4: capture start has no config escape hatch
+const bypassTools = chromeTools({
+  bridge,
+  attachments: () => null,
+  assets: () => ({ extensionId: 'test', extensionDir: '/tmp/ext', nativeManifestPath: '/tmp/nm', instructionsPath: '/tmp/i.md' }),
+  config: () => ({ captureConfirm: 'follow-dsh' }),
+})
+const bypassByName = Object.fromEntries(bypassTools.map((definition) => [definition.name, definition]))
+let bypassCode = null
+try {
+  await bypassByName.chrome_capture_start.execute({ maxEntries: 5 }, exec())
+} catch (error) {
+  bypassCode = error?.code
+}
+check('capture start ignores the retired follow-dsh escape hatch', bypassCode === 'APPROVAL_DENIED')
+
 // D2: pick nowait/poll and capture body render
 const pickStartNowait = await byName.chrome_pick.execute({ nowait: true }, exec())
 check('chrome_pick nowait returns started', pickStartNowait?.started === true)

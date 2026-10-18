@@ -13,6 +13,13 @@
 
 ## [Unreleased]
 
+### Changed（P1 F4：安全收口）
+
+- **移除抓包 start 的 `captureConfirm:"follow-dsh"` 逃逸口**：0.1.76 起 capture start 固定硬确认，没有配置旁路
+- 硬确认（evaluate/capture start）的允许/拒绝/超时现在写入 `audit.jsonl`（decision/reason=`hard-confirm*`）
+- 新增脱敏回归：URL userinfo/query secret、form-urlencoded secret 字段
+- provider 0.1.76
+
 ### Added（P1 F3：策略/配置体验）
 
 - 新工具 `chrome_config`（第 38 个）：只读展示 `allowEvaluate/captureConfirm/超时` 与配置文件路径、解析错误
