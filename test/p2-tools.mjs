@@ -270,6 +270,38 @@ const cancelValue = await byName.chrome_pick.execute({ cancel: true }, exec())
 check('chrome_pick cancel returns canceled', cancelValue?.canceled === true)
 check('chrome_pick cancel reaches the extension', requests.at(-1)?.method === 'tab.pick_cancel')
 
+// D2: pick nowait/poll and capture body render
+const pickStartNowait = await byName.chrome_pick.execute({ nowait: true }, exec())
+check('chrome_pick nowait returns started', pickStartNowait?.started === true)
+check('pick nowait starts pick mode', requests.at(-1)?.method === 'tab.pick_start')
+
+const pickPoll = await byName.chrome_pick.execute({ poll: true }, exec())
+check('chrome_pick poll returns the finished pick', pickPoll?.ref === 3 && pickPoll?.selector === '#greet')
+
+const captureRender = byName.chrome_capture_requests.output.render(
+  {},
+  {
+    captureId: 'cap-1',
+    active: false,
+    entries: [
+      {
+        method: 'POST',
+        url: 'https://api.test/x',
+        status: 200,
+        mimeType: 'application/json',
+        resourceType: 'fetch',
+        requestBody: '{"token":"«redacted»"}',
+        responseBody: '{"ok":true}',
+      },
+    ],
+    total: 1,
+  },
+)
+check(
+  'capture render includes request/response bodies',
+  /request:/.test(captureRender[0]?.text || '') && /response:/.test(captureRender[0]?.text || ''),
+)
+
 // D1: site policy allow/block + audit
 const policyDir = path.join(home, 'cache', 'dsh-chrome')
 await fsp.mkdir(policyDir, { recursive: true })

@@ -639,6 +639,52 @@ emitNetwork('Network.requestWillBeSent', { requestId: 'r5', request: { url: 'htt
 const frozen = await sandbox.handleRequest({ method: 'tab.capture_requests', params: { owner: 's1', captureId: captureStop.captureId }, id: 'capture-requests-frozen' })
 check('capture buffer stays readable after stop and ignores new events', frozen?.total === 2 && frozen?.active === false)
 
+// C2: capture edge branches (failed/cache/type filter/owner isolation/detach freeze)
+const edgeStart = await sandbox.handleRequest({
+  method: 'tab.capture_start',
+  params: { owner: 's1', maxEntries: 10 },
+  id: 'capture-edge-start',
+})
+check('new capture_start after stop becomes active', edgeStart?.active === true)
+const edgeAgain = await sandbox.handleRequest({
+  method: 'tab.capture_start',
+  params: { owner: 's1', maxEntries: 10 },
+  id: 'capture-edge-again',
+})
+check('second capture_start reports alreadyActive', edgeAgain?.alreadyActive === true)
+
+emitNetwork('Network.requestWillBeSent', { requestId: 'e1', request: { url: 'https://api.test/fail', method: 'GET' }, type: 'XHR', timestamp: 200 })
+emitNetwork('Network.loadingFailed', { requestId: 'e1', errorText: 'net::ERR_FAILED', canceled: false })
+emitNetwork('Network.requestWillBeSent', { requestId: 'e2', request: { url: 'https://api.test/cache', method: 'GET' }, type: 'Fetch', timestamp: 201 })
+emitNetwork('Network.requestServedFromCache', { requestId: 'e2' })
+emitNetwork('Network.requestWillBeSent', { requestId: 'e3', request: { url: 'https://api.test/pixel.png', method: 'GET' }, type: 'Image', timestamp: 202 })
+
+const edgeRequests = await sandbox.handleRequest({ method: 'tab.capture_requests', params: { owner: 's1' }, id: 'capture-edge-requests' })
+const failedEntry = edgeRequests?.entries?.find((entry) => entry.id === 'e1')
+const cachedEntry = edgeRequests?.entries?.find((entry) => entry.id === 'e2')
+check('capture marks failed requests with errorText', failedEntry?.failed === true && failedEntry?.errorText === 'net::ERR_FAILED')
+check('capture records fromCache without responseReceived', cachedEntry?.fromCache === true)
+check('capture resourceTypes filter drops images', !edgeRequests?.entries?.some((entry) => entry.id === 'e3'))
+
+let otherOwnerCode = null
+try {
+  await sandbox.handleRequest({
+    method: 'tab.capture_requests',
+    params: { owner: 's2', captureId: edgeStart.captureId },
+    id: 'capture-other-owner',
+  })
+} catch (error) {
+  otherOwnerCode = String(error?.code || error?.message || error)
+}
+check('capture buffers are owner-isolated', /CAPTURE_NOT_FOUND/.test(otherOwnerCode || ''))
+
+for (const listener of debuggerDetachListeners) listener({ tabId: 7 }, 'target_closed')
+const detachedRequests = await sandbox.handleRequest({ method: 'tab.capture_requests', params: { owner: 's1' }, id: 'capture-detached' })
+check(
+  'debugger detach freezes the capture with a reason',
+  detachedRequests?.active === false && detachedRequests?.entries?.length >= 2,
+)
+
 // C0: one debugger session per entry (attach/detach ref counting)
 const sessionCounts = (from) => {
   const slice = debuggerCalls.slice(from)
