@@ -366,19 +366,94 @@ node scripts/headless-bench.mjs --seconds 20 --gap-ms 3000 --static   # 静态�
 DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 20 --gap-ms 3000 --static   # 旧行为对照
 ```
 
+### 4.1.4 2026-10-17 第五轮：clip/ref 区域截图从帧缓存裁剪 + bench 场景拆分
+
+§4.1.3 留下的两个方向，本轮一个落地、一个否掉（方向 I）。落地的是「`clip`/`ref` 从帧里裁剪」，而且先钉出一个**语义缺口**：改前 `tab.screenshot` 收到 `clip`/`ref`/`frameRef`/`highlight` 就直接走 `Page.captureScreenshot`，但 capture 参数里根本没有 `clip`——也就是说 headless 后端的 `chrome_screenshot {ref}` 一直静默返回整视口。本轮在 driver 层把 `clip`/`ref` 真正实现出来，并且不再走 capture：从帧流的最后一张合成帧里解码、裁剪、重编码。
+
+**为什么 driver 里裁剪可行。** Chrome 的 screencast PNG 是 8-bit、非隔行、RGB（colorType 2；1440×813 一帧约 39KB）。Node 侧 `zlib.inflateSync` + 逐行反滤波就拿到像素；PNG 的 5 种行滤波只引用「左边/上边」的像素，所以只解码裁剪区**左上方的前缀**（行 0..y+h、列 0..x+w）就够了——顶部/左上元素常常只解 10–20% 的帧。裁剪后按 filter 0 + deflate 6 重编码，写文件返回。
+
+**实现（`src/headless.js`）**：
+
+- `resolveScreenshotClip`：`clip` 按桌面后端语义是 CSS px，非法值抛 `INVALID_ARGUMENT`；`ref` 用页面 evaluate 取 `getBoundingClientRect()`（与扩展 `elementBox` 同口径），取不到/不可见抛 `REF_STALE`；`fullPage` 覆盖两者（仍走 `captureBeyondViewport`）。
+- `cropScreenshotFrame`：先只解析 IHDR 拿帧像素尺寸，按 `frameWidth / innerWidth` 折算 dpr，把 CSS px 的裁剪框换算成设备像素，算出需要的前缀再解码/裁剪/编码。解码结果缓存在帧对象上：页面没变时重复截图跳过解码与帧等待，只花 encode（<1ms）。
+- 回退规则不变、但这次区域是对的：JPEG+clip、`fullPage`、`frameRef`、`highlight`、`optimizeForSpeed:false`、帧流不可用/隐藏 tab/PNG 形态不支持（16-bit/调色板/隔行/JPEG 帧）→ `Page.captureScreenshot`，并把解析出的 `clip` 传给它；`ref` 元素完全在视口外（`getBoundingClientRect` 与视口无交集）同样回退 capture。
+- 帧流新鲜度规则完全复用 §4.1.1/§4.1.2：`renderChangeAt` + 帧 `metadata.timestamp` + 40ms 重绘窗；`tab.debug_diag.screenshotStream` 新增 `cropped` 计数。
+
+**bench 场景拆分（`scripts/headless-bench.mjs`）**：新增 `--shot-clip WxH`（固定视口区域，CSS px）与 `--shot-ref`（每轮用 snapshot 里的 input ref）。标准场景已被 60Hz 合成帧钉死（§4.1.3），这两条才是还有优化空间的路径。ref 模式的滚动量改为 60px，避免元素滚出视口后走回退分支（元素在视口外是另一个正确但更慢的分支，单独在边界里说明）。
+
+**前后数字**（同机、同命令；改前用 HEAD 74ddee5 跑同一份 bench，clip/ref 各 2 次；改后 clip 2 次、ref 2 次）：
+
+| 场景 | 指标 | 改前（74ddee5：capture，且忽略 clip/ref） | 改后 |
+|---|---|---|---|
+| `--shot-clip 600x300` | 动作/10s | 223 / 231 | **465 / 438** |
+| | `tab.screenshot` | 42.48 / 40.76 ms | **18.86 / 19.88 ms** |
+| | 每轮墙钟 | 45.01 / 43.46 ms | **21.50 / 22.86 ms** |
+| | 每动作 CPU | 27.35 / 28.27 ms | **19.48 / 20.37 ms** |
+| `--shot-ref`（input，153×21） | 动作/10s | 206 / 212 | **591 / 573** |
+| | `tab.screenshot` | 45.17 / 44.69 ms | **14.78 / 15.04 ms** |
+| | 每轮墙钟 | 48.62 / 47.16 ms | **16.92 / 17.45 ms** |
+| | 每动作 CPU | 28.69 / 29.76 ms | **16.67 / 16.49 ms** |
+
+区域截图吞吐约 ×2、元素截图吞吐约 ×2.8；元素截图已经和整视口截图同速（14.8 vs 15.3ms），因为 153×21 的裁剪/编码开销在噪声内。**标准视口场景不受影响**：改后 3 次 539 / 558 / 577 动作，`screenshot` 15.28–15.63ms，每轮 17.35–18.57ms（改前 2 次 550 / 586、14.82–16.02ms——同一条复跑分布内，仍贴着 60Hz 上限）。
+
+**中间迭代（也是数字）**：第一版是整帧解码（3.5MB RGB 前缀全解：inflate 2–3ms + 反滤波 7–10ms），clip 到 344 / 345 动作、`screenshot` 25.1 / 25.3ms；改成「只解裁剪区左上方前缀」后才到上表。
+
+**代价与边界**：
+
+- 解码量随裁剪区左上方覆盖的行/列数增长：左上/顶部元素几乎免费（ref 场景已与整视口同速），视口右下角的大区域接近整帧解码（~13ms），但仍远低于 capture ~45ms。
+- 元素在视口外、隐藏 tab、首帧未就绪、JPEG+clip → 回退 capture（~45–50ms），区域仍正确。
+- 输出是 filter 0 的 PNG，600×300 内容约 5–10KB（比 Chrome 自己的编码器大 1.3–2×；无损，语义不变）。
+- 每个 tab 至多缓存一份解码前缀（≤ 整帧 3.5MB），随下一帧替换/GC。
+
+**方向 I（否决）：viewer screencast 与截图缓存共用。** 子代理静态分析结论：viewer 默认 `jpeg/q60/1280×800/EveryNthFrame=2`，截图要 `png`、`maxWidth=viewport×dpr=1440×813`、`everyNthFrame=1`——格式和尺寸两个轴都不匹配；唯一兼容角落是「png viewer + emulate 到 ≤1280×800」，很罕见，却要 viewer 付出 1.27–2.5× 的帧编码/带宽成本，并处理 `latest.jpg` 陈旧、10min 帧流计时器与 5min viewer 空闲的冲突。不做，保留 capture 回退。顺带记一个可以单独做的小项：viewer 分支**每帧**都 base64 解码 + `mkdirSync` + 原子写 + 重写 `meta.json`（≤30 次/s），而消费端 300ms 才轮询一次——可节流到 ≥100ms 一次或只留内存最新帧（本轮未做，留给后续）。
+
+**回归**：`node test/headless.mjs` PASS（连跑 2 次），新增断言：clip 的 PNG 尺寸 = CSS px × dpr、未变页面两次裁剪字节相同、改页面后裁剪必须变、ref 尺寸 = 元素框、ref PNG 小于 600×300 clip、未知 ref → `REF_STALE`、空 clip → `INVALID_ARGUMENT`。
+
+### 4.1.5 2026-10-17 第六轮：冷启动路径（子代理并行调研）
+
+背景：§4.1.3 看到 bench 的每动作 CPU（~17ms）比同一 Chrome 热身后（~11ms）高 5–6ms，是一次性启动成本被 10s 窗口摊薄。先把冷启动拆开量（子代理独立探针：3 个全新 profile 循环、Chrome 155；绝对值受当时机器负载影响，按相对值看）：
+
+| 阶段 | 中位 [范围] ms |
+|---|---|
+| `spawn()` → `DevToolsActivePort` 写完（2 行） | 434.9 [284.1–446.2] |
+| 端口文件 → WebSocket open | 316.2 [294.8–329.6] |
+| WS → `Browser.getVersion` 返回 | 50.9 [30.8–89.5] |
+| `getVersion` → `ensureStarted()` 返回（mkdir + setDownloadBehavior） | 42.7 [31.3–60.0] |
+| `ensureStarted()` → 第一个 tab attach 完成（createTarget+attach+Page/Runtime.enable） | 157.3 [133.0–162.0] |
+| 第一个真实 `tab.goto` → load complete | 69.9 [53.9–73.1]（页面真实 load 22.0） |
+| 第一次截图（冷合成器） | 77.6 [71.1–85.1]；第二次 0.7 |
+| **spawn → 第一次截图完成** | **1125.9 [1037.7–1229.4]** |
+
+**采纳（`src/headless.js`）**：
+
+1. `Browser.getVersion` 与 `Browser.setDownloadBehavior` 互不依赖，改成 `Promise.all`：启动尾部 52.4ms → 1.9ms（省 ~45ms，负载下 34–67ms）。
+2. 新 tab 的 `Page.enable` / `Runtime.enable` 也并行：冷 RTT 13.3 + 11.1ms 串行 → 取 max，省 ~11ms（负载下重叠可到 25–58ms）。
+3. `waitReady` 的 `document.readyState` 轮询 100 → 25ms：测到真实 goto 在页面 load 完成后平均还要等 43ms 才返回；25ms 轮询把这段压到 ≤25ms（本地极快页面在第一次 evaluate 就 complete，碰不到这个等待）。
+
+**否掉：`DevToolsActivePort` 轮询 150 → 20ms。** 轮询超时是真的（n=18，中位 30.6ms，范围 −0.6–136.5ms），但 Chrome 写完端口文件后还要 300–570ms 才接受 WebSocket：探针在端口文件一出现就连接，WS open 相对 driver 只差 −2.5/−0.4/−0.3ms；配对 A/B 里 `port → ws open` 不变（+2.8ms 中位差）。轮询等待完全被 launch 覆盖，保持 150ms（注释里记了这个结论，防止后来者再「优化」它）。
+
+**边界**：剩下 ~750ms 是 Chrome 进程启动（435ms）+ Chrome 在端口写完到能服务 CDP 之间（316ms），Node 侧动不了。不建议为了第一条工具调用预热 Chrome 进程：空闲 headless 进程树 RSS 就有 672MB（§4.1），不用 headless 后端的桌面用户不该付这份常驻内存。标准 bench 不受影响（启动发生在计时窗口外，bench 先 warm-up 再计时）：改后复跑 539 / 558 / 577 动作/10s。
+
+**回归**：`node test/headless.mjs` PASS。
+
 ## 5. 下一步（H1）
 
 1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
 2. capture 引擎与扩展共享（两套行为一致性）；
-3. 截图性能：PNG/JPEG 帧流都已落地（§4.1.1、§4.1.2），「页面变了」的截图下限是合成器帧间隔 ~15–16ms；静态页空闲 2s 后会保留帧流与缓存帧（§4.1.3），重复截图 10–23ms → 1–2ms。剩余方向是 `clip`/`ref` 从帧里裁剪（需要 PNG 解码，纯 JS 解码+重编码很可能慢于 41ms 的 capture，未验证）、viewer screencast 与截图缓存共用、以及只读 evaluate 后的 40ms 重绘窗（需要可靠的「没有重绘」信号，暂未找到不会返回陈旧帧的做法）。启动参数在帧流路径上也扫过（§4.1.3），没有净收益。
+3. 截图性能：PNG/JPEG 帧流（§4.1.1、§4.1.2）、静态页空闲保活（§4.1.3）、`clip`/`ref` 从帧缓存裁剪（§4.1.4）都已落地；整视口「页面变了」的下限仍是合成器帧间隔 ~15–16ms。本轮之后剩余的方向：
+   - `clip` 的 JPEG 请求仍走 capture（driver 里没有 JPEG 解码），~45ms；如要补，需要 JPEG 帧流 + 一个能裁剪 JPEG 的路径（或让调用方接受 PNG）。
+   - 只读 evaluate 后的 40ms 重绘窗：需要可靠的「没有重绘」信号（`Page` 无 damage/sequence），暂未找到不返回陈旧帧的做法；有信号后这段可从 40ms 压到 ~1ms。
+   - viewer 分支每帧的 base64+磁盘写可节流（§4.1.4 方向 I 的附带发现，未做）。
+   - 冷启动剩下的 ~750ms 在 Chrome 进程启动与 CDP 端口就绪（§4.1.5），Node 侧不可控；不建议预热进程（空闲即 672MB RSS）。
+4. 启动参数在帧流路径上扫过（§4.1.3），没有净收益；`--disable-frame-rate-limit` 仍是否掉的（每动作 CPU +41%）。
 
 ## 6. 代码
 
 | 文件 | 内容 |
 |---|---|
-| `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现 |
+| `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5） |
 | `src/backend.js` | BackendRouter + AsyncLocalStorage + `wrapToolsForBackend`（给 39 个工具加 `backend` 参数） |
 | `index.js` | 创建 HeadlessDriver/Router，包装工具，卸载时关闭 |
-| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）；动作上限 `ACTIONS*50`，保证 `--seconds` 跑满 |
+| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4）；动作上限 `ACTIONS*50`，保证 `--seconds` 跑满 |
 | `test/backend-router.mjs` | 路由/参数剥离/默认桌面回归 |
-| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存断言） |
+| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度断言） |
