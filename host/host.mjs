@@ -129,13 +129,22 @@ function sendExtensionState() {
   if (!state) return
   sendNativeEvent('ext.state', state)
   writeUpdateState({ diskVersion: state.version, watching: state.watching, manifestMtimeMs: state.mtimeMs })
+  lastStateWriteAt = Date.now()
   log(`extension state sent: version ${state.version}, watching ${state.watching}`)
 }
 
 // Polling fallback: fs.watch can miss events (atomic saves / network mounts).
 // Every 60s compare the manifest version+mtime and push a reload if they moved.
+//
+// A poll that finds nothing changed has nothing to say: rewriting
+// update-state.json just to bump lastCheckedAt kept a disk write alive every
+// minute for the whole life of the browser (measured: 1.85 writes/min while
+// idle). Changes are still persisted immediately; the "watcher is alive"
+// heartbeat runs at 10 min so the file cannot silently freeze if the poll dies.
 let manifestPollTimer = null
 let lastManifestSignature = null
+const STATE_HEARTBEAT_MS = Number(process.env.DSH_UPDATE_STATE_HEARTBEAT_MS || 600000)
+let lastStateWriteAt = 0
 
 function startManifestPolling() {
   const intervalMs = Number(process.env.DSH_UPDATE_POLL_MS || 60000)
@@ -155,11 +164,14 @@ function startManifestPolling() {
         lastChangeAt: new Date().toISOString(),
         lastReloadRequestedAt: new Date().toISOString(),
       })
+      lastStateWriteAt = Date.now()
       log(`manifest changed on disk: ${state.version}; requesting extension reload`)
       sendNativeEvent('ext.changed', { file: 'manifest.json' })
     } else {
       lastManifestSignature = signature
+      if (Date.now() - lastStateWriteAt < STATE_HEARTBEAT_MS) return
       writeUpdateState({ diskVersion: state.version, watching: state.watching, manifestMtimeMs: state.mtimeMs })
+      lastStateWriteAt = Date.now()
     }
   }, intervalMs)
   manifestPollTimer.unref?.()

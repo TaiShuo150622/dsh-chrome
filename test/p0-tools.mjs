@@ -71,7 +71,12 @@ host.stdout.on(
   frameReader((message) => {
     if (message.id == null) return
     const table = {
-      'browser.status': { extensionVersion: 'p0-fake', connected: true },
+      'browser.status': {
+        extensionVersion: 'p0-fake',
+        connected: true,
+        groupCount: 0,
+        alarms: [{ name: 'dsh-chrome-reconnect', periodInMinutes: 1, scheduledTime: 0 }],
+      },
       'tab.goto': { tabId: 7, url: 'https://example.com/', title: 'Example Domain', loadState: 'complete' },
       'tab.snapshot': {
         title: 'Example Domain',
@@ -124,6 +129,11 @@ check('chrome_status executes and reports connected', status.connected === true,
 check('chrome_status resolves extension version', status.extensionVersion === 'p0-fake')
 const statusRender = byName.chrome_status.output.render({}, status)
 check('chrome_status render is a text block', statusRender[0]?.type === 'text' && statusRender[0].text.includes('CONNECTED'))
+check(
+  'chrome_status passes the scheduled reconnect alarm through',
+  status.alarms?.[0]?.name === 'dsh-chrome-reconnect' &&
+    statusRender[0].text.includes('reconnect alarms: dsh-chrome-reconnect (every 1 min)'),
+)
 
 const goto = await byName.chrome_goto.execute({ url: 'https://example.com/' })
 check('chrome_goto executes', goto.title === 'Example Domain' && goto.tabId === 7)

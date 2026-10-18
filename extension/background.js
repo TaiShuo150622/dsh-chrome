@@ -19,28 +19,33 @@ function log(...args) {
 }
 
 const DIAG_KEY = 'dshDiag'
+const RECONNECT_ALARM = 'dsh-chrome-reconnect'
+const RECONNECT_ONCE_ALARM = 'dsh-chrome-reconnect-once'
 
 // Structured diagnostics persisted to chrome.storage.local so the reconnect
 // behaviour can be inspected after the worker has been evicted (console logs
 // alone are lost when the worker dies).
+//
+// Writes are serialized: concurrent calls used to race on the read-modify-write
+// of the 80-slot ring, so when two entries landed in the same turn the later
+// write won and the earlier one vanished. Measured 2026-10-18 in the real
+// browser: the ring held 80/80 no-op "force-reconnect" heartbeats while every
+// real transition (worker-start / connect-start) had been pushed out of it.
+let diagWriteChain = Promise.resolve()
 function diag(event, extra = {}) {
   const entry = { t: new Date().toISOString(), event, ...extra }
   try {
     console.log('[DSH Chrome][diag]', JSON.stringify(entry))
   } catch {}
-  try {
-    chrome.storage.local
-      .get(DIAG_KEY)
-      .then((stored) => {
-        const list = Array.isArray(stored?.[DIAG_KEY]) ? stored[DIAG_KEY] : []
-        list.push(entry)
-        while (list.length > 80) list.shift()
-        return chrome.storage.local.set({ [DIAG_KEY]: list })
-      })
-      .catch(() => {})
-  } catch {
-    // storage unavailable
-  }
+  diagWriteChain = diagWriteChain
+    .then(async () => {
+      const stored = await chrome.storage.local.get(DIAG_KEY)
+      const list = Array.isArray(stored?.[DIAG_KEY]) ? stored[DIAG_KEY] : []
+      list.push(entry)
+      while (list.length > 80) list.shift()
+      await chrome.storage.local.set({ [DIAG_KEY]: list })
+    })
+    .catch(() => {})
 }
 
 function bridgeError(code, message) {
@@ -403,6 +408,12 @@ function scheduleExtensionReload() {
 // testing). Capped so a broken native-host manifest cannot cause a reload loop.
 let nativeFailureTimes = []
 let selfHealTimer = null
+// The stored counter only matters after a failure episode. `selfHealStored`
+// starts true so a fresh worker clears a counter left behind by the previous
+// one; after that a healthy port does not rewrite it on every message
+// (measured 2026-10-18: 3 small chrome.storage writes/min while completely
+// idle, from the provider's 20s keepalive ping).
+let selfHealStored = true
 
 async function maybeSelfHeal() {
   const now = Date.now()
@@ -422,6 +433,7 @@ async function maybeSelfHeal() {
   }
   try {
     await chrome.storage.local.set({ dshSelfHeal: { count: attempts + 1, at: now } })
+    selfHealStored = true
   } catch {
     // storage unavailable; rely on in-memory guard
   }
@@ -437,16 +449,13 @@ async function maybeSelfHeal() {
   }, 1200)
 }
 
-let selfHealResetAt = 0
-
 function notePortAlive() {
   nativeFailureTimes = []
-  const now = Date.now()
-  if (now - selfHealResetAt < 5000) return
-  selfHealResetAt = now
+  if (!selfHealStored) return
+  selfHealStored = false
   try {
     chrome.storage.local
-      .set({ dshSelfHeal: { count: 0, at: now } })
+      .set({ dshSelfHeal: { count: 0, at: Date.now() } })
       .catch(() => {})
   } catch {
     // storage unavailable; in-memory reset is still useful
@@ -541,7 +550,7 @@ function ensurePort() {
     // down the freshly spawned host together with the old context. A fresh
     // wake-up (alarm / keepalive message / tab update) reconnects instead.
     try {
-      chrome.alarms.create('dsh-chrome-reconnect-once', { delayInMinutes: 0.2 })
+      chrome.alarms.create(RECONNECT_ONCE_ALARM, { delayInMinutes: 0.2 })
     } catch {
       // alarms unavailable; content-script keepalive still wakes us
     }
@@ -559,8 +568,10 @@ function ensurePort() {
 // Force a fresh native port: used by the popup button and the reconnect alarm
 // when a stale port object would otherwise keep us from reconnecting.
 function forceReconnect({ force = false } = {}) {
-  diag('force-reconnect', { force, hasPort: Boolean(port), connecting: Boolean(connecting) })
+  // Healthy port: this call is a no-op, so do not persist a diag entry for it
+  // (the 1-minute alarm called this every minute while idle).
   if (port && !force) return Promise.resolve(port)
+  diag('force-reconnect', { force, hasPort: Boolean(port), connecting: Boolean(connecting) })
   if (port) {
     try {
       port.disconnect()
@@ -592,6 +603,21 @@ async function handleRequest(message) {
       } catch {
         groupCount = null
       }
+      // The periodic reconnect alarm is the only way back when the worker is
+      // evicted and no page is open to run the keepalive script, so expose what
+      // is actually scheduled (chrome_status renders it).
+      let alarms = []
+      try {
+        alarms = (await chrome.alarms.getAll())
+          .filter((alarm) => String(alarm?.name || '').startsWith('dsh-chrome-'))
+          .map((alarm) => ({
+            name: alarm.name,
+            periodInMinutes: alarm.periodInMinutes ?? null,
+            scheduledTime: alarm.scheduledTime ?? null,
+          }))
+      } catch {
+        alarms = []
+      }
       return {
         extensionVersion: VERSION,
         connected: true,
@@ -599,6 +625,7 @@ async function handleRequest(message) {
         autoReload: Boolean(lastDiskVersion),
         groupCount,
         groups,
+        alarms,
       }
     }
     case 'tab.goto':
@@ -3825,12 +3852,13 @@ function hasText(text) {
 }
 
 // --------------------------------------------------------------- worker wiring
+// One periodic alarm is enough. The old code also created `dsh-chrome-watchdog`
+// with the same 1-minute period, and both handlers did the same "no port ->
+// ensurePort" work: two wake-ups and two diag storage writes per minute for the
+// whole life of the browser.
 function ensureReconnectAlarm() {
   try {
-    chrome.alarms.create('dsh-chrome-reconnect', { periodInMinutes: 1 })
-    // Independent watchdog: even when no other event wakes the worker, retry
-    // the native port every 30s and let the self-heal path reload if needed.
-    chrome.alarms.create('dsh-chrome-watchdog', { periodInMinutes: 1 })
+    chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: 1 })
   } catch {
     // alarms are best effort; the port and popup button still work
   }
@@ -3928,21 +3956,15 @@ initActiveWindows().catch(() => {})
 if (!port) forceReconnect().catch(() => {})
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  diag('alarm', { name: alarm.name, hasPort: Boolean(port) })
-  try {
-  if (alarm.name === 'dsh-chrome-watchdog') {
-    if (!port) {
-      forceReconnect().catch(() => {})
-    }
-    return
-  }
-  if (!alarm.name.startsWith('dsh-chrome-reconnect')) return
-  // Force, not "if (!port)": a killed native host can leave a stale port
-  // object behind, and then a conditional reconnect never fires.
-  forceReconnect().catch(() => {})
-  } catch (error) {
-    diag('alarm-error', { name: alarm.name, error: error?.message || String(error) })
-  }
+  const name = String(alarm?.name || '')
+  if (name !== RECONNECT_ALARM && name !== RECONNECT_ONCE_ALARM) return
+  // A connected port makes this wake-up a no-op. Do not diag it: every diag is
+  // a full read-modify-write of the 80-entry ring (measured 25.7 KB/min of
+  // LevelDB churn while idle, ~1.5 MB/h) and it used to push every real
+  // transition out of the ring. forceReconnect() reconnects a dead port and
+  // logs only when it actually does something.
+  if (port) return
+  forceReconnect().catch((error) => diag('alarm-error', { name, error: error?.message || String(error) }))
 })
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'dsh-page-tick') {

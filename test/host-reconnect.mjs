@@ -66,7 +66,9 @@ let bridge = new BridgeServer({ home })
 await bridge.start()
 
 const host = spawn(process.execPath, [path.join(root, 'host', 'host.mjs')], {
-  env: { ...process.env, DSH_HOME: home },
+  // Fast poll so the idle no-write assertion below is meaningful within the
+  // test's ~2s lifetime; the heartbeat stays at its default 10 min.
+  env: { ...process.env, DSH_HOME: home, DSH_UPDATE_POLL_MS: '300' },
   stdio: ['pipe', 'pipe', 'inherit'],
 })
 
@@ -153,6 +155,20 @@ check(
   updateState?.diskVersion === manifestVersion && updateState?.watching === true,
   JSON.stringify(updateState),
 )
+
+// A poll that finds nothing changed has nothing to persist: update-state.json
+// must not be rewritten every interval (measured in the real browser:
+// 1.85 writes/min of a 270-byte file for the whole life of the session).
+const updateStatePath = path.join(home, 'cache', 'dsh-chrome', 'update-state.json')
+const idleStateBefore = await fsp.stat(updateStatePath)
+await new Promise((resolve) => setTimeout(resolve, 1200))
+const idleStateAfter = await fsp.stat(updateStatePath)
+check(
+  'unchanged manifest polls do not rewrite update-state.json',
+  idleStateAfter.mtimeMs === idleStateBefore.mtimeMs,
+  `${idleStateBefore.mtimeMs} -> ${idleStateAfter.mtimeMs}`,
+)
+
 const firstPid = bridge.discovery?.pid ?? null
 
 // Simulate a provider restart: the first server goes away completely (socket

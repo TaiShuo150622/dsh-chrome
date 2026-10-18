@@ -312,6 +312,10 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         headless: { type: 'object', additionalProperties: true },
         updateState: { type: 'object', additionalProperties: true },
         groupCount: {},
+        alarms: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+        },
         groups: {
           type: 'array',
           items: { type: 'object', additionalProperties: true },
@@ -334,6 +338,13 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           `provider: ${value.providerVersion ?? 'unknown'}  last reload: ${value.updateState?.lastReloadRequestedAt ?? 'never'}`,
           `session tab groups: ${value.groupCount ?? 'unknown'}`,
         ]
+        if (Array.isArray(value.alarms) && value.alarms.length > 0) {
+          lines.push(
+            `reconnect alarms: ${value.alarms
+              .map((alarm) => `${alarm.name}${alarm.periodInMinutes ? ` (every ${alarm.periodInMinutes} min)` : ''}`)
+              .join(' | ')}`,
+          )
+        }
         if (Array.isArray(value.groups) && value.groups.length > 0) {
           lines.push(
             `groups: ${value.groups
@@ -376,6 +387,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           value.autoReload = Boolean(status?.autoReload)
           value.groupCount = status?.groupCount ?? null
           if (Array.isArray(status?.groups)) value.groups = status.groups
+          if (Array.isArray(status?.alarms)) value.alarms = status.alarms
         } catch (error) {
           value.error = error?.message || String(error)
         }

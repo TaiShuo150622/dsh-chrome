@@ -37,7 +37,11 @@ let nextTabId = 100
 const runtimeMessageListeners = []
 const debuggerDetachListeners = []
 const alarmCreates = []
+const alarmListeners = []
 const storageSets = []
+// diag persists to chrome.storage.local.dshDiag; the mock keeps that one key
+// stateful so tests can assert which entries survive a burst of writes.
+let diagRing = []
 const tabRemovedListeners = []
 const tabGroupUpdates = []
 const tabActivatedListeners = []
@@ -101,10 +105,12 @@ const chrome = {
     local: {
       async get(key) {
         if (key === 'dshSessions') return { dshSessions: { s1: { tabIds: [7], groupId: 5, activeTabId: 7 } } }
+        if (key === 'dshDiag') return { dshDiag: [...diagRing] }
         return {}
       },
       async set(value) {
         storageSets.push(value)
+        if (Array.isArray(value?.dshDiag)) diagRing = [...value.dshDiag]
       },
     },
   },
@@ -186,7 +192,23 @@ const chrome = {
     create(name, info) {
       alarmCreates.push({ name, info })
     },
-    onAlarm: { addListener() {} },
+    // Real Chrome keeps one alarm per name; mirror that for browser.status.
+    getAll() {
+      const byName = new Map()
+      for (const call of alarmCreates) {
+        byName.set(call.name, {
+          name: call.name,
+          periodInMinutes: call.info?.periodInMinutes,
+          scheduledTime: 0,
+        })
+      }
+      return [...byName.values()]
+    },
+    onAlarm: {
+      addListener(listener) {
+        alarmListeners.push(listener)
+      },
+    },
   },
   offscreen: {
     async hasDocument() {
@@ -299,6 +321,12 @@ check(
   'worker start recreates the reconnect alarm (runtime reload clears alarms)',
   alarmCreates.some((call) => call.name === 'dsh-chrome-reconnect'),
 )
+check(
+  'worker start creates exactly one periodic alarm (no duplicate watchdog)',
+  new Set(alarmCreates.filter((call) => Number(call.info?.periodInMinutes) > 0).map((call) => call.name)).size === 1 &&
+    !alarmCreates.some((call) => call.name === 'dsh-chrome-watchdog'),
+  JSON.stringify(alarmCreates),
+)
 
 for (const listener of nativePortListeners.message) listener({ event: 'dsh.ping' })
 check(
@@ -306,6 +334,46 @@ check(
   storageSets.some((value) => value?.dshSelfHeal?.count === 0),
 )
 
+// A healthy port makes the 1-minute wake-up a no-op. It must not persist a
+// diag entry: the old code wrote a full 80-entry ring twice a minute, which was
+// measured at 25.7 KB/min of LevelDB churn in the real browser and left the
+// ring 80/80 full of these no-ops.
+await new Promise((resolve) => setTimeout(resolve, 40))
+const diagRingBeforeIdleAlarm = diagRing.length
+const setsBeforeIdleAlarm = storageSets.length
+for (const listener of alarmListeners) listener({ name: 'dsh-chrome-reconnect' })
+await new Promise((resolve) => setTimeout(resolve, 40))
+check(
+  'alarm wake with a connected port writes nothing',
+  storageSets.length === setsBeforeIdleAlarm && diagRing.length === diagRingBeforeIdleAlarm,
+  `${storageSets.length - setsBeforeIdleAlarm} storage writes, ${diagRing.length} diag entries`,
+)
+check(
+  'startup diag entries are persisted (worker-start / connect-start)',
+  ['worker-start', 'connect-start'].every((event) => diagRing.some((entry) => entry.event === event)),
+  JSON.stringify(diagRing.map((entry) => entry.event)),
+)
+
+// Serialized writes: two entries emitted in the same turn must both survive.
+sandbox.diag('test-a')
+sandbox.diag('test-b')
+await new Promise((resolve) => setTimeout(resolve, 40))
+check(
+  'diag writes are serialized (same-tick entries both survive)',
+  ['test-a', 'test-b'].every((event) => diagRing.some((entry) => entry.event === event)),
+  JSON.stringify(diagRing.map((entry) => entry.event)),
+)
+
+
+const statusReply = await sandbox.handleRequest({ method: 'browser.status', params: {}, id: 'status' })
+check(
+  'browser.status exposes exactly the periodic reconnect alarm',
+  Array.isArray(statusReply?.alarms) &&
+    statusReply.alarms.length === 1 &&
+    statusReply.alarms[0].name === 'dsh-chrome-reconnect' &&
+    statusReply.alarms[0].periodInMinutes === 1,
+  JSON.stringify(statusReply?.alarms),
+)
 
 const PAGE_ACTIONS = vm.runInContext('PAGE_ACTIONS', sandbox)
 check(
@@ -897,6 +965,20 @@ check(
 )
 
 check('unknown method is rejected', unsupported === 'UNSUPPORTED')
+
+// The periodic alarm is the only wake-up when no page/tab event arrives: with
+// no port it must start a fresh connectNative. (The old duplicate watchdog
+// alarm handled this too; the merged handler has to keep that guarantee.)
+for (const listener of nativePortListeners.disconnect) listener()
+await new Promise((resolve) => setTimeout(resolve, 10))
+const connectsBeforeAlarm = connectNativeCalls
+for (const listener of alarmListeners) listener({ name: 'dsh-chrome-reconnect' })
+await new Promise((resolve) => setTimeout(resolve, 20))
+check(
+  'periodic alarm reconnects a dead port',
+  connectNativeCalls === connectsBeforeAlarm + 1,
+  `${connectsBeforeAlarm} -> ${connectNativeCalls}`,
+)
 
 console.log(failures === 0 ? '\nEXTENSION LOGIC TEST: PASS' : `\nEXTENSION LOGIC TEST: ${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)
