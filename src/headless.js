@@ -2760,6 +2760,7 @@ export class HeadlessDriver {
         // Overlay changes are page paints; make the next screenshot wait for a
         // fresh frame instead of serving the cached pre-overlay frame.
         tab.renderChangeAt = Date.now() / 1000
+        tab.overlayChangedAt = Date.now() / 1000
         return result
       }
       case 'tab.snapshot': {
@@ -2961,7 +2962,11 @@ export class HeadlessDriver {
         // captureFullJpegClip).
         const needsCapture =
           Boolean(fullPage || params.frameRef || params.highlight) ||
-          (format === 'png' && params.optimizeForSpeed === false)
+          (format === 'png' && params.optimizeForSpeed === false) ||
+          // Overlay changes are DOM paints the compositor stream can lag behind;
+          // use the capture path for a short window so screenshots always show
+          // the fresh pointer/annotations.
+          Boolean(tab.overlayChangedAt && Date.now() / 1000 - tab.overlayChangedAt < 5)
         // A cold JPEG region shot (no screencast running yet) takes the cheap
         // clipped capture *first* and only then starts the stream: taken while
         // the stream runs, a clipped capture makes Chrome emit clip-sized
