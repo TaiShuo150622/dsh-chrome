@@ -64,6 +64,7 @@
 - [P0 技术验证细化规格：检查点、文件清单、协议契约、验证矩阵](docs/M0.md)
 - [P1 阶段记录：实现、真机验收、通道排障与遗留债](docs/records/2026-10-17-code-p1-core-tools/record.md)
 - [P2 功能规划：竞品能力盘点与待办优先级](docs/P2-PLAN.md)
+- [能力差距与参考项目分析：需求、验收与公开项目借鉴](docs/GAP-ANALYSIS.md)
 - [安装指南（macOS 本地/开发者）](docs/INSTALL.md) · [工具参考（自动生成）](docs/TOOLS.md)
 - [用法示例：典型任务的工具序列](docs/EXAMPLES.md) · [FAQ](docs/FAQ.md)
 - [自动更新说明](docs/AUTO-UPDATE.md)
