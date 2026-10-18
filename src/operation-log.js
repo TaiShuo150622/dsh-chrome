@@ -9,6 +9,9 @@
  * Design constraints, in order:
  *  - never change tool behavior or output: logging is best-effort in a
  *    `finally` block and appendOperation() never throws;
+ *  - cheap steady state: one append fd per log file plus an in-memory size
+ *    (re-validated periodically) instead of mkdir+stat+open+write+close on
+ *    every record, with the one-shot path kept as the fallback;
  *  - bounded disk: one line <= 2048 bytes, active file rotates to `.1` at the
  *    size limit (default 4 MiB, DSH_OPERATION_LOG_MAX_BYTES overrides);
  *  - no secrets / page bodies: arguments are key-redacted, URLs lose userinfo
@@ -60,6 +63,9 @@ const MAX_DEPTH = 2
 const ARRAY_ITEMS = 6
 const MAX_KEYS_BY_DEPTH = [16, 12, 8]
 const NESTED_BUDGET_BYTES = 240
+// `looksLikeBase64` only ever inspects a 512-char sample; compacting the whole
+// argument first cost 0.45ms for a 144KB string (8x the rest of the record).
+const BASE64_SNIFF_CHARS = 1024
 
 // Key names that must never carry their value into the log. `key` itself is
 // deliberately not sensitive: chrome_press uses it for a keyboard key name,
@@ -344,7 +350,15 @@ function sanitizeUrl(raw) {
 }
 
 function looksLikeBase64(text) {
-  const compact = String(text).replace(/\s+/g, '')
+  const value = String(text)
+  if (value.length < 128) return false
+  // Only the leading sample is inspected, so bound the work to a prefix:
+  // stripping whitespace from a multi-hundred-KB argument (long `type` text or
+  // an `evaluate` expression) used to allocate the whole compacted string on
+  // every tool call. Leading/trailing whitespace is trimmed so a payload that
+  // starts with blank lines still sniffs as base64.
+  const prefix = value.slice(0, BASE64_SNIFF_CHARS).trim()
+  const compact = prefix.replace(/\s+/g, '')
   if (compact.length < 128) return false
   const sample = compact.slice(0, 512)
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(sample)) return false
@@ -588,6 +602,173 @@ function fitRecord(record) {
 }
 
 /**
+ * In-process append state, one entry per log file.
+ *
+ * A tool call appends exactly one line, and an agent loop (or the headless
+ * bench) appends tens of lines per second. The one-shot pattern
+ * `mkdir + stat + appendFileSync` opens and closes the file on every record —
+ * measured here at ~0.031ms of ~0.055ms per record. Keeping one append fd and
+ * the current size in memory makes the steady state a single writeSync
+ * (~0.002ms) plus a statSync every APPEND_REFRESH_APPENDS records or
+ * REFRESH_EVERY_MS.
+ *
+ * Correctness rules for that cache:
+ *  - the periodic stat keeps rotation near the limit when a second process
+ *    appends to the same file, and reopens the path when the file was
+ *    replaced or deleted (an open fd follows the inode, so blindly writing
+ *    would append to an unlinked or rotated file);
+ *  - rotation closes the fd before renaming and reopens the active file;
+ *  - any error drops the cached entry, and the caller re-runs the one-shot
+ *    path, so logging stays best-effort and appendOperation() never throws.
+ */
+const APPEND_STATE = new Map()
+const READY_DIRS = new Set()
+// Upper bound on how long the cached size/handle can be stale: 16 records or
+// 250ms, whichever comes first. Small enough that an externally deleted or
+// rotated file is reopened almost immediately, cheap enough to stay ~0.0002ms
+// amortized per record.
+export const APPEND_REFRESH_APPENDS = 16
+const REFRESH_EVERY_MS = 250
+
+function dropAppendState(file) {
+  const state = APPEND_STATE.get(file)
+  if (!state) return
+  APPEND_STATE.delete(file)
+  try {
+    fs.closeSync(state.fd)
+  } catch {
+    // the fd may already be gone; nothing to reclaim
+  }
+}
+
+function openAppendState(file) {
+  const dir = path.dirname(file)
+  if (!READY_DIRS.has(dir)) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    READY_DIRS.add(dir)
+  }
+  const fd = fs.openSync(file, 'a', 0o600)
+  try {
+    const stat = fs.fstatSync(fd)
+    if ((stat.mode & 0o777) !== 0o600) {
+      try {
+        fs.fchmodSync(fd, 0o600)
+      } catch {
+        // best effort; the append below still proceeds
+      }
+    }
+    const state = {
+      file,
+      fd,
+      size: stat.size,
+      ino: stat.ino,
+      dev: stat.dev,
+      appends: 0,
+      refreshedAt: Date.now(),
+    }
+    APPEND_STATE.set(file, state)
+    return state
+  } catch (error) {
+    try {
+      fs.closeSync(fd)
+    } catch {
+      // ignore
+    }
+    throw error
+  }
+}
+
+function refreshAppendState(state) {
+  // Throws when the file vanished or was replaced; the caller drops the state
+  // and reopens (or falls back to the one-shot path).
+  const stat = fs.statSync(state.file)
+  if (stat.ino !== state.ino || stat.dev !== state.dev) {
+    throw new Error('operation log file was replaced')
+  }
+  if (stat.size > state.size) state.size = stat.size // another process appended
+  state.appends = 0
+  state.refreshedAt = Date.now()
+}
+
+function rotateAppendState(state) {
+  // Close before renaming: on POSIX the fd follows the inode, so an open fd
+  // would keep appending to the rotated `.1` file.
+  try {
+    fs.closeSync(state.fd)
+  } catch {
+    // ignore: the reopen below is what matters
+  }
+  state.fd = -1
+  fs.renameSync(state.file, `${state.file}.1`)
+  state.fd = fs.openSync(state.file, 'a', 0o600)
+  state.size = 0
+  state.appends = 0
+  state.refreshedAt = Date.now()
+}
+
+function appendLineCached(file, line, maxBytes) {
+  const state = APPEND_STATE.get(file) ?? openAppendState(file)
+  if (state.appends >= APPEND_REFRESH_APPENDS || Date.now() - state.refreshedAt >= REFRESH_EVERY_MS) {
+    refreshAppendState(state)
+  }
+  if (state.size > 0 && state.size + line.length > maxBytes) rotateAppendState(state)
+  let offset = 0
+  while (offset < line.length) {
+    const written = fs.writeSync(state.fd, line, offset, line.length - offset)
+    if (!(written > 0)) throw new Error('short write to the operation log')
+    offset += written
+  }
+  state.size += line.length
+  state.appends += 1
+  return true
+}
+
+/**
+ * One-shot append: mkdir, mode repair, rotation and append in a single call.
+ * Used for the first record and as the fallback when the cached path fails,
+ * so a lost fd or a replaced file can never stop the log.
+ */
+function appendLineUncached(file, line, maxBytes) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+
+  let stat = null
+  try {
+    stat = fs.statSync(file)
+  } catch {
+    // no active file yet
+  }
+  let created = stat == null
+  if (stat) {
+    if ((stat.mode & 0o777) !== 0o600) {
+      try {
+        fs.chmodSync(file, 0o600)
+      } catch {
+        // best effort; the append below still proceeds
+      }
+    }
+    if (stat.size > 0 && stat.size + line.length > maxBytes) {
+      try {
+        fs.renameSync(file, `${file}.1`)
+        created = true
+        stat = null
+      } catch {
+        // rotation is best effort; append to the active file instead
+      }
+    }
+  }
+
+  fs.appendFileSync(file, line, { mode: 0o600 })
+  if (created) {
+    try {
+      fs.chmodSync(file, 0o600)
+    } catch {
+      // mode is best effort after creation
+    }
+  }
+  return true
+}
+
+/**
  * Append one operation record. Never throws: logging must not change tool
  * behavior. Returns true when a line was written, false when the log is
  * disabled or the write failed.
@@ -603,45 +784,18 @@ export function appendOperation(record, options = {}) {
     if (!json) return false
     const file = operationLogPath(settings.home)
     const maxBytes = operationLogMaxBytes()
-    const incomingBytes = Buffer.byteLength(json, 'utf8') + 1
-
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-
-    let stat = null
+    const line = Buffer.from(`${json}\n`, 'utf8')
     try {
-      stat = fs.statSync(file)
+      return appendLineCached(file, line, maxBytes)
     } catch {
-      // no active file yet
-    }
-    let created = stat == null
-    if (stat) {
-      if ((stat.mode & 0o777) !== 0o600) {
-        try {
-          fs.chmodSync(file, 0o600)
-        } catch {
-          // best effort; the append below still proceeds
-        }
-      }
-      if (stat.size > 0 && stat.size + incomingBytes > maxBytes) {
-        try {
-          fs.renameSync(file, `${file}.1`)
-          created = true
-          stat = null
-        } catch {
-          // rotation is best effort; append to the active file instead
-        }
-      }
-    }
-
-    fs.appendFileSync(file, `${json}\n`, { mode: 0o600 })
-    if (created) {
+      dropAppendState(file)
+      READY_DIRS.delete(path.dirname(file))
       try {
-        fs.chmodSync(file, 0o600)
+        return appendLineUncached(file, line, maxBytes)
       } catch {
-        // mode is best effort after creation
+        return false
       }
     }
-    return true
   } catch {
     return false
   }

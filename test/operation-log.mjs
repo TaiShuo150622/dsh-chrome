@@ -14,6 +14,7 @@ import path from 'node:path'
 
 import { BackendRouter, wrapToolsForBackend } from '../src/backend.js'
 import {
+  APPEND_REFRESH_APPENDS,
   DEFAULT_MAX_BYTES,
   MAX_RECORD_BYTES,
   OPERATION_LOG_FILE,
@@ -55,6 +56,16 @@ function readEntries(file = operationLogPath()) {
     .split('\n')
     .filter((line) => line.trim() !== '')
     .map((line) => JSON.parse(line))
+}
+
+// Used to prove the cached append handle does not leak a descriptor per
+// rotation. Returns null when the platform has no usable fd table.
+function openFdCount() {
+  try {
+    return fs.readdirSync(process.platform === 'linux' ? '/proc/self/fd' : '/dev/fd').length
+  } catch {
+    return null
+  }
 }
 
 function assertRecordShape(entry) {
@@ -273,6 +284,110 @@ await check('rotates to operations.jsonl.1 at the configured size and bounds the
   } finally {
     delete process.env.DSH_OPERATION_LOG_MAX_BYTES
   }
+})
+
+await check('cached append handle keeps rotation bounded over a longer burst', () => {
+  useFreshHome('rotate-burst')
+  process.env.DSH_OPERATION_LOG_MAX_BYTES = '4096'
+  try {
+    const total = 200
+    const fdsBefore = openFdCount()
+    const record = (index) => ({
+      tool: 'chrome_status',
+      backend: 'desktop',
+      startedAt: new Date(Date.UTC(2026, 9, 17, 21, 40, 0) + index * 1000).toISOString(),
+      durationMs: index,
+      ok: true,
+      args: { op: 'status' },
+      result: { connected: true },
+    })
+    for (let index = 0; index < total; index += 1) {
+      assert.equal(appendOperation(record(index)), true)
+    }
+
+    const file = operationLogPath()
+    assert.ok(fs.statSync(file).size <= 4096, `active file is ${fs.statSync(file).size} bytes`)
+    // readEntries() throws on a partial/unparseable line, so this also proves
+    // the cached fd never splits a record across a rotation.
+    const active = readEntries(file)
+    const older = readEntries(`${file}.1`)
+    assert.ok(older.length > 0, 'at least one rotation happened')
+    assert.ok(active.length >= 2, 'rotation is not triggered on every append (size is reset)')
+    assert.equal(active.at(-1).durationMs, total - 1, 'newest record is in the active file')
+    assert.equal(
+      older.at(-1).durationMs + active.length,
+      total - 1,
+      'records are contiguous across the rotation boundary',
+    )
+    for (const entry of [...older, ...active]) assertRecordShape(entry)
+
+    // ~14 rotations happened above; a cached handle that is not closed before
+    // the rename would leak one descriptor per rotation.
+    const fdsAfter = openFdCount()
+    if (fdsBefore !== null && fdsAfter !== null) {
+      assert.ok(fdsAfter - fdsBefore <= 2, `open descriptors grew by ${fdsAfter - fdsBefore}`)
+    }
+  } finally {
+    delete process.env.DSH_OPERATION_LOG_MAX_BYTES
+  }
+})
+
+await check('repairs the mode of a pre-existing log file to 0600', () => {
+  useFreshHome('mode-repair')
+  const file = operationLogPath()
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(file, '{"v":1,"legacy":true}\n', { mode: 0o644 })
+  if (process.platform !== 'win32') fs.chmodSync(file, 0o644)
+
+  assert.equal(
+    appendOperation({
+      tool: 'chrome_status',
+      backend: 'desktop',
+      startedAt: '2026-10-17T21:41:00.000Z',
+      durationMs: 1,
+      ok: true,
+      args: {},
+      result: {},
+    }),
+    true,
+  )
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'mode is repaired on first append')
+  }
+  assert.equal(readEntries(file).length, 2, 'the pre-existing line is preserved')
+  assert.equal(readEntries(file).at(-1).tool, 'chrome_status')
+})
+
+await check('reopens the log after the file is deleted externally', () => {
+  useFreshHome('external-delete')
+  const file = operationLogPath()
+  const record = (index) => ({
+    tool: 'chrome_status',
+    backend: 'desktop',
+    startedAt: new Date(Date.UTC(2026, 9, 17, 21, 42, 0) + index * 1000).toISOString(),
+    durationMs: index,
+    ok: true,
+    args: {},
+    result: {},
+  })
+
+  assert.equal(appendOperation(record(0)), true)
+  assert.ok(fs.existsSync(file))
+  fs.rmSync(file)
+
+  // The cached handle revalidates at least every APPEND_REFRESH_APPENDS
+  // records, so the recreated file appears within that window.
+  let reopenedAt = null
+  for (let index = 1; index <= APPEND_REFRESH_APPENDS; index += 1) {
+    assert.equal(appendOperation(record(index)), true)
+    if (fs.existsSync(file)) {
+      reopenedAt = index
+      break
+    }
+  }
+  assert.ok(reopenedAt !== null && reopenedAt <= APPEND_REFRESH_APPENDS, 'file is recreated')
+  const entries = readEntries(file)
+  assert.equal(entries.at(-1).durationMs, reopenedAt, 'the record that reopened the file is on disk')
 })
 
 await check('DSH_OPERATION_LOG=0 disables writes without affecting callers', () => {
