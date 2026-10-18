@@ -71,16 +71,16 @@ export function apply(ctx) {
   })
 
   const browserUse = ctx.get('browserUse')
-  if (browserUse && typeof browserUse.register === 'function') {
-    ctx.effect(() => {
-      const dispose = browserUse.register(PROVIDER_NAME)
-      logger?.info?.('dsh-chrome: browser-use provider registered: %s', PROVIDER_NAME)
-      return () => dispose()
-    })
-  } else {
+  const hasBrowserUse = Boolean(browserUse && typeof browserUse.register === 'function')
+  if (!hasBrowserUse) {
     logger?.warn?.('dsh-chrome: browserUse service is not mounted; provider registration skipped')
   }
 
+  // One effect owns both the tools and the shared browser-use slot so the
+  // official ordering is explicit: stop accepting tool calls first, await the
+  // registration release last. The browser-use contract is name-only (the
+  // service has no browser methods); this provider keeps owning its tools,
+  // state and cleanup, exactly like the official Playwright/Stagehand providers.
   ctx.effect(() => {
     const disposers = chromeTools({
       bridge,
@@ -89,12 +89,32 @@ export function apply(ctx) {
       approval: () => approval.current,
       sessionContext: () => ({ sessions: sessions.current, sandboxPolicy: sandboxPolicy.current }),
     }).map((definition) => ctx.tools.register(definition))
-    return () => {
+
+    let releaseBrowserUse = null
+    if (hasBrowserUse) {
+      try {
+        releaseBrowserUse = browserUse.register(PROVIDER_NAME)
+        logger?.info?.('dsh-chrome: browser-use provider registered: %s', PROVIDER_NAME)
+      } catch (error) {
+        logger?.warn?.('dsh-chrome: browser-use registration failed: %s', error?.message || String(error))
+      }
+    }
+
+    return async () => {
+      // Official contract: providers must stop their tools and await owned work
+      // before releasing the sole shared provider slot.
       for (const dispose of disposers) {
         try {
           dispose()
         } catch {
           // unloading continues even if one disposer throws
+        }
+      }
+      if (releaseBrowserUse) {
+        try {
+          await releaseBrowserUse()
+        } catch (error) {
+          logger?.warn?.('dsh-chrome: browser-use release failed: %s', error?.message || String(error))
         }
       }
     }
