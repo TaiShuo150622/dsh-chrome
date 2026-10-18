@@ -1034,6 +1034,77 @@ node test/headless.mjs && node test/bench-scenario.mjs
 - 不把 `dragPage` 换成原生 `Input.dispatchDragEvent`（真实拖放）：那会改工具语义（真搬数据、触发 UA drop），不是本轮的性能问题；要真 DnD 是另一件事。
 - 不覆盖异步绘制（handler 里 rAF / setTimeout 之后才画）：与合成 click 的探针边界一致。
 
+### 4.1.16 2026-10-18 第十七轮：同值重输的重绘窗（Ralph 循环第 14 轮）
+
+**为什么改**：`Input.*` 的 press / clickAt / drag 都已接进视觉探针（§4.1.12–§4.1.15），`tab.type` 是最后一个「没改任何可见内容、却让下一张截图等满 40ms」的动作：把字段已经有的值再写一遍（幂等重填/重试），`typePage` 照样调 value setter、照样派发 `input`/`change`，但值、焦点、光标全都没动。先量清楚它到底画了什么（`/tmp/probe-type-r14.mjs`，同一个 `input#q`，旧/新驱动各一轮，每步 type 后连拍两张截图）：
+
+| 序列（type → 截图） | 改前（HEAD） | 改后 |
+|---|---|---|
+| 同值重输（聚焦、光标在末尾） | **42.02 / 43.65 / 43.41 / 42.39 ms**（4/4 miss） | **0.46 / 0.96 / 0.46 / 0.50 ms** |
+| 空 append（同值、光标不动） | 43.41 ms（miss） | 0.46 ms |
+| 改值 `seed` → `seedX` | 9.79 ms（新帧） | 14.67 ms（新帧，两个方向都是真重绘） |
+| 同值、但先把光标移到 0 | 10.96 ms（新帧，见下） | 0.33 ms（命中缓存） |
+| append 一个字符 | 9.98 ms（新帧） | 20.35 ms（新帧） |
+| 同值、但字段未聚焦（要移动焦点） | 16.73 ms（新帧） | 16.43 ms（新帧：焦点变化 → 否决） |
+
+探针同时记录页面侧 `__dshVisual.snapshot()` 的前后差：同值重输只改 `changes`（`typePage` 自己派发的那一个 `change`，不是别人的 UA 状态变化），mutations/scrolls/focus/toggles/animations/active/editable/interactive/selection/fullscreen 全同。**光标被设为 0 那一行的 10.96ms 不是这次 type 画的**：前后 `selectionStart/End` 都是 0（Chrome 的 value setter 在值没变时不动光标），那是输入框光标闪烁带来的无关帧；短路后这一行变成 0.33ms 命中，画面差异最多是光标相位，与任何缓存命中同性质。
+
+**为什么同值重输可以不画**：字段的可见内容只由「值 + 光标 + 焦点」决定（外加 placeholder/validity，而它们都是值的函数）。三者在动作前后逐项相等时，写 value 与派发 `input`/`change` 不会改变任何可见像素；页面处理函数自己改的东西（DOM 写入、`change`/`focus`/`toggle`、滚动、动画计数）由追踪器计数器与 verdict 兜底，与合成 click 完全同一条边界。因此判定放在页面侧结果里，而不是再加一套 hazard：
+
+```js
+// typePage 末尾（节选）
+const changed =
+  document.activeElement !== activeBefore ||
+  valueAfter !== valueBefore ||
+  caretAfter[0] !== caretBefore[0] ||
+  caretAfter[1] !== caretBefore[1]
+return { ok: true, value: ..., submitted, changed, changeEvents, probeBefore }
+```
+
+`accept` 要求 `ok && changed === false && submitted === false`：值变了、光标动了、焦点挪了都算真重绘；`submit` 可能走 `requestSubmit()` 在 after 快照之后才导航，一律保守。precheck（`typeProbeEligible`）只挡追踪器看不见的绘制面（canvas 像素 / media 表面 / 同源 subframe）、还没加载完的页面与 fullscreen——verdict 自己也有同样的三项兜底（变异体实测：去掉 precheck 的 canvas 判定后仍不会短路）。
+
+**探针成本是怎么降下来的**：第一版把同值重输接进 `visualProbeAction`（动作前另拍一张追踪器快照）。`--type-same` 从 42.7ms 降到 1.2–1.5ms，但**每一个改值的 type**（最常见的那种）要多付一次 evaluate：`--mixed` 的 `type` 桶 0.96–1.14 → 1.70–2.46 ms、标准场景每轮 +0.36ms。type 本来就要往页面里跑一趟，于是把动作前的追踪器快照**放进 `typePage` 自己的 evaluate**（`visualProbeAction` 新增第 7 个参数 `actionSnapshot(value)`，从动作结果里取回 before 快照；快照在 focus/value 写入之前拍，语义与独立快照相同）。这样改值 type 只多付页面内快照本身的工作（不付往返），同值 type 再多一张 after 快照。合并后标准场景每轮 +0.06–0.12ms、`type` 桶 +0.26ms；第一版的 +0.36ms/轮 不再需要。
+
+**A/B（同机交替，`--seconds 10 --type-same`，1-min load 5.9–6.4；旧侧 = `git archive HEAD` 旧驱动 + 同一份新 bench）**：
+
+| 指标 | 改前 | 改后（合并快照后） |
+|---|---|---|
+| 每轮 | 43.34 / 42.98 ms | **1.17 / 1.17 ms**（−97.3%） |
+| 截图 | 41.62 / 41.51 ms | **0.24 / 0.24 ms** |
+| 轮/秒 | 23.06 / 23.25 | **848.98 / 845.20**（×36–37） |
+| repaint 超时 | 218 / 218（= 轮数） | **0 / 0** |
+| `visualSkips` | 0 / 0 | 8494 / 8452（= 动作数） |
+| 动作数/10s | 231 / 233 | 8494 / 8452 |
+| `type` 桶 | 0.77 / 0.53 ms | 0.53 / 0.53 ms |
+
+第一版（动作前独立快照，3+3 交替）是 42.67 / 42.71 / 42.75 → 1.23 / 1.47 / 1.41 ms、23.4 → 674–807 轮/s、`repaintMisses` 219–221 → 0，数字同量级；合并快照只影响改值 type 的成本。
+
+**不回归**：标准场景（`--seconds 10`，2 对交替）每轮 16.78 / 16.67 → 16.90 / 16.73 ms（成对 +0.12 / +0.06），`type` 桶 0.60 / 0.64 → 0.90 / 0.88 ms（合并后只多页面内快照 ~0.26ms，标准场景每轮 1 次 type，且 type 是真重绘、截图照常等帧）；`--mixed`（2 对交替）每轮 12.80 / 12.91 → 13.45 / 12.92 ms（成对 +0.65 / +0.01，mixed 由 150–400ms 节奏决定轮数，35 轮不变），`visualSkips` 都 18、`repaintMisses` 都 3、snapshot 字节都 830；`type` 桶 0.79–0.96 → 1.25–1.58 ms（1/5 的动作，mixed 里渲染线程刚画完帧，页面内快照约 0.5ms）。第一版（独立快照）的 mixed 3 对是 17.39 / 13.09 / 13.44 → 13.79 / 13.53 / 12.89，`type` 桶 0.96–1.14 → 1.70–2.46 ms——这就是后来合并快照的原因。
+
+**正确性**：
+
+- 旧驱动正对照（`/tmp/dsh-old-14`：HEAD 驱动 + 新 bench / 新测试）：`node test/bench-scenario.mjs` → FAIL `type-same screenshots still pay the repaint window: 41.21ms`；`node test/headless.mjs` → FAIL `a same-value type did not skip the repaint window: {"before":41,"after":41}`。
+- 变异体 ①（`changed` 去掉值比较，只留焦点/光标）：同值判定仍对，但**同长度的改值**（`same` → `SAME`，光标不动）会被误判成无重绘 → FAIL `a value-changing type must keep the conservative wait`。测试里的改值用例因此刻意用等长替换，否则光标跟着走会掩盖这个缺口。
+- 变异体 ②（`accept` 去掉 `submitted`）：FAIL `a submitted type must keep the conservative wait`。
+- 变异体 ③（`typeProbeEligible` 去掉 canvas）：**不失败**——verdict 自己也有 canvas/media/frames 三项，precheck 只是省第二张快照的前置否决；这条记录在案，避免以为它是唯一闸门。
+- `test/headless.mjs` 新增断言：同值重输必须 `visualSkips +1`、`repaintMisses` 不变、type+截图 <25ms、字节等于缓存帧；等长改值（`same` → `SAME`）必须不短路且截图是新帧；页面有 `<canvas>` 时同值重输不短路且截图付一次窗（`repaintMisses +1`）；未聚焦字段的同值重输（焦点移动）不短路；带 `submit` 的同值重输不短路；contenteditable 同文本写入（重建文本节点）不短路。
+- `node test/headless.mjs` 本轮共跑 17 次、12 PASS；5 次失败**全部**是既有环境 flake：4 次 `a proven paint-free action did not retire the stale change marker`（第 12 轮 §4.1.14 就记录过、本轮之前的断言）、1 次 press 的 `no-op Escape press paid the repaint window (29.5ms)`；HEAD 树同机 3/3 PASS（1-min load 4.8–5.7），失败轮次 load ≥8.7，不放松任何断言。同机还有别的会话在跑 72 个 `--headless=new` 探针进程（`dsh-poison-probe-*`，已跑 40–66 分钟），是本轮负载与 flake 的外部来源。`node test/bench-scenario.mjs` PASS；`node test/operation-log.mjs` 13 checks；`node test/extension-logic.mjs` PASS；`npm test` 第 3 次 exit 0（前两次都停在同一处既有 flake 上，load 分别 5.4 / 5.8，第三次 4.9 通过）。
+
+**复跑**：
+
+```bash
+node scripts/headless-bench.mjs --seconds 10 --type-same   # ≈1.2ms/轮、845–849 轮/s、repaintMisses 0、visualSkips ≈ 轮数
+node scripts/headless-bench.mjs --seconds 10 --mixed       # 不回归
+node test/headless.mjs && node test/bench-scenario.mjs
+```
+
+**本轮没做**：
+
+- 不跳过同值 type 的 `change` 事件派发（「值没变就不派发」）：那会让依赖该事件的页面处理函数收不到回调，是语义变化，不是性能优化；探针改为把这个自有事件作为「预期增量」告诉 verdict。
+- 不在值真变了时省掉等待（例如按「值变了必有新帧」直接返回缓存帧）：真重绘必须给新帧，这是 §4.1.14 之后仍然保留的底线。
+- 不覆盖异步重绘（处理函数里 rAF / setTimeout 之后才画）与 IME/组合输入：与其它探针同一条边界。
+- 不把 `probeBefore` 快照并进 `Input.*` 的其它动作：clickAt/press/drag 的动作本身没有页面 evaluate 可搭车，合并要另开 CDP 往返语义，收益只有 ~0.25ms（§2 已否决同类改动）。
+
 ## 5. 下一步（H1）
 
 1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
@@ -1041,7 +1112,7 @@ node test/headless.mjs && node test/bench-scenario.mjs
 3. 截图性能：PNG/JPEG 帧流（§4.1.1、§4.1.2）、静态页空闲保活（§4.1.3）、`clip`/`ref` 从帧缓存裁剪（§4.1.4）、JPEG `clip`/`ref` 的页面侧裁剪（§4.1.9）都已落地；整视口「页面变了」的下限仍是合成器帧间隔 ~15–16ms。剩余的方向：
    - ~~`clip` 的 JPEG 请求仍走 capture~~ ✅ **已落地（§4.1.9）**：isolated world 里用页面自己的 JPEG codec 裁剪，`--shot-clip --shot-format jpeg` 46.2 → 18.4 ms/截图（动作/10s 201 → 435–490），`--shot-ref` jpeg 47.9 → 15.5–23.5 ms。边界：双 JPEG 代、单帧 >2MB 回退 capture、静态页第二张要一次全视口 capture 解锁。**别再做**：在 stream 运行时用带 clip 的 capture（会让 Chrome 之后一直吐 clip 尺寸的帧）。
    - ~~只读 evaluate 后的 40ms 重绘窗~~ ✅ **已落地（§4.1.7）**：页面侧视觉变更追踪器证明「没重绘」时不再推进 change marker，只读 evaluate → 截图 43.2 → 0.26 ms、边界 scroll 42.2 → 0.22 ms；有 canvas / 同源 subframe / 异步重绘时保持保守。~~剩余同类项：`Input.*` 动作里的 `drag` 仍走满窗口~~ ✅ **已落地（§4.1.15）**：无 handler 的合成 drag → 截图 **0.40–0.42ms**（原 43.1–43.3ms，付满窗）；canvas/media/同源 subframe 与改 DOM 的 handler 仍保守。
-   - ~~合成 click / hover 后的 40ms 重绘窗~~ ✅ **已落地（§4.1.8）**：普通 click → 截图 43.2 → 0.23 ms、hover 43.4 → 0.21 ms；目标可能导航 / 提交表单 / 激活控件 / 操作媒体 / 开关 popover 时保持保守（hazard），无 mutation 的 UA 状态变化由 change/toggle 计数器兜底。`Input.*` 的 press / clickAt / drag 均已覆盖（§4.1.12–§4.1.15）。
+   - ~~合成 click / hover 后的 40ms 重绘窗~~ ✅ **已落地（§4.1.8）**：普通 click → 截图 43.2 → 0.23 ms、hover 43.4 → 0.21 ms；目标可能导航 / 提交表单 / 激活控件 / 操作媒体 / 开关 popover 时保持保守（hazard），无 mutation 的 UA 状态变化由 change/toggle 计数器兜底。`Input.*` 与 type 均已覆盖：press / clickAt / drag（§4.1.12–§4.1.15）、同值重输 → 截图 **0.24ms**（原 41.5–41.6ms，付满窗，§4.1.16；改值/焦点/光标/subelement 变化时仍保守）。
    - viewer 分支每帧的 base64+磁盘写已节流（§4.1.6）：headless 落盘 15.0→10.0 帧/s、fs 同步耗时中位 −31%、node CPU −13%；桌面 host 落盘 29.7→10.4 帧/s、fs 同步耗时 −55%。
    - 冷启动剩下的 ~750ms 在 Chrome 进程启动与 CDP 端口就绪（§4.1.5），Node 侧不可控；不建议预热进程（空闲即 449MB RSS，§4.1）。
    - ~~headless 空闲内存~~ ✅ **已落地（§4.1.10）**：`--no-startup-window` 去掉了没人用的初始 `about:blank` 窗口——零 tab 空闲 7 进程/700MB RSS/footprint 302MB → **5 / 449MB / 151MB**；开着一个 tab 8/816 → 7/714；关掉所有 tab 7/705 → 5/497。**别再做**：`--renderer-process-limit=1`（丢站点隔离）、用 CDP 关 `browser_ui` target（关不掉）、`--disable-features` 关 omnibox popup（只少一个 target、RSS 不变，还会覆盖用户传的 `--disable-features`）。**剩余**：有窗口时 Chrome 的两个 top-chrome UI renderer（≈74MB footprint）关不掉，除非换 `chrome-headless-shell` 独立二进制（本机没装）。
@@ -1051,12 +1122,12 @@ node test/headless.mjs && node test/bench-scenario.mjs
 
 | 文件 | 内容 |
 |---|---|
-| `src/headless.js` | headless Chromium 启动（`--no-startup-window`：只有 tab 才建窗口，§4.1.10）、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7）、合成 click/hover 的 hazard 判定与 change/toggle 计数（§4.1.8）、JPEG `clip`/`ref` 的 isolated-world 页面裁剪与 screencast 帧几何过滤（§4.1.9）、键盘 press 的重绘窗探针与键位策略（§4.1.12）、真实鼠标 clickAt 的 hover 链/命中 hazard 判定（§4.1.13）、重绘标记的退休（miss 后与过窗后的干净判定，`renderChangeRetires`，§4.1.14）、合成 drag 的探针与 `dragProbeEligible` 否决面（canvas/media/subframe/未加载/fullscreen，§4.1.15） |
+| `src/headless.js` | headless Chromium 启动（`--no-startup-window`：只有 tab 才建窗口，§4.1.10）、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7）、合成 click/hover 的 hazard 判定与 change/toggle 计数（§4.1.8）、JPEG `clip`/`ref` 的 isolated-world 页面裁剪与 screencast 帧几何过滤（§4.1.9）、键盘 press 的重绘窗探针与键位策略（§4.1.12）、真实鼠标 clickAt 的 hover 链/命中 hazard 判定（§4.1.13）、重绘标记的退休（miss 后与过窗后的干净判定，`renderChangeRetires`，§4.1.14）、合成 drag 的探针与 `dragProbeEligible` 否决面（canvas/media/subframe/未加载/fullscreen，§4.1.15）、`tab.type` 的同值重输探针（`typePage` 返回 `changed`/`changeEvents` 并自带 before 快照，`typeProbeEligible` 否决面，verdict 接受自有 `change` 增量，§4.1.16） |
 | `host/host.mjs` | Chrome native messaging host：扩展 ↔ provider 的 JSON 帧中继、discovery 文件重连、viewer 帧落盘（节流，§4.1.6）与扩展热更新监听 |
 | `src/backend.js` | BackendRouter + AsyncLocalStorage + `wrapToolsForBackend`（给 39 个工具加 `backend` 参数） |
 | `index.js` | 创建 HeadlessDriver/Router，包装工具，卸载时关闭 |
-| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4，PNG 驱动裁剪 / JPEG 页面裁剪 §4.1.9）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）、`--noop-click` 普通 click + 截图场景（§4.1.8）、`--mixed` 真实节奏混合场景（§4.1.11）、`--press` 无效果按键 + 截图场景（§4.1.12）、`--click-at` 同点重复点击 + 截图场景（§4.1.13）、`--shot-chain` 保守指针移动 + 3 张截图场景（§4.1.14）、`--drag` 无 handler 按钮之间的合成拖拽 + 截图场景（§4.1.15）、`--idle-seconds` / `--idle-settle-seconds` 空闲采样（§4.1.11）；输出里带 `screenshotStream` 计数器（served/cropped/jpegCropped/fallbacks）、`snapshot` 响应字节、mixed 轮转/节奏统计、`idle` 块、`visualSkips`/`visualRetires`、`dragMode`/`drag.refs`；动作上限 `ACTIONS*50`（短路场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
+| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4，PNG 驱动裁剪 / JPEG 页面裁剪 §4.1.9）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）、`--noop-click` 普通 click + 截图场景（§4.1.8）、`--mixed` 真实节奏混合场景（§4.1.11）、`--press` 无效果按键 + 截图场景（§4.1.12）、`--click-at` 同点重复点击 + 截图场景（§4.1.13）、`--shot-chain` 保守指针移动 + 3 张截图场景（§4.1.14）、`--drag` 无 handler 按钮之间的合成拖拽 + 截图场景（§4.1.15）、`--type-same` 同值重输 + 截图场景（§4.1.16）、`--idle-seconds` / `--idle-settle-seconds` 空闲采样（§4.1.11）；输出里带 `screenshotStream` 计数器（served/cropped/jpegCropped/fallbacks）、`snapshot` 响应字节、mixed 轮转/节奏统计、`idle` 块、`visualSkips`/`visualRetires`、`dragMode`/`drag.refs`、`typeSameMode`/`typeSame`；动作上限 `ACTIONS*50`（短路场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
 | `test/backend-router.mjs` | 路由/参数剥离/默认桌面回归 |
-| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、JPEG clip/ref 的 SOI/EOI 与像素尺寸、同页字节复用与改页新鲜性、主世界覆盖 `toDataURL` 后 isolated-world 裁剪仍正确、viewer 帧落盘产物断言、只读 evaluate/边界 scroll/合成 click/hover/无可效果按键的视觉探针短路与陈旧帧断言，含 editable/选区/open+closed shadow root/modal dialog/keydown handler 的反例；真实鼠标 clickAt 的同点短路与按钮/链接/input/tabindex/双击/指针移动/聚焦/选区/hover 改样式反例，§4.1.13；重绘标记退休：miss 一次后第 2 张截图必须命中、过窗后的干净判定必须退休、退休后 DOM 写入仍是新帧，§4.1.14；合成 drag 的无 handler 短路 / canvas 否决 / 改 DOM 的 handler 必须给新帧，§4.1.15) |
-| `test/bench-scenario.mjs` | bench 的 `--mixed` / `--idle-seconds` / `--press` 契约：真起 Chrome 跑 5s 混合场景 + 1s 空闲，断言轮转覆盖五种动作、确定性 150–400ms 节奏、`snapshot` 字节与既有指标字段都在、idle 窗口真的等满（§4.1.11）；再跑 4s `--press`，断言每轮都短路（`visualSkips === actions + 1`）、`repaintMisses === 0`、截图桶 <5ms（§4.1.12）；再跑 4s `--click-at`，断言 `clickAtMode`/点位、每轮都短路、`repaintMisses === 0`、截图桶 <5ms（§4.1.13）；再跑 4s `--shot-chain`，断言每轮 3 张截图只付 1 个重绘窗（`repaintMisses ∈ [actions-1, actions+2]`、`visualRetires >= actions`、截图桶 <20ms）（§4.1.14）；再跑 4s `--drag`，断言 `dragMode`/refs、每轮都短路（`visualSkips >= actions`）、`repaintMisses === 0`、截图桶 <5ms（§4.1.15） |
+| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、JPEG clip/ref 的 SOI/EOI 与像素尺寸、同页字节复用与改页新鲜性、主世界覆盖 `toDataURL` 后 isolated-world 裁剪仍正确、viewer 帧落盘产物断言、只读 evaluate/边界 scroll/合成 click/hover/无可效果按键的视觉探针短路与陈旧帧断言，含 editable/选区/open+closed shadow root/modal dialog/keydown handler 的反例；真实鼠标 clickAt 的同点短路与按钮/链接/input/tabindex/双击/指针移动/聚焦/选区/hover 改样式反例，§4.1.13；重绘标记退休：miss 一次后第 2 张截图必须命中、过窗后的干净判定必须退休、退休后 DOM 写入仍是新帧，§4.1.14；合成 drag 的无 handler 短路 / canvas 否决 / 改 DOM 的 handler 必须给新帧，§4.1.15；同值重输的短路与等长改值/焦点移动/submit/contenteditable/canvas 否决，§4.1.16) |
+| `test/bench-scenario.mjs` | bench 的 `--mixed` / `--idle-seconds` / `--press` 契约：真起 Chrome 跑 5s 混合场景 + 1s 空闲，断言轮转覆盖五种动作、确定性 150–400ms 节奏、`snapshot` 字节与既有指标字段都在、idle 窗口真的等满（§4.1.11）；再跑 4s `--press`，断言每轮都短路（`visualSkips === actions + 1`）、`repaintMisses === 0`、截图桶 <5ms（§4.1.12）；再跑 4s `--click-at`，断言 `clickAtMode`/点位、每轮都短路、`repaintMisses === 0`、截图桶 <5ms（§4.1.13）；再跑 4s `--shot-chain`，断言每轮 3 张截图只付 1 个重绘窗（`repaintMisses ∈ [actions-1, actions+2]`、`visualRetires >= actions`、截图桶 <20ms）（§4.1.14）；再跑 4s `--drag`，断言 `dragMode`/refs、每轮都短路（`visualSkips >= actions`）、`repaintMisses === 0`、截图桶 <5ms（§4.1.15）；再跑 4s `--type-same`，断言 `typeSameMode`/文本、每轮都短路（`visualSkips >= actions`）、`repaintMisses === 0`、截图桶 <5ms（§4.1.16） |
 | `test/host-reconnect.mjs` | native host 持久化（provider 重启后重连）+ viewer 帧落盘/节流 trailing flush 断言（§4.1.6） |
