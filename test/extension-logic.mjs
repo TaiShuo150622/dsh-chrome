@@ -162,6 +162,8 @@ const chrome = {
     async sendCommand(target, method, params) {
       debuggerCalls.push({ method, target, params })
       if (method === 'Page.enable') return {}
+      if (method === 'Network.enable') return {}
+      if (method === 'Network.disable') return {}
       if (method === 'Page.getFrameTree') {
         return {
           frameTree: {
@@ -230,6 +232,8 @@ const sandbox = {
   Object,
   Math,
   Error,
+  URL,
+  URLSearchParams,
 }
 vm.createContext(sandbox)
 vm.runInContext(source, sandbox, { filename: 'background.js' })
@@ -492,6 +496,67 @@ const evalResult = await sandbox.handleRequest({
   id: 'evaluate-basic',
 })
 check('tab.evaluate dispatches and returns the value', evalResult?.ok === true && evalResult?.value === 42)
+
+// C2a: capture metadata, pin, redaction and freeze
+const emitNetwork = (method, params) => {
+  for (const listener of eventListeners) listener({ tabId: 7 }, method, params)
+}
+const captureStart = await sandbox.handleRequest({
+  method: 'tab.capture_start',
+  params: { owner: 's1', maxEntries: 2 },
+  id: 'capture-start',
+})
+check('tab.capture_start returns a capture id', typeof captureStart?.captureId === 'string' && captureStart?.active === true)
+check('capture start enables the Network domain', debuggerCalls.some((call) => call.method === 'Network.enable'))
+const captureAttachAfterStart = debuggerCalls.filter((call) => call.method === 'attach').length
+
+emitNetwork('Network.requestWillBeSent', {
+  requestId: 'r1',
+  request: { url: 'https://api.test/data?access_token=SECRET', method: 'POST' },
+  type: 'Fetch',
+  timestamp: 100,
+  documentURL: 'http://127.0.0.1:8765/api.html',
+})
+emitNetwork('Network.responseReceived', {
+  requestId: 'r1',
+  response: { status: 200, statusText: 'OK', mimeType: 'application/json' },
+  type: 'Fetch',
+  timestamp: 101,
+})
+emitNetwork('Network.loadingFinished', { requestId: 'r1', timestamp: 100.25 })
+
+const capturedRequests = await sandbox.handleRequest({
+  method: 'tab.capture_requests',
+  params: { owner: 's1', limit: 10 },
+  id: 'capture-requests-1',
+})
+check(
+  'capture records method/status and redacts secret query values',
+  capturedRequests?.entries?.[0]?.method === 'POST' &&
+    capturedRequests?.entries?.[0]?.status === 200 &&
+    capturedRequests?.entries?.[0]?.url.includes('«redacted»') &&
+    !capturedRequests?.entries?.[0]?.url.includes('SECRET'),
+  JSON.stringify(capturedRequests?.entries?.[0]),
+)
+check('capture never includes headers in entries', !JSON.stringify(capturedRequests).match(/cookie|authorization|set-cookie/i))
+
+// capture pins the debugger session: a page action must reuse it, not attach again
+await sandbox.handleRequest({ method: 'tab.snapshot', params: { owner: 's1' }, id: 'snapshot-during-capture' })
+const attachDuringCapture = debuggerCalls.filter((call) => call.method === 'attach').length
+check('capture pins the debugger session', attachDuringCapture === captureAttachAfterStart)
+
+// overflow drops the oldest entries
+emitNetwork('Network.requestWillBeSent', { requestId: 'r2', request: { url: 'https://api.test/two', method: 'GET' }, type: 'Fetch', timestamp: 102 })
+emitNetwork('Network.requestWillBeSent', { requestId: 'r3', request: { url: 'https://api.test/three', method: 'GET' }, type: 'Fetch', timestamp: 103 })
+emitNetwork('Network.requestWillBeSent', { requestId: 'r4', request: { url: 'https://api.test/four', method: 'GET' }, type: 'Fetch', timestamp: 104 })
+const overflow = await sandbox.handleRequest({ method: 'tab.capture_requests', params: { owner: 's1' }, id: 'capture-requests-overflow' })
+check('capture enforces maxEntries and counts drops', overflow?.total === 2 && overflow?.dropped >= 2, JSON.stringify({ total: overflow?.total, dropped: overflow?.dropped }))
+
+const captureStop = await sandbox.handleRequest({ method: 'tab.capture_stop', params: { owner: 's1' }, id: 'capture-stop' })
+check('tab.capture_stop freezes and disables Network', captureStop?.active === false && debuggerCalls.some((call) => call.method === 'Network.disable'))
+emitNetwork('Network.requestWillBeSent', { requestId: 'r5', request: { url: 'https://api.test/after-stop', method: 'GET' }, type: 'Fetch', timestamp: 105 })
+const frozen = await sandbox.handleRequest({ method: 'tab.capture_requests', params: { owner: 's1', captureId: captureStop.captureId }, id: 'capture-requests-frozen' })
+check('capture buffer stays readable after stop and ignores new events', frozen?.total === 2 && frozen?.active === false)
 
 // C0: one debugger session per entry (attach/detach ref counting)
 const sessionCounts = (from) => {

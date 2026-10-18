@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：29
+> 工具数量：32
 
 ### `chrome_status`
 
@@ -147,6 +147,7 @@ Capture a PNG screenshot of the current DSH session page (or tabId) and return i
 |---|---|---|---|
 | `tabId` | number | no | Optional tab id owned by this session. |
 | `ref` | number | no | Capture only the element with this snapshot ref. |
+| `frameRef` | string | no | Capture only an iframe element, e.g. "f83F9D728:1" (from chrome_snapshot frames). |
 | `fullPage` | boolean | no | Capture the full scrollable document instead of the viewport. |
 | `highlight` | boolean | no | Overlay labeled boxes for current snapshot refs in the capture. |
 | `clip` | object | no | Optional viewport region to capture, in CSS pixels. |
@@ -197,6 +198,37 @@ Read the current page selection (or selected text inside a focused input/textare
 |---|---|---|---|
 | `maxChars` | number | no | Optional cap (10-20000, default 4000). |
 | `tabId` | number | no | Optional tab id owned by this session. |
+
+### `chrome_capture_start`
+
+Start capturing HTTP requests for one DSH session tab through the DevTools Network domain. Records method/URL/status/mimeType/resourceType/timing; headers (Cookie, Authorization, Set-Cookie) are never captured. Requires explicit user confirmation every time; Chrome shows a debugging banner while capture is active (max 10 minutes).
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `tabId` | number | no | Optional tab id owned by this session. |
+| `resourceTypes` | array | no | Resource types to record (default: xhr, fetch, document). |
+| `maxEntries` | number | no | Max requests kept in the buffer (default 300, max 1000). |
+
+### `chrome_capture_stop`
+
+Stop the active network capture, release the debugger pin and freeze the buffer. Captured entries stay readable through chrome_capture_requests; new requests are not recorded.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `tabId` | number | no | Optional tab id owned by this session. |
+| `captureId` | string | no | Optional capture id (defaults to the active capture). |
+
+### `chrome_capture_requests`
+
+Read captured HTTP metadata (method/URL/status/mimeType/resourceType/timing). Headers are never captured; secret-shaped query params are redacted. Works while active or after stop (frozen buffer); if the worker restarted the buffer is reported as lost.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `tabId` | number | no | Optional tab id owned by this session. |
+| `captureId` | string | no | Optional capture id (defaults to the active capture). |
+| `limit` | number | no | Max entries returned (default 50, max 200). |
+| `filter` | string | no | Case-insensitive filter over method + URL. |
+| `resourceTypes` | array | no | Only these resource types. |
 
 ### `chrome_frames`
 

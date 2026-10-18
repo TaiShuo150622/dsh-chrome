@@ -72,6 +72,9 @@ host.stdout.on(
       'tab.upload': { ok: true, ref: 5, files: 1 },
       'browser.downloads': { items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z' }] },
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
+      'tab.capture_start': { captureId: 'cap-1', tabId: 7, startedAt: '2026-10-17T10:00:00.000Z', active: true, maxEntries: 300, resourceTypes: ['xhr', 'fetch', 'document'] },
+      'tab.capture_stop': { captureId: 'cap-1', tabId: 7, startedAt: '2026-10-17T10:00:00.000Z', endedAt: '2026-10-17T10:00:12.000Z', durationMs: 12000, requests: 1, dropped: 0, bodiesDropped: 0, active: false, endedReason: 'stopped' },
+      'tab.capture_requests': { available: true, lost: false, active: true, captureId: 'cap-1', tabId: 7, entries: [{ id: 'r1', method: 'POST', url: 'https://api.test/x?access_token=«redacted»', status: 200, mimeType: 'application/json', resourceType: 'Fetch', durationMs: 5 }], total: 1, truncated: false, dropped: 0, bodiesDropped: 0 },
       'tab.evaluate': { ok: true, value: 2, type: 'number' },
       'tab.frames': { tabId: 7, frames: [{ frameId: 'main', parentFrameId: null, url: 'http://127.0.0.1:8765/iframe.html' }] },
       'tab.selection': { found: true, text: 'selected paragraph', url: 'http://127.0.0.1:8765/selection.html', title: 'DSH Selection Test Page', truncated: false, source: 'page' },
@@ -114,7 +117,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('twenty-nine tools registered', tools.length === 29, tools.map((t) => t.name).join(', '))
+check('thirty-two tools registered', tools.length === 32, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -224,6 +227,36 @@ check('network status is returned', networkValue.entries?.[0]?.status === 200)
 check('chrome_network executes', networkValue.entries?.[0]?.url === 'https://example.com/a.js')
 check('network filter reaches the extension', requests.at(-1)?.params?.filter === 'a.js')
 
+// C2a: capture tools are always registered; start is hard-confirmed
+check('chrome_capture_start registered', Boolean(byName.chrome_capture_start))
+let captureStartCode = null
+try {
+  await byName.chrome_capture_start.execute({ maxEntries: 10 }, exec())
+} catch (error) {
+  captureStartCode = error?.code
+}
+check('capture start fails closed without a confirmation service', captureStartCode === 'APPROVAL_DENIED')
+
+const captureTools = chromeTools({
+  bridge,
+  attachments: () => null,
+  assets: () => ({ extensionId: 'test', extensionDir: '/tmp/ext', nativeManifestPath: '/tmp/nm', instructionsPath: '/tmp/i.md' }),
+  userQuestions: () => ({ ask: async () => ({ answers: [{ id: 'confirm', selected: ['允许一次'] }] }) }),
+  config: () => ({ captureConfirm: 'hard', captureConfirmTimeoutMs: 5000 }),
+})
+const captureByName = Object.fromEntries(captureTools.map((definition) => [definition.name, definition]))
+const captureStart = await captureByName.chrome_capture_start.execute({ maxEntries: 10 }, exec())
+check('capture start executes after confirmation', captureStart?.captureId === 'cap-1' && captureStart?.active === true)
+check('capture start params reach the extension', requests.at(-1)?.method === 'tab.capture_start' && requests.at(-1)?.params?.maxEntries === 10)
+
+const captureStop = await captureByName.chrome_capture_stop.execute({}, exec())
+check('capture stop freezes the buffer', captureStop?.active === false && captureStop?.requests === 1)
+check('capture stop reaches the extension', requests.at(-1)?.method === 'tab.capture_stop')
+
+const captureRequests = await captureByName.chrome_capture_requests.execute({ limit: 5, filter: 'api' }, exec())
+check('capture requests returns metadata entries', captureRequests?.entries?.[0]?.method === 'POST' && captureRequests?.entries?.[0]?.status === 200)
+check('capture filter/limit reach the extension', requests.at(-1)?.method === 'tab.capture_requests' && requests.at(-1)?.params?.limit === 5 && requests.at(-1)?.params?.filter === 'api')
+
 // C1: chrome_evaluate is gated by config and hard-confirmed every call
 const evalTools = (config, questions) =>
   chromeTools({
@@ -242,7 +275,7 @@ const allowTools = evalTools(
   { ask: async () => ({ answers: [{ id: 'confirm', selected: ['允许一次'] }] }) },
 )
 const allowByName = Object.fromEntries(allowTools.map((definition) => [definition.name, definition]))
-check('enabling allowEvaluate registers the 30th tool', allowTools.length === 30 && Boolean(allowByName.chrome_evaluate))
+check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 33 && Boolean(allowByName.chrome_evaluate))
 const evalValue = await allowByName.chrome_evaluate.execute({ expression: '1 + 1' }, exec())
 check('evaluate returns the CDP value', evalValue?.value === 2 && evalValue?.type === 'number')
 check('evaluate params reach the extension', requests.at(-1)?.method === 'tab.evaluate' && requests.at(-1)?.params?.expression === '1 + 1')

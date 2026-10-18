@@ -494,6 +494,12 @@ async function handleRequest(message) {
       return frames(owner, params)
     case 'tab.evaluate':
       return evaluate(owner, params)
+    case 'tab.capture_start':
+      return startCapture(owner, params)
+    case 'tab.capture_stop':
+      return stopCapture(owner, params)
+    case 'tab.capture_requests':
+      return captureRequests(owner, params)
     case 'tab.selection':
       return selection(owner, params)
     case 'tab.type':
@@ -805,11 +811,252 @@ async function evalInTarget(target, fn, args, timeoutMs = 10000) {
   return response?.result?.value
 }
 
-// C2a fills this in; C0 keeps the hook so a later capture can pin the session.
-function routeNetworkEvent() {}
+const captures = new Map()
+let nextCaptureSeq = 1
+const CAPTURE_MAX_DURATION_MS = 10 * 60 * 1000
+const CAPTURE_DEFAULT_MAX_ENTRIES = 300
+const CAPTURE_HARD_MAX_ENTRIES = 1000
+const CAPTURE_SECRET_PARAM =
+  /(pass(word|wd)?|secret|token|api[-_]?key|access[-_]?token|refresh[-_]?token|authorization|cookie|session[-_]?id|csrf|xsrf|signature|sig|credential|private[-_]?key)/i
 
-// C2a fills this in; C0 keeps the hook so onDetach can close capture state.
-function endCapture() {}
+function redactUrl(rawUrl) {
+  let url = String(rawUrl || '')
+  try {
+    const parsed = new URL(url)
+    if (parsed.username) parsed.username = '«redacted»'
+    if (parsed.password) parsed.password = '«redacted»'
+    for (const name of [...parsed.searchParams.keys()]) {
+      if (CAPTURE_SECRET_PARAM.test(name)) parsed.searchParams.set(name, '«redacted»')
+    }
+    url = parsed.toString().replace(/%C2%ABredacted%C2%BB/gi, '«redacted»')
+  } catch {
+    // keep raw for non-URL strings
+  }
+  return url.length > 2048 ? `${url.slice(0, 2048)}…` : url
+}
+
+function captureForSession(session) {
+  const capture = session?.capture
+  return capture && capture.active ? capture : null
+}
+
+function endCapture(capture, reason) {
+  if (!capture || !capture.active) return capture
+  capture.active = false
+  capture.endedAt = Date.now()
+  capture.endedReason = String(reason || 'stopped')
+  if (capture.timer) {
+    clearTimeout(capture.timer)
+    capture.timer = null
+  }
+  const session = debuggerSessions.get(capture.tabId)
+  if (session?.capture === capture) session.capture = null
+  try {
+    chrome.storage.session.set({ dshCaptureMeta: null })
+  } catch {
+    // optional metadata only
+  }
+  diag('capture-stop', { owner: ownerShort(capture.owner), tabId: capture.tabId, entries: capture.order.length, dropped: capture.dropped, reason: capture.endedReason })
+  return capture
+}
+
+function routeNetworkEvent(session, method, params) {
+  const capture = captureForSession(session)
+  if (!capture || capture.tabId !== session.target.tabId) return
+  const requestId = String(params?.requestId || '')
+  if (!requestId) return
+  if (method === 'Network.requestWillBeSent') {
+    const request = params.request || {}
+    const type = String(params.type || 'Other').toLowerCase()
+    if (!capture.resourceTypes.has(type)) return
+    let entry = capture.requests.get(requestId)
+    if (entry) {
+      entry.redirects = (entry.redirects || 0) + 1
+    } else {
+      entry = { id: requestId }
+      capture.requests.set(requestId, entry)
+      capture.order.push(requestId)
+    }
+    entry.method = String(request.method || 'GET')
+    entry.url = redactUrl(request.url)
+    entry.resourceType = type
+    entry.startTime = Date.now()
+    entry.timestamp = Number(params.timestamp) || null
+    entry.startMono = Number(params.timestamp) || null
+    entry.documentURL = params.documentURL ? redactUrl(params.documentURL) : entry.documentURL
+    entry.wallTime = Number(params.wallTime) || null
+    while (capture.order.length > capture.maxEntries) {
+      const droppedId = capture.order.shift()
+      capture.requests.delete(droppedId)
+      capture.dropped += 1
+    }
+    return
+  }
+  const entry = capture.requests.get(requestId)
+  if (!entry) return
+  if (method === 'Network.responseReceived') {
+    const response = params.response || {}
+    entry.status = Number(response.status) || null
+    entry.statusText = String(response.statusText || '')
+    entry.mimeType = String(response.mimeType || '')
+    entry.fromCache = Boolean(response.fromDiskCache || response.fromPrefetchCache)
+    entry.fromServiceWorker = Boolean(response.fromServiceWorker)
+    entry.encodedDataLength = Number(response.encodedDataLength) || null
+    entry.responseAt = Date.now()
+    return
+  }
+  if (method === 'Network.loadingFinished') {
+    const finishedMono = Number(params.timestamp)
+    entry.finishedAt = Date.now()
+    if (Number.isFinite(finishedMono) && Number.isFinite(entry.startMono)) {
+      entry.durationMs = Math.max(0, Math.round((finishedMono - entry.startMono) * 1000))
+    } else {
+      entry.durationMs = entry.startTime ? Math.max(0, entry.finishedAt - entry.startTime) : null
+    }
+    return
+  }
+  if (method === 'Network.loadingFailed') {
+    entry.failed = true
+    entry.errorText = String(params.errorText || '').slice(0, 300)
+    entry.canceled = Boolean(params.canceled)
+    return
+  }
+  if (method === 'Network.requestServedFromCache') {
+    entry.fromCache = true
+  }
+}
+
+function normalizeResourceTypes(value) {
+  const defaults = ['xhr', 'fetch', 'document']
+  if (!Array.isArray(value) || value.length === 0) return new Set(defaults)
+  return new Set(value.map((item) => String(item).toLowerCase()))
+}
+
+async function startCapture(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const maxEntries = Number.isFinite(params.maxEntries)
+    ? Math.max(1, Math.min(CAPTURE_HARD_MAX_ENTRIES, Math.trunc(params.maxEntries)))
+    : CAPTURE_DEFAULT_MAX_ENTRIES
+  return withDebugger(tabId, async (session) => {
+    if (session.capture?.active) {
+      return {
+        alreadyActive: true,
+        captureId: session.capture.captureId,
+        tabId,
+        startedAt: new Date(session.capture.startedAt).toISOString(),
+        requests: session.capture.order.length,
+      }
+    }
+    await chrome.debugger.sendCommand(session.target, 'Network.enable', { maxPostDataSize: 65536 })
+    const capture = {
+      captureId: `cap-${Date.now().toString(36)}-${nextCaptureSeq++}`,
+      owner,
+      tabId,
+      startedAt: Date.now(),
+      endedAt: null,
+      active: true,
+      endedReason: null,
+      maxEntries,
+      resourceTypes: normalizeResourceTypes(params.resourceTypes),
+      requests: new Map(),
+      order: [],
+      dropped: 0,
+      bodiesDropped: 0,
+      timer: null,
+    }
+    capture.timer = setTimeout(() => endCapture(capture, 'timeout'), CAPTURE_MAX_DURATION_MS)
+    capture.timer?.unref?.()
+    captures.set(capture.captureId, capture)
+    session.capture = capture
+    try {
+      chrome.storage.session.set({ dshCaptureMeta: { captureId: capture.captureId, owner, tabId, startedAt: capture.startedAt, active: true } })
+    } catch {
+      // optional
+    }
+    diag('capture-start', { owner: ownerShort(owner), tabId, maxEntries })
+    return {
+      captureId: capture.captureId,
+      tabId,
+      startedAt: new Date(capture.startedAt).toISOString(),
+      resourceTypes: [...capture.resourceTypes],
+      maxEntries,
+      active: true,
+    }
+  })
+}
+
+function findCapture(owner, params) {
+  const captureId = params.captureId ? String(params.captureId) : ''
+  if (captureId) {
+    const capture = captures.get(captureId)
+    if (!capture) throw bridgeError('CAPTURE_LOST', 'capture buffer is not available (worker restarted?)')
+    if (capture.owner !== owner) throw bridgeError('CAPTURE_NOT_FOUND', 'capture belongs to another session')
+    return capture
+  }
+  let latest = null
+  for (const capture of captures.values()) {
+    if (capture.owner !== owner) continue
+    if (capture.active) return capture
+    if (!latest || capture.startedAt > latest.startedAt) latest = capture
+  }
+  if (latest) return latest
+  throw bridgeError('NO_ACTIVE_CAPTURE', 'no capture for this session; call chrome_capture_start first')
+}
+
+async function stopCapture(owner, params) {
+  const capture = findCapture(owner, params)
+  if (!capture.active) return captureSummary(capture, false)
+  const tabId = capture.tabId
+  return withDebugger(tabId, async (session) => {
+    await chrome.debugger.sendCommand(session.target, 'Network.disable').catch(() => {})
+    endCapture(capture, 'stopped')
+    return captureSummary(capture, false)
+  })
+}
+
+function captureSummary(capture, active) {
+  return {
+    captureId: capture.captureId,
+    tabId: capture.tabId,
+    startedAt: new Date(capture.startedAt).toISOString(),
+    endedAt: capture.endedAt ? new Date(capture.endedAt).toISOString() : null,
+    durationMs: capture.endedAt ? capture.endedAt - capture.startedAt : Date.now() - capture.startedAt,
+    requests: capture.order.length,
+    dropped: capture.dropped,
+    bodiesDropped: capture.bodiesDropped,
+    active: Boolean(active && capture.active),
+    endedReason: capture.endedReason,
+  }
+}
+
+function captureRequests(owner, params) {
+  const capture = findCapture(owner, params)
+  const limit = Number.isFinite(params.limit) ? Math.max(1, Math.min(200, Number(params.limit))) : 50
+  const filter = String(params.filter || '').toLowerCase()
+  const types = Array.isArray(params.resourceTypes) && params.resourceTypes.length > 0
+    ? new Set(params.resourceTypes.map(String))
+    : null
+  const entries = []
+  for (const id of capture.order) {
+    const entry = capture.requests.get(id)
+    if (!entry) continue
+    if (types && !types.has(entry.resourceType)) continue
+    if (filter && !`${entry.method} ${entry.url}`.toLowerCase().includes(filter)) continue
+    entries.push({ ...entry })
+  }
+  return {
+    available: true,
+    lost: false,
+    active: capture.active,
+    captureId: capture.captureId,
+    tabId: capture.tabId,
+    entries: entries.slice(-limit),
+    total: entries.length,
+    truncated: entries.length > limit,
+    dropped: capture.dropped,
+    bodiesDropped: capture.bodiesDropped,
+  }
+}
 
 async function evalInTab(tabId, fn, args, timeoutMs, dialogOptions) {
   return withDebugger(

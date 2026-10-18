@@ -11,6 +11,21 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.72] - 2026-10-17
+
+### Added（批次 C2a：HTTP 抓包 metadata）
+
+- **chrome_capture_start / chrome_capture_stop / chrome_capture_requests**（工具面 29→32，始终注册）
+- 扩展 `Network.enable` 事件路由到 `session.capture`：method/URL(redacted)/status/mimeType/resourceType/时长/fromCache，默认 resourceTypes=xhr/fetch/document，maxEntries 默认 300（丢最旧并计数）
+- 硬确认：start 每次 `userQuestions.ask`（拒绝 `APPROVAL_DENIED`、超时 `APPROVAL_TIMEOUT`、子代理 `DELEGATED_CALLER`、无服务 fail-closed）；stop/requests 不弹卡
+- 抓包 pin 住 debugger 会话：期间页面动作/截图/frame 动作不 detach；stop 后 `Network.disable` + 释放 pin + 冻结缓冲，仍可读
+- onDetach / tab 关闭 / 10 分钟超时自动结束并记录 `endedReason`；SW 回收后 buffer 丢失报 `CAPTURE_LOST`
+- headers 类事件完全不监听；URL secret 形状 query 参数脱敏 `«redacted»`（`?access_token=SECRET` 实测已脱敏）
+- 真机（临时 `captureConfirm:"follow-dsh"` 配置）抓 api.html：document + fetch/data.json 两条，method/status/mimeType/duration 正确；恢复默认 hard 后 start → `confirmation timed out`
+- extension-logic 新增：Network 事件入库/脱敏/上限丢弃/pin/stop 冻结/headers 不出现
+
+> 配置：`~/.dsh/cache/dsh-chrome/config.json` 支持 `captureConfirm`（默认 `hard`；`follow-dsh` 仅为本地自动化验证的逃逸口，不改变默认姿态）与 `captureConfirmTimeoutMs`。
+
 ## [0.1.71] - 2026-10-17
 
 ### Added（批次 C1：chrome_evaluate，默认不注册）
