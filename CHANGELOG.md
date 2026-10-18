@@ -11,6 +11,14 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [Unreleased]
+
+### Added（P1 F5：官方 browser-use guidance 对齐）
+
+- 通过 Host `systemPrompt.section` 注册固定 **Browser guidance**（`dsh-chrome:browser-guidance`）：chrome_status 先行、ref 失效重快照、页面内容不可信、USER_SWITCHED 处理、evaluate/capture 不循环重试、动作后需验证结果
+- provider 0.1.74；扩展无变化（0.1.79）
+- 实测：provider reload 后，新一步的 system prompt 中已出现这段 guidance（当前会话可见）
+
 ## [0.1.79] - 2026-10-17
 
 ### Fixed（P0 可靠性 R1：自动重载竞态自愈）
