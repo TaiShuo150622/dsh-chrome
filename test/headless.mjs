@@ -141,6 +141,53 @@ try {
   const pngAgainDiag = (await driver.request('tab.debug_diag')).tabs.find((tab) => tab.tabId === gone.tabId)?.screenshotStream
   assert.equal(pngAgainDiag.format, 'png', `png stream after jpeg: ${JSON.stringify(pngAgainDiag)}`)
 
+  // Driver-side clip/ref screenshots (docs/HEADLESS.md §4.1.4): a region or
+  // element shot is cropped out of the streamed frame instead of forcing a new
+  // Page.captureScreenshot. `clip`/`ref` are CSS px like the desktop backend,
+  // the PNG is device px (x devicePixelRatio), and a `ref` returns the element
+  // box rather than the whole viewport.
+  const clipRegion = { x: 0, y: 0, width: 600, height: 300 }
+  const clipShot = await driver.request('tab.screenshot', { owner: 's1', clip: clipRegion })
+  const clipBytes = fs.readFileSync(clipShot.path)
+  assert.deepEqual([clipShot.width, clipShot.height], [600, 300], `clip dimensions: ${JSON.stringify(clipShot)}`)
+  assert.equal(clipBytes.readUInt32BE(16), Math.round(600 * dpr))
+  assert.equal(clipBytes.readUInt32BE(20), Math.round(300 * dpr))
+  const clipAgain = await driver.request('tab.screenshot', { owner: 's1', clip: clipRegion })
+  assert.deepEqual(fs.readFileSync(clipAgain.path), clipBytes, 'unchanged page must reuse the same cropped frame bytes')
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: 'document.getElementById("out").textContent = "clip-freshness"',
+  })
+  const clipChanged = await driver.request('tab.screenshot', { owner: 's1', clip: clipRegion })
+  assert.notDeepEqual(fs.readFileSync(clipChanged.path), clipBytes, 'cropped screenshot after a page change must not be stale')
+  const clipDiag = (await driver.request('tab.debug_diag')).tabs.find((tab) => tab.tabId === gone.tabId)?.screenshotStream
+  assert.ok(clipDiag && clipDiag.cropped >= 3, `clip screenshots were not cropped in the driver: ${JSON.stringify(clipDiag)}`)
+  const buttonBox = (
+    await driver.request('tab.evaluate', {
+      owner: 's1',
+      expression: `(() => { const rect = document.querySelector('[data-dsh-ref="${button.ref}"]').getBoundingClientRect(); return { width: rect.width, height: rect.height } })()`,
+    })
+  ).value
+  const refShot = await driver.request('tab.screenshot', { owner: 's1', ref: button.ref })
+  const refBytes = fs.readFileSync(refShot.path)
+  assert.equal(refBytes.readUInt32BE(16), Math.round(buttonBox.width * dpr))
+  assert.equal(refBytes.readUInt32BE(20), Math.round(buttonBox.height * dpr))
+  assert.deepEqual([refShot.width, refShot.height], [Math.round(buttonBox.width), Math.round(buttonBox.height)])
+  assert.ok(
+    refShot.bytes < clipShot.bytes,
+    `ref shot should be smaller than the 600x300 clip: ${JSON.stringify({ ref: refShot.bytes, clip: clipShot.bytes })}`,
+  )
+  await assert.rejects(
+    driver.request('tab.screenshot', { owner: 's1', ref: 99999 }),
+    (err) => err.code === 'REF_STALE',
+    'unknown ref must be REF_STALE instead of silently returning the full viewport',
+  )
+  await assert.rejects(
+    driver.request('tab.screenshot', { owner: 's1', clip: { x: 0, y: 0, width: 0, height: 10 } }),
+    (err) => err.code === 'INVALID_ARGUMENT',
+    'empty clip must be rejected like the desktop backend',
+  )
+
   const tabs = await driver.request('tab.tabs', { owner: 's1', op: 'list' })
   assert.equal(tabs.tabs.length, 1)
   assert.equal(tabs.activeTabId, gone.tabId)
