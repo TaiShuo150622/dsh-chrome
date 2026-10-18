@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：37
+> 工具数量：38
 
 ### `chrome_status`
 
@@ -199,6 +199,12 @@ Read the current page selection (or selected text inside a focused input/textare
 | `maxChars` | number | no | Optional cap (10-20000, default 4000). |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
+### `chrome_config`
+
+Read the provider config (~/.dsh/cache/dsh-chrome/config.json): allowEvaluate, confirmation timeouts and capture confirmation mode. Read-only; edit the file and reload the provider bundle to change it.
+
+无参数。
+
 ### `chrome_policy`
 
 Read the effective site policy for the current page (or an explicit origin) from ~/.dsh/cache/dsh-chrome/policy.json. Modes: allow (skip ordinary approval), ask (session approval), block (SITE_BLOCKED). Read-only: policy.json is edited by the human, never by tools.
@@ -241,6 +247,8 @@ Enter element-pick mode: an overlay appears; the user clicks one element and the
 |---|---|---|---|
 | `timeoutMs` | number | no | Pick timeout, 500-120000 ms (default 60000). |
 | `cancel` | boolean | no | Cancel the active pick instead of starting a new one. |
+| `nowait` | boolean | no | Start pick mode and return immediately; use poll:true later to fetch the result. |
+| `poll` | boolean | no | Return the current pick status; pending:true means the user has not clicked yet. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_capture_start`

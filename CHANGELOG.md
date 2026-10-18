@@ -13,6 +13,13 @@
 
 ## [Unreleased]
 
+### Added（P1 F3：策略/配置体验）
+
+- 新工具 `chrome_config`（第 38 个）：只读展示 `allowEvaluate/captureConfirm/超时` 与配置文件路径、解析错误
+- `chrome_policy` 增加无效策略条目报告（`invalid[]`，render 警告，给出允许值）
+- `audit.jsonl` 超过 5 MiB 自动轮转为 `audit.jsonl.1`（可用 `DSH_AUDIT_MAX_BYTES` 覆盖阈值）
+- provider 0.1.75
+
 ### Added（P1 F5：官方 browser-use guidance 对齐）
 
 - 通过 Host `systemPrompt.section` 注册固定 **Browser guidance**（`dsh-chrome:browser-guidance`）：chrome_status 先行、ref 失效重快照、页面内容不可信、USER_SWITCHED 处理、evaluate/capture 不循环重试、动作后需验证结果

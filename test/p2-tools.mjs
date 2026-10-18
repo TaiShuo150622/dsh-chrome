@@ -123,7 +123,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('thirty-seven tools registered', tools.length === 37, tools.map((t) => t.name).join(', '))
+check('thirty-eight tools registered', tools.length === 38, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -355,6 +355,18 @@ check(
   requests.slice(requestsBeforeBlocked).every((request) => request.method === 'browser.site'),
 )
 
+// F3: chrome_config + invalid policy reporting
+const configFile = path.join(policyDir, 'config.json')
+await fsp.writeFile(configFile, JSON.stringify({ allowEvaluate: true, captureConfirm: 'follow-dsh' }))
+const configValue = await byName.chrome_config.execute({}, exec())
+check('chrome_config reports allowEvaluate', configValue?.config?.allowEvaluate === true && configValue?.error === null)
+check('chrome_config path points at the cache file', configValue?.path === configFile)
+
+await fsp.writeFile(policyFile, JSON.stringify({ origins: { 'http://127.0.0.1:8765': 'allow', 'https://bad.test': 'nope' } }))
+const invalidPolicy = await byName.chrome_policy.execute({ origin: 'https://bad.test' }, exec())
+check('chrome_policy reports invalid policy modes', invalidPolicy?.invalid?.length === 1 && invalidPolicy.invalid[0].origin === 'https://bad.test')
+await fsp.writeFile(policyFile, JSON.stringify({ origins: { 'http://127.0.0.1:8765': 'allow' } }))
+
 // C2a: capture tools are always registered; start is hard-confirmed
 check('chrome_capture_start registered', Boolean(byName.chrome_capture_start))
 let captureStartCode = null
@@ -410,7 +422,7 @@ const allowTools = evalTools(
   { ask: async () => ({ answers: [{ id: 'confirm', selected: ['允许一次'] }] }) },
 )
 const allowByName = Object.fromEntries(allowTools.map((definition) => [definition.name, definition]))
-check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 38 && Boolean(allowByName.chrome_evaluate))
+check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 39 && Boolean(allowByName.chrome_evaluate))
 const evalValue = await allowByName.chrome_evaluate.execute({ expression: '1 + 1' }, exec())
 check('evaluate returns the CDP value', evalValue?.value === 2 && evalValue?.type === 'number')
 check('evaluate params reach the extension', requests.at(-1)?.method === 'tab.evaluate' && requests.at(-1)?.params?.expression === '1 + 1')

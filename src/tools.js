@@ -11,7 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { BridgeError } from './bridge.js'
-import { appendAudit, dshHome, loadPolicy, originOf, policyPath, readAudit, resolvePolicy } from './policy.js'
+import { appendAudit, dshHome, loadPolicy, originOf, policyPath, readAudit, readProviderConfig, resolvePolicy } from './policy.js'
 
 const MUTATION_TIMEOUT_MS = 45000
 
@@ -1215,6 +1215,38 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   })
 
+  // ------------------------------------------------------- 1a. provider config
+  list.push({
+    name: 'chrome_config',
+    description:
+      'Read the provider config (~/.dsh/cache/dsh-chrome/config.json): allowEvaluate, confirmation timeouts and capture confirmation mode. Read-only; edit the file and reload the provider bundle to change it.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    output: {
+      schema: outputSchema({
+        path: { type: 'string' },
+        config: { type: 'object', additionalProperties: true },
+        error: {},
+      }),
+      render: (_args, value) => {
+        const config = value.config || {}
+        return renderText(
+          [
+            `provider config: ${value.path}`,
+            `allowEvaluate: ${config.allowEvaluate === true}`,
+            `evaluateConfirmTimeoutMs: ${config.evaluateConfirmTimeoutMs ?? 'default (120000)'}`,
+            `captureConfirm: ${config.captureConfirm ?? 'hard'}`,
+            `captureConfirmTimeoutMs: ${config.captureConfirmTimeoutMs ?? 'default (120000)'}`,
+            ...(value.error ? [`WARNING: ${value.error}`] : []),
+          ].join('\n'),
+        )
+      },
+    },
+    async execute() {
+      const { path: file, config, error } = readProviderConfig(dshHome())
+      return { path: file, config, error }
+    },
+  })
+
   // ------------------------------------------------------- 1b. policy/audit
   list.push({
     name: 'chrome_policy',
@@ -1235,23 +1267,31 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         source: { type: 'string' },
         policyPath: { type: 'string' },
         url: { type: 'string' },
+        invalid: { type: 'array', items: { type: 'object', additionalProperties: true } },
       }),
-      render: (_args, value) =>
-        renderText(
-          `Policy for ${value.origin || '(unknown origin)'}: ${value.mode || 'default (follow-dsh)'} [${value.source}]\npolicy file: ${value.policyPath}`,
-        ),
+      render: (_args, value) => {
+        const warning =
+          Array.isArray(value.invalid) && value.invalid.length > 0
+            ? `\nWARNING: ${value.invalid.length} invalid policy entr${value.invalid.length === 1 ? 'y' : 'ies'} (allowed: ${value.invalid[0]?.allowed?.join('|') || 'allow|ask|block'})`
+            : ''
+        return renderText(
+          `Policy for ${value.origin || '(unknown origin)'}: ${value.mode || 'default (follow-dsh)'} [${value.source}]\npolicy file: ${value.policyPath}${warning}`,
+        )
+      },
     },
     async execute(args, exec) {
       const site = args?.origin
         ? { origin: originOf(args.origin) || String(args.origin), url: '', title: '', tabId: null }
         : await currentSite(exec)
-      const resolved = resolvePolicy(loadPolicy(dshHome()), site.origin)
+      const policy = loadPolicy(dshHome())
+      const resolved = resolvePolicy(policy, site.origin)
       return {
         origin: resolved.origin,
         mode: resolved.mode,
         source: resolved.source,
         policyPath: policyPath(dshHome()),
         url: site.url || '',
+        invalid: policy.invalid || [],
       }
     },
   })

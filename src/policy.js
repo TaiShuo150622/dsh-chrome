@@ -40,12 +40,14 @@ export function loadPolicy(home = dshHome()) {
   try {
     const parsed = JSON.parse(fs.readFileSync(policyPath(home), 'utf8'))
     const origins = {}
+    const invalid = []
     for (const [origin, mode] of Object.entries(parsed?.origins || {})) {
       if (POLICY_MODES.includes(mode)) origins[origin] = mode
+      else invalid.push({ origin, mode: String(mode), allowed: POLICY_MODES })
     }
-    return { origins }
+    return { origins, invalid }
   } catch {
-    return { origins: {} }
+    return { origins: {}, invalid: [] }
   }
 }
 
@@ -59,14 +61,42 @@ export function resolvePolicy(policy, origin) {
   }
 }
 
+function auditMaxBytes() {
+  const configured = Number(process.env.DSH_AUDIT_MAX_BYTES)
+  return Number.isFinite(configured) && configured > 0 ? configured : 5 * 1024 * 1024
+}
+
+function rotateAuditIfNeeded(home) {
+  try {
+    const file = auditPath(home)
+    const stat = fs.statSync(file)
+    if (stat.size < auditMaxBytes()) return
+    fs.renameSync(file, `${file}.1`)
+  } catch {
+    // no file or rotation unavailable
+  }
+}
+
 export function appendAudit(home, record) {
   try {
     const dir = path.dirname(auditPath(home))
     fs.mkdirSync(dir, { recursive: true })
+    rotateAuditIfNeeded(home)
     fs.appendFileSync(auditPath(home), `${JSON.stringify(record)}\n`, { mode: 0o600 })
     return true
   } catch {
     return false
+  }
+}
+
+export function readProviderConfig(home = dshHome()) {
+  const file = path.join(home, 'cache', 'dsh-chrome', 'config.json')
+  try {
+    const config = JSON.parse(fs.readFileSync(file, 'utf8'))
+    return { path: file, config: config && typeof config === 'object' ? config : {}, error: null }
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { path: file, config: {}, error: null }
+    return { path: file, config: {}, error: error?.message || String(error) }
   }
 }
 
