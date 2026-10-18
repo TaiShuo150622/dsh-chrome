@@ -13,6 +13,11 @@
 
 ## [Unreleased]
 
+### Added（headless screencast）
+
+- headless 支持 `chrome_screencast start/status/stop`：CDP 帧 → 写 `latest.jpg`/meta，`op:"viewer"` 一样可看实时画面
+- provider 0.1.85；HEADLESS.md 矩阵更新
+
 ### Added（F1 viewer 方案 A：实时画面 URL）
 
 - `chrome_screencast {op:"viewer"}` 返回 loopback 实时画面；`webServer` 注册 `/dsh-chrome/live` + `/dsh-chrome/live/frame`

@@ -47,6 +47,9 @@ const SUPPORTED = new Set([
   'tab.capture_start',
   'tab.capture_stop',
   'tab.capture_requests',
+  'tab.screencast_start',
+  'tab.screencast_stop',
+  'tab.screencast_status',
   'tab.upload',
   'tab.resume',
   'browser.downloads',
@@ -413,6 +416,7 @@ export class HeadlessDriver {
     this.downloadDir = path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'downloads')
     this.bySession = new Map()
     this.consoleBuffers = new Map()
+    this.screencastDir = path.join(home || '.', 'cache', 'dsh-chrome', 'screencast')
     this.downloads = []
     this.downloadByGuid = new Map()
     this.idleTimer = null
@@ -648,6 +652,39 @@ export class HeadlessDriver {
       const details = message.params?.exceptionDetails || {}
       const text = details.exception?.description || details.text || 'uncaught exception'
       this.recordConsole(sessionTab, { level: 'error', text: String(text).slice(0, 2000) })
+      return
+    }
+    if (message.method === 'Page.screencastFrame') {
+      const tab = sessionTab
+      const state = tab?.screencast
+      if (!tab || !state) return
+      state.frames += 1
+      state.lastAt = Date.now()
+      this.cdp
+        .send('Page.screencastFrameAck', { sessionId: message.params?.sessionId }, tab.sessionId)
+        .catch(() => {})
+      try {
+        const data = Buffer.from(String(message.params?.data || ''), 'base64')
+        fs.mkdirSync(this.screencastDir, { recursive: true })
+        const file = path.join(this.screencastDir, `latest.${state.format === 'png' ? 'png' : 'jpg'}`)
+        const tmp = `${file}.${process.pid}.tmp`
+        fs.writeFileSync(tmp, data, { mode: 0o600 })
+        fs.renameSync(tmp, file)
+        fs.writeFileSync(
+          path.join(this.screencastDir, 'meta.json'),
+          `${JSON.stringify({
+            updatedAt: Date.now(),
+            format: state.format === 'png' ? 'png' : 'jpg',
+            bytes: data.byteLength,
+            frames: state.frames,
+            metadata: message.params?.metadata || null,
+            backend: 'headless',
+          })}\n`,
+          { mode: 0o600 },
+        )
+      } catch {
+        // best effort
+      }
       return
     }
     if (String(message.method || '').startsWith('Network.')) {
@@ -1106,6 +1143,50 @@ export class HeadlessDriver {
           truncated: capture.entries.length > limit,
           dropped: capture.dropped,
           bodiesDropped: capture.bodiesDropped,
+        }
+      }
+      case 'tab.screencast_start': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        if (tab.screencast?.active) {
+          return { active: true, alreadyActive: true, tabId: tab.tabId, format: tab.screencast.format }
+        }
+        const format = params.format === 'png' ? 'png' : 'jpeg'
+        const quality = Number.isFinite(params.quality) ? Math.max(1, Math.min(100, params.quality)) : 60
+        const everyNthFrame = Number.isFinite(params.everyNthFrame)
+          ? Math.max(1, Math.min(10, Math.trunc(params.everyNthFrame)))
+          : 2
+        tab.screencast = { active: true, format, frames: 0, startedAt: Date.now(), lastAt: null }
+        try {
+          await this.cdp.send('Page.startScreencast', { format, quality, everyNthFrame, maxWidth: 1280, maxHeight: 800 }, tab.sessionId)
+        } catch (error) {
+          tab.screencast = null
+          throw error
+        }
+        return { active: true, alreadyActive: false, tabId: tab.tabId, format, everyNthFrame }
+      }
+      case 'tab.screencast_stop': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        const state = tab.screencast
+        await this.cdp.send('Page.stopScreencast', {}, tab.sessionId).catch(() => {})
+        tab.screencast = null
+        return {
+          active: false,
+          tabId: tab.tabId,
+          frames: state?.frames || 0,
+          elapsedMs: state ? Date.now() - state.startedAt : 0,
+        }
+      }
+      case 'tab.screencast_status': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        const state = tab.screencast
+        if (!state) return { active: false, tabId: tab.tabId, frames: 0 }
+        return {
+          active: true,
+          tabId: tab.tabId,
+          frames: state.frames,
+          startedAt: new Date(state.startedAt).toISOString(),
+          lastAt: state.lastAt ? new Date(state.lastAt).toISOString() : null,
+          format: state.format,
         }
       }
       case 'tab.close_session': {

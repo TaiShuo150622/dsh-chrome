@@ -62,6 +62,7 @@ Profile 持久保存（`~/.dsh/cache/dsh-chrome/headless/profile`），但**默�
 | `chrome_upload` | ✅ `DOM.setFileInputFiles`（ref 或 selector；文件在 provider 端先校验存在） |
 | `chrome_download` | ✅ `Browser.setDownloadBehavior` + download 事件；文件落 `~/.dsh/cache/dsh-chrome/headless/downloads/` |
 | `chrome_resume` | ✅ no-op（headless 没有前台暂停语义） |
+| `chrome_screencast` | ✅ CDP Page.startScreencast → 写 `latest.jpg`/meta；配合 `op:"viewer"` 可看 headless 实时画面 |
 | `chrome_close_session` | ✅ 关闭该 owner 的 headless tabs |
 
 实测（桌面 Chrome 未受任何影响）：
@@ -85,7 +86,7 @@ chrome_status                              → desktop 仍 CONNECTED；headless 
 | 工具/方法 | 原因 | H1 计划 |
 |---|---|---|
 | `chrome_pick` | 无"鼠标点页面"的用户交互语义（headless 没有真人点击） | 明确返回 `UNSUPPORTED_BACKEND`；可选用 selector 流程 |
-| `chrome_screencast` / `chrome_pause` | 前者可 provider 侧写帧；后者是前台概念（no-op） | 可做；not critical |
+| `chrome_pause` | 前台概念（headless 无暂停语义，`chrome_resume` no-op） | 不需要 |
 | `chrome_shots` / `chrome_audit` / `chrome_policy` / `chrome_config` | provider 本地工具，与 backend 无关，照常工作 | — |
 
 ## 4. 安全与资源

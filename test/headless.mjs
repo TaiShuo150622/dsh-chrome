@@ -131,6 +131,17 @@ try {
   assert.equal(stopped.active, false)
   assert.ok(stopped.requests >= 1)
 
+  const cast = await driver.request('tab.screencast_start', { owner: 's1', everyNthFrame: 1, quality: 50 })
+  assert.equal(cast.active, true)
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  await driver.request('tab.scroll', { owner: 's1', direction: 'down', amount: 300 })
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  const castStatus = await driver.request('tab.screencast_status', { owner: 's1' })
+  assert.ok(castStatus.frames > 0, `headless screencast produced no frames: ${JSON.stringify(castStatus)}`)
+  const castStop = await driver.request('tab.screencast_stop', { owner: 's1' })
+  assert.equal(castStop.active, false)
+  assert.ok(castStop.frames > 0)
+
   console.log('HEADLESS TEST: PASS')
 } finally {
   await driver.close()
