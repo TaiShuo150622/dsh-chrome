@@ -11,6 +11,14 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.61] - 2026-10-17
+
+### Added
+
+- **open Shadow DOM 支持（批次 A1）**：快照/查找/点击/输入/选择/hover/drag/elementBox/get_text/get_markdown/wait selector 走深层查询（`window.__dshDeep`，BFS 遍历 open shadow roots）；closed shadow root 明确不支持且不崩溃
+- 深查询 helper 带版本号，扩展自动 reload 后页面里的旧 helper 会被替换
+- fixture：`shadow.html`（open + closed custom elements）；真机验证 shadow 内输入/点击/get_text，ref 连续两次稳定
+
 ## [0.1.60] - 2026-10-17
 
 ### Fixed / Changed

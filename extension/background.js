@@ -622,6 +622,85 @@ const CURSOR_HELPER_SRC = `
 })();
 `
 
+const DEEP_HELPERS_SRC = `
+(() => {
+  // Version bump so a page that still holds an older injected helper (e.g.
+  // during a dev auto-reload) gets the current implementation.
+  if (window.__dshDeep && window.__dshDeepVersion === 2) return
+  window.__dshDeepVersion = 2
+  const roots = (root) => {
+    const out = [root]
+    const visit = (node) => {
+      let elements = []
+      try { elements = node.querySelectorAll ? node.querySelectorAll('*') : [] } catch { elements = [] }
+      for (const element of elements) {
+        if (element.shadowRoot) {
+          out.push(element.shadowRoot)
+          visit(element.shadowRoot)
+        }
+      }
+    }
+    visit(root)
+    return out
+  }
+  const all = (selector) => {
+    const out = []
+    const seen = new Set()
+    for (const root of roots(document)) {
+      let found = []
+      try { found = root.querySelectorAll(selector) } catch { found = [] }
+      for (const element of found) {
+        if (seen.has(element)) continue
+        seen.add(element)
+        out.push(element)
+      }
+    }
+    return out
+  }
+  const one = (selector) => {
+    for (const root of roots(document)) {
+      let found = null
+      try { found = root.querySelector(selector) } catch { found = null }
+      if (found) return found
+    }
+    return null
+  }
+  const byRef = (ref) => {
+    const selector = '[data-dsh-ref="' + ref + '"]'
+    return document.querySelector(selector) || one(selector)
+  }
+  const collectText = (root) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    const parts = []
+    let current
+    while ((current = walker.nextNode())) {
+      const parent = current.parentElement
+      if (!parent) continue
+      const tag = parent.tagName.toLowerCase()
+      if (tag === 'style' || tag === 'script' || tag === 'noscript' || tag === 'template') continue
+      const value = (current.nodeValue || '').trim()
+      if (value) parts.push(value)
+    }
+    return parts.join('\\n')
+  }
+  const text = (node) => {
+    const parts = []
+    const own = node.innerText || ''
+    if (own) parts.push(own)
+    else {
+      const fallback = collectText(node)
+      if (fallback) parts.push(fallback)
+    }
+    for (const root of roots(node).slice(1)) {
+      const shadowText = collectText(root)
+      if (shadowText) parts.push(shadowText)
+    }
+    return parts.join('\\n')
+  }
+  window.__dshDeep = { all, one, byRef, roots, text }
+})();
+`
+
 function withTimeout(promise, timeoutMs, code, message) {
   return Promise.race([
     promise,
@@ -674,6 +753,7 @@ async function evalInTab(tabId, fn, args, timeoutMs, dialogOptions) {
       // dialog interception unavailable; evaluation still works
     }
     const expression = `(() => { ${CURSOR_HELPER_SRC}
+      ${DEEP_HELPERS_SRC}
       return (${fn.toString()})(...${JSON.stringify(args)})
     })()`
     const response = await withTimeout(
@@ -1305,6 +1385,8 @@ function waitForComplete(tabId, timeoutMs) {
  * function and its arguments into the page's isolated world.
  */
 function pageSnapshot(maxChars, withBoxes, mode) {
+  const deepAll = (selector) => (window.__dshDeep ? window.__dshDeep.all(selector) : Array.from(document.querySelectorAll(selector)))
+  const deepOne = (selector) => (window.__dshDeep ? window.__dshDeep.one(selector) : document.querySelector(selector))
   const limit = Number.isFinite(maxChars) ? maxChars : 100000
   const deltaMode = String(mode || 'full') === 'delta'
   // Refs are stable across snapshots: an element that already has one keeps it;
@@ -1313,7 +1395,7 @@ function pageSnapshot(maxChars, withBoxes, mode) {
   const nextRef = () => {
     if (!window.__dshRefSeq) {
       let max = 0
-      for (const element of document.querySelectorAll('[data-dsh-ref]')) {
+      for (const element of deepAll('[data-dsh-ref]')) {
         const value = Number(element.getAttribute('data-dsh-ref'))
         if (Number.isFinite(value) && value > max) max = value
       }
@@ -1341,7 +1423,7 @@ function pageSnapshot(maxChars, withBoxes, mode) {
   const seen = new Set()
   const elements = []
   for (const selector of selectors) {
-    for (const element of document.querySelectorAll(selector)) {
+    for (const element of deepAll(selector)) {
       if (seen.has(element)) continue
       seen.add(element)
       elements.push(element)
@@ -1474,11 +1556,11 @@ function pageSnapshot(maxChars, withBoxes, mode) {
 /** Runs inside the page; self-contained. */
 function hoverByRef(ref, selector) {
   const element = ref
-    ? document.querySelector(`[data-dsh-ref="${ref}"]`)
+    ? window.__dshDeep?.byRef(ref) || document.querySelector(`[data-dsh-ref="${ref}"]`)
     : selector
       ? (() => {
           try {
-            return document.querySelector(String(selector))
+            return window.__dshDeep?.one(String(selector)) || document.querySelector(String(selector))
           } catch {
             return null
           }
@@ -1559,8 +1641,8 @@ function pageStorage(op, scope, key, value, keys) {
 }
 
 function dragByRef(fromRef, toRef) {
-  const from = document.querySelector(`[data-dsh-ref="${fromRef}"]`)
-  const to = document.querySelector(`[data-dsh-ref="${toRef}"]`)
+  const from = window.__dshDeep?.byRef(fromRef) || document.querySelector(`[data-dsh-ref="${fromRef}"]`)
+  const to = window.__dshDeep?.byRef(toRef) || document.querySelector(`[data-dsh-ref="${toRef}"]`)
   if (!from || !to) {
     return { ok: false, reason: 'REF_STALE', message: `ref ${fromRef}/${toRef} not found; take a new snapshot` }
   }
@@ -1612,11 +1694,11 @@ function dragByRef(fromRef, toRef) {
 
 function clickByRef(ref, selector, buttonName, clickCount) {
   const element = ref
-    ? document.querySelector(`[data-dsh-ref="${ref}"]`)
+    ? window.__dshDeep?.byRef(ref) || document.querySelector(`[data-dsh-ref="${ref}"]`)
     : selector
       ? (() => {
           try {
-            return document.querySelector(String(selector))
+            return window.__dshDeep?.one(String(selector)) || document.querySelector(String(selector))
           } catch {
             return null
           }
@@ -1651,11 +1733,11 @@ function clickByRef(ref, selector, buttonName, clickCount) {
 /** Runs inside the page; self-contained. */
 function typeIntoRef(ref, text, replace, submit, selector) {
   const element = ref
-    ? document.querySelector(`[data-dsh-ref="${ref}"]`)
+    ? window.__dshDeep?.byRef(ref) || document.querySelector(`[data-dsh-ref="${ref}"]`)
     : selector
       ? (() => {
           try {
-            return document.querySelector(String(selector))
+            return window.__dshDeep?.one(String(selector)) || document.querySelector(String(selector))
           } catch {
             return null
           }
@@ -1753,17 +1835,19 @@ function findInPage(query, limit, useRegex) {
     matcher = { test: (value) => String(value).toLowerCase().includes(needle) }
   }
   const max = Number.isFinite(limit) ? Math.max(1, Math.min(50, limit)) : 20
-  const root = document.body || document.documentElement
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const roots = window.__dshDeep ? window.__dshDeep.roots(document.body || document.documentElement) : [document.body || document.documentElement]
   const matches = []
   const seen = new Set()
-  let node
-  while ((node = walker.nextNode())) {
+  for (const root of roots) {
     if (matches.length >= max) break
-    const value = node.nodeValue || ''
-    if (!matcher.test(value)) continue
-    const element = node.parentElement
-    if (!element || seen.has(element)) continue
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    let node
+    while ((node = walker.nextNode())) {
+      if (matches.length >= max) break
+      const value = node.nodeValue || ''
+      if (!matcher.test(value)) continue
+      const element = node.parentElement
+      if (!element || seen.has(element)) continue
     const style = getComputedStyle(element)
     if (style.display === 'none' || style.visibility === 'hidden') continue
     const rect = element.getBoundingClientRect()
@@ -1775,7 +1859,8 @@ function findInPage(query, limit, useRegex) {
     if (!ref) {
       if (!window.__dshRefSeq) {
         let max = 0
-        for (const element of document.querySelectorAll('[data-dsh-ref]')) {
+        const scan = window.__dshDeep ? window.__dshDeep.all('[data-dsh-ref]') : document.querySelectorAll('[data-dsh-ref]')
+        for (const element of scan) {
           const value = Number(element.getAttribute('data-dsh-ref'))
           if (Number.isFinite(value) && value > max) max = value
         }
@@ -1806,17 +1891,18 @@ function findInPage(query, limit, useRegex) {
       x: Math.round(rect.left + rect.width / 2),
       y: Math.round(rect.top + rect.height / 2),
     })
+    }
   }
   return { query, matches, truncated: matches.length >= max }
 }
 
 function selectByRef(ref, value, checked, selector) {
   const element = ref
-    ? document.querySelector(`[data-dsh-ref="${ref}"]`)
+    ? window.__dshDeep?.byRef(ref) || document.querySelector(`[data-dsh-ref="${ref}"]`)
     : selector
       ? (() => {
           try {
-            return document.querySelector(String(selector))
+            return window.__dshDeep?.one(String(selector)) || document.querySelector(String(selector))
           } catch {
             return null
           }
@@ -1854,7 +1940,9 @@ function getMarkdown(selector, maxChars) {
   const limit = Number.isFinite(maxChars) ? maxChars : 20000
   let root
   try {
-    root = selector ? document.querySelector(selector) : document.querySelector('main,article,[role="main"]') || document.body
+    root = selector
+      ? window.__dshDeep?.one(selector) || document.querySelector(selector)
+      : window.__dshDeep?.one('main,article,[role="main"]') || document.querySelector('main,article,[role="main"]') || document.body
   } catch {
     return { found: false, error: 'INVALID_SELECTOR', text: '', truncated: false }
   }
@@ -1873,7 +1961,8 @@ function getMarkdown(selector, maxChars) {
     if (tag === 'code') return `\`${node.textContent || ''}\``
     if (tag === 'strong' || tag === 'b') return `**${Array.from(node.childNodes).map(inline).join('')}**`
     if (tag === 'em' || tag === 'i') return `*${Array.from(node.childNodes).map(inline).join('')}*`
-    return Array.from(node.childNodes).map(inline).join('')
+    const shadow = node.shadowRoot ? Array.from(node.shadowRoot.childNodes).map(inline).join('') : ''
+    return Array.from(node.childNodes).map(inline).join('') + shadow
   }
   const block = (node, depth = 0) => {
     if (node.nodeType === Node.TEXT_NODE) return (node.nodeValue || '').trim()
@@ -1893,9 +1982,11 @@ function getMarkdown(selector, maxChars) {
     if (tag === 'hr') return '---'
     if (['script', 'style', 'noscript', 'svg'].includes(tag)) return ''
     if (['div', 'section', 'article', 'main', 'header', 'footer', 'nav', 'aside', 'form', 'li'].includes(tag)) {
-      return children().join('\n\n')
+      const shadow = node.shadowRoot ? blockChildrenInline(node.shadowRoot) : ''
+      return [children().join('\n\n'), shadow].filter(Boolean).join('\n\n')
     }
-    return blockChildrenInline(node)
+    const shadowText = node.shadowRoot ? blockChildrenInline(node.shadowRoot) : ''
+    return [blockChildrenInline(node), shadowText].filter(Boolean).join(' ')
   }
   const blockChildrenInline = (node) => Array.from(node.childNodes).map(inline).join('').replace(/[ \t]+/g, ' ').trim()
   const markdown = block(root)
@@ -1909,12 +2000,14 @@ function getText(selector, maxChars) {
   const limit = Number.isFinite(maxChars) ? maxChars : 20000
   let node = null
   try {
-    node = selector ? document.querySelector(selector) : document.querySelector('main,article,[role="main"]') || document.body
+    node = selector
+      ? window.__dshDeep?.one(selector) || document.querySelector(selector)
+      : window.__dshDeep?.one('main,article,[role="main"]') || document.querySelector('main,article,[role="main"]') || document.body
   } catch {
     return { found: false, error: 'INVALID_SELECTOR', text: '', truncated: false }
   }
   if (!node) return { found: false, text: '', truncated: false }
-  const raw = (node.innerText || node.textContent || '').replace(/\n{3,}/g, '\n\n').trim()
+  const raw = (window.__dshDeep ? window.__dshDeep.text(node) : node.innerText || node.textContent || '').replace(/\n{3,}/g, '\n\n').trim()
   return { found: true, text: raw.slice(0, limit), truncated: raw.length > limit }
 }
 
@@ -1953,11 +2046,11 @@ function readNetwork(filter, limit) {
 
 function elementBox(ref, selector) {
   const element = ref
-    ? document.querySelector(`[data-dsh-ref="${ref}"]`)
+    ? window.__dshDeep?.byRef(ref) || document.querySelector(`[data-dsh-ref="${ref}"]`)
     : selector
       ? (() => {
           try {
-            return document.querySelector(String(selector))
+            return window.__dshDeep?.one(String(selector)) || document.querySelector(String(selector))
           } catch {
             return null
           }
@@ -1980,7 +2073,8 @@ function drawRefOverlay() {
   overlay.id = '__dsh_ref_overlay__'
   overlay.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647'
   let count = 0
-  for (const element of document.querySelectorAll('[data-dsh-ref]')) {
+  const refElements = window.__dshDeep ? window.__dshDeep.all('[data-dsh-ref]') : document.querySelectorAll('[data-dsh-ref]')
+  for (const element of refElements) {
     const ref = element.getAttribute('data-dsh-ref')
     const rect = element.getBoundingClientRect()
     if (rect.width < 2 || rect.height < 2) continue
@@ -2015,7 +2109,7 @@ function removeRefOverlay() {
 
 function hasSelector(selector) {
   try {
-    return Boolean(document.querySelector(String(selector)))
+    return Boolean(window.__dshDeep?.one(String(selector)) || document.querySelector(String(selector)))
   } catch {
     return false
   }
