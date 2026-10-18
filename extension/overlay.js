@@ -249,7 +249,7 @@
       fromRects: [],
     }
     ann.resolve = () => rectsOfTarget(params)
-    if (kind === 'arrow') ann.fromResolve = () => rectsOfTarget(params.from || {})
+    if (kind === 'arrow') ann.fromResolve = () => rectsOfTarget(params.from || (params.fromSelector ? { selector: params.fromSelector } : params.fromRef != null ? { ref: params.fromRef } : {}))
     ann.rects = ann.resolve()
     if (kind === 'arrow') ann.fromRects = ann.fromResolve()
     state.annotations.set(ann.id, ann)

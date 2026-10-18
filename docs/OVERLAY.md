@@ -2,6 +2,8 @@
 
 > 2026-10-18 · 工具面 42（+evaluate 43）· extension/headless 共用 `extension/overlay.js`
 
+![DSH overlay demo](assets/overlay-demo.png)
+
 ## 1. 能力
 
 | 工具 | 作用 |
