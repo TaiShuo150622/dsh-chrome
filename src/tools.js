@@ -1732,8 +1732,24 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       },
     },
     async execute(args, exec) {
-      const tabId = args?.tabId
       const owner = ownerOf(exec)
+      try {
+        return await runPick(args, owner)
+      } catch (error) {
+        const code = error?.code || error?.name
+        if (code === 'UNSUPPORTED_BACKEND' || /not implemented by the headless backend/i.test(String(error?.message || ''))) {
+          throw new BridgeError(
+            'UNSUPPORTED_BACKEND',
+            'chrome_pick needs a real user click on the visible desktop browser. Use backend:"desktop" for pick, or use chrome_snapshot + chrome_click/chrome_type with a selector/ref on backend:"headless".',
+          )
+        }
+        throw error
+      }
+    },
+  })
+
+  async function runPick(args, owner) {
+      const tabId = args?.tabId
       if (args?.cancel) {
         await call('tab.pick_cancel', { tabId, owner }, 15000)
         return { canceled: true, tabId: tabId ?? null }
@@ -1768,8 +1784,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       }
       await call('tab.pick_cancel', { tabId, owner }, 15000).catch(() => {})
       throw new BridgeError('PICK_TIMEOUT', `no element picked within ${timeoutMs}ms`)
-    },
-  })
+  }
 
   // -------------------------------------------------------- 4e. evaluate (gated)
   if (allowEvaluate) {
