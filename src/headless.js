@@ -41,6 +41,12 @@ const SUPPORTED = new Set([
   'tab.wait',
   'tab.html',
   'tab.text',
+  'tab.get_text',
+  'tab.find',
+  'tab.select',
+  'tab.drag',
+  'tab.storage',
+  'tab.emulate',
   'tab.selection',
   'tab.console',
   'tab.network',
@@ -394,7 +400,111 @@ function currentSelection(maxChars) {
   return { found: true, text: text.slice(0, maxChars), source: 'document' }
 }
 
-const PAGE_HELPERS = { snapshotPage, clickPage, typePage, currentSelection }
+function findPage(query, regex, maxResults) {
+  const needle = String(query || '')
+  if (!needle) return { query: needle, matches: [], truncated: false }
+  let matcher
+  if (regex) {
+    try {
+      const safe = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      matcher = new RegExp(safe, 'i')
+    } catch {
+      matcher = null
+    }
+  } else {
+    matcher = new RegExp(String(needle).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+  }
+  const cap = Number.isFinite(maxResults) ? Math.max(1, Math.min(50, maxResults)) : 20
+  const matches = []
+  let truncated = false
+  const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT)
+  let node
+  while ((node = walker.nextNode())) {
+    const text = (node.nodeValue || '').replace(/\s+/g, ' ').trim()
+    if (!text || !matcher || !matcher.test(text)) continue
+    const parent = node.parentElement
+    if (!parent) continue
+    const rect = parent.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) continue
+    let ref = null
+    let holder = parent
+    for (let depth = 0; holder && depth < 6; depth += 1) {
+      const value = Number(holder.getAttribute?.('data-dsh-ref'))
+      if (Number.isFinite(value) && value > 0) {
+        ref = value
+        break
+      }
+      holder = holder.parentElement
+    }
+    matches.push({
+      ...(ref ? { ref } : {}),
+      tag: parent.tagName.toLowerCase(),
+      text: text.slice(0, 200),
+      x: Math.round(rect.x + rect.width / 2),
+      y: Math.round(rect.y + rect.height / 2),
+    })
+    if (matches.length >= cap) {
+      truncated = true
+      break
+    }
+  }
+  return { query: needle, matches, truncated }
+}
+
+function selectPage(ref, selector, value, checked) {
+  const el = selector
+    ? document.querySelector(selector)
+    : document.querySelector(`[data-dsh-ref="${Number(ref)}"]`)
+  if (!el) return { ok: false, code: 'REF_NOT_FOUND', message: `no element for ${selector || `ref ${ref}`}` }
+  const tag = el.tagName.toLowerCase()
+  if (tag === 'select') {
+    if (value == null) return { ok: false, code: 'INVALID_ARGUMENT', message: 'value is required for select' }
+    const option = Array.from(el.options).find(
+      (candidate) => candidate.value === String(value) || (candidate.textContent || '').trim() === String(value),
+    )
+    if (!option) return { ok: false, code: 'INVALID_ARGUMENT', message: `option not found: ${value}` }
+    el.value = option.value
+    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+    return { ok: true, tag, value: el.value }
+  }
+  if (tag === 'input' && ['checkbox', 'radio'].includes(String(el.type).toLowerCase())) {
+    const next = typeof checked === 'boolean' ? checked : !el.checked
+    el.checked = next
+    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+    return { ok: true, tag, value: next ? 'true' : 'false' }
+  }
+  return { ok: false, code: 'INVALID_ARGUMENT', message: `element <${tag}> is not a select/checkbox/radio` }
+}
+
+function dragPage(fromRef, toRef) {
+  const from = document.querySelector(`[data-dsh-ref="${Number(fromRef)}"]`)
+  const to = document.querySelector(`[data-dsh-ref="${Number(toRef)}"]`)
+  if (!from || !to) return { ok: false, code: 'REF_NOT_FOUND', message: 'drag source or target not found' }
+  const fromRect = from.getBoundingClientRect()
+  const toRect = to.getBoundingClientRect()
+  const start = { x: fromRect.x + fromRect.width / 2, y: fromRect.y + fromRect.height / 2 }
+  const end = { x: toRect.x + toRect.width / 2, y: toRect.y + toRect.height / 2 }
+  const dataTransfer = typeof DataTransfer === 'function' ? new DataTransfer() : null
+  const fire = (target, type, x, y) => {
+    const init = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, dataTransfer }
+    try {
+      target.dispatchEvent(new DragEvent(type, init))
+    } catch {
+      target.dispatchEvent(new MouseEvent(type.replace('drag', 'mouse'), init))
+    }
+  }
+  fire(from, 'dragstart', start.x, start.y)
+  fire(from, 'pointerdown', start.x, start.y)
+  fire(to, 'dragenter', end.x, end.y)
+  fire(to, 'dragover', end.x, end.y)
+  fire(to, 'drop', end.x, end.y)
+  fire(from, 'dragend', end.x, end.y)
+  return { ok: true, from: Number(fromRef), to: Number(toRef) }
+}
+
+const PAGE_HELPERS = { snapshotPage, clickPage, typePage, currentSelection, findPage, selectPage, dragPage }
 
 function pageCall(name, args) {
   return `(() => { const fn = ${PAGE_HELPERS[name].toString()}; return fn(...${JSON.stringify(args)}); })()`
@@ -853,6 +963,73 @@ export class HeadlessDriver {
         await this.waitReady(tab)
         await this.syncTabMeta(tab)
         return { tabId: tab.tabId, url: tab.url, title: tab.title, loadState: 'complete' }
+      }
+      case 'tab.get_text': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        const selector = params.selector
+          ? String(params.selector)
+          : 'main, article, [role="main"], body'
+        const raw = await this.evalOn(
+          tab,
+          `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.innerText || el.textContent || '') : null; })()`,
+        )
+        if (raw == null) return { found: false, text: '', truncated: false, frames: 1 }
+        const maxChars = Math.min(Number(params.maxChars) || 20000, 200000)
+        return { found: true, text: String(raw).slice(0, maxChars), truncated: String(raw).length > maxChars, frames: 1 }
+      }
+      case 'tab.find': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        return this.pageAction(tab, 'findPage', [String(params.query || ''), Boolean(params.regex), params.maxResults])
+      }
+      case 'tab.select': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        const result = await this.pageAction(tab, 'selectPage', [params.ref ?? null, params.selector ?? null, params.value ?? null, params.checked])
+        if (!result?.ok) throw error(result?.code || 'REF_NOT_FOUND', result?.message || 'select failed')
+        return { ok: true, tag: result.tag, value: result.value }
+      }
+      case 'tab.drag': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        const result = await this.pageAction(tab, 'dragPage', [params.fromRef, params.toRef])
+        if (!result?.ok) throw error(result?.code || 'REF_NOT_FOUND', result?.message || 'drag failed')
+        return result
+      }
+      case 'tab.storage': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        const scope = params.scope === 'session' ? 'sessionStorage' : 'localStorage'
+        const op = String(params.op || 'get')
+        const raw = await this.evalOn(tab, `(() => {
+          const store = ${scope};
+          const op = ${JSON.stringify(op)};
+          const key = ${JSON.stringify(params.key ?? null)};
+          const keys = ${JSON.stringify(Array.isArray(params.keys) ? params.keys : null)};
+          const value = ${JSON.stringify(params.value ?? null)};
+          const encode = (v) => { try { return JSON.stringify(v) } catch { return String(v) } };
+          const decode = (v) => { try { return JSON.parse(v) } catch { return v } };
+          if (op === 'set') { store.setItem(key == null ? 'null' : String(key), encode(value)); return { ok: true, set: 1 } }
+          const want = keys && keys.length ? keys : key != null ? [String(key)] : Object.keys(store);
+          const items = {};
+          for (const name of want) { const item = store.getItem(name); if (item != null) items[name] = decode(item) }
+          if (op === 'remove') { for (const name of want) store.removeItem(name); return { ok: true, removed: want.length } }
+          if (op === 'clear') { store.clear(); return { ok: true, cleared: true } }
+          return { ok: true, items }
+        })()`)
+        return { ...raw, scope }
+      }
+      case 'tab.emulate': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        if (params.reset) {
+          await this.cdp.send('Emulation.clearDeviceMetricsOverride', {}, tab.sessionId)
+          return { applied: false, reloaded: false, viewport: { width: 0, height: 0, mobile: false } }
+        }
+        const width = Math.max(100, Number(params.width) || 1280)
+        const height = Math.max(100, Number(params.height) || 800)
+        const mobile = Boolean(params.mobile)
+        await this.cdp.send(
+          'Emulation.setDeviceMetricsOverride',
+          { width, height, deviceScaleFactor: 1, mobile },
+          tab.sessionId,
+        )
+        return { applied: true, reloaded: false, viewport: { width, height, mobile } }
       }
       case 'tab.snapshot': {
         const tab = await this.ensureTab(owner, params.tabId)

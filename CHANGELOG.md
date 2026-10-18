@@ -13,6 +13,12 @@
 
 ## [Unreleased]
 
+### Added（headless 工具面对齐 38/39）
+
+- headless 补 `chrome_select` / `chrome_drag` / `chrome_storage` / `chrome_emulate` / `chrome_find` / `chrome_get_text`
+- 现在除 `chrome_pick`（需要真人点页面）外，同一套 `chrome_*` 工具都支持 `backend:"headless"`
+- provider 0.1.86；测试覆盖 select/checkbox/storage/emulate/drag/get_text/find
+
 ### Fixed（桌面 tabs 同步 + screencast 上限）
 
 - `chrome_tabs {op:"list"}` / `chrome_close_session` 现在先从实时 tab group 同步 `tabIds`（修「新建 tab 列表里看不到 / 关不掉」）

@@ -17,6 +17,10 @@ const page = `<!doctype html><html><head><title>Headless Test</title></head><bod
 <button id="go" onclick="document.getElementById('out').textContent = 'hello ' + document.getElementById('name').value">Go</button>
 <div id="out">(empty)</div>
 <input id="file" type="file">
+<select id="choice"><option value="one">One</option><option value="two">Two</option></select>
+<input id="check" type="checkbox">
+<div id="drag-src" role="button" tabindex="0" draggable="true">drag-src</div>
+<div id="drop-target" role="button" tabindex="0">drop-target</div>
 <a id="download" href="/download" download="headless-report.txt">download</a>
 <script>
   console.log('headless-log-1', 42)
@@ -130,6 +134,33 @@ try {
   const stopped = await driver.request('tab.capture_stop', { owner: 's1', captureId: capture.captureId })
   assert.equal(stopped.active, false)
   assert.ok(stopped.requests >= 1)
+
+  const textValue = await driver.request('tab.get_text', { owner: 's1', maxChars: 5000 })
+  assert.ok(textValue.found && textValue.text.includes('Headless Test'), `get_text failed: ${JSON.stringify(textValue)}`)
+  const found = await driver.request('tab.find', { owner: 's1', query: 'Headless', maxResults: 5 })
+  assert.ok(found.matches.length >= 1, `find failed: ${JSON.stringify(found)}`)
+  const snap3 = await driver.request('tab.snapshot', { owner: 's1', maxChars: 3000 })
+  const selectControl = snap3.controls.find((control) => control.tag === 'select')
+  const checkControl = snap3.controls.find((control) => control.kind === 'checkbox')
+  const dragSrc = snap3.controls.find((control) => control.label === 'drag-src')
+  const dropTarget = snap3.controls.find((control) => control.label === 'drop-target')
+  assert.ok(selectControl && checkControl && dragSrc && dropTarget, `new controls missing: ${JSON.stringify(snap3.controls)}`)
+  const selected = await driver.request('tab.select', { owner: 's1', ref: selectControl.ref, value: 'two' })
+  assert.equal(selected.value, 'two')
+  const checked = await driver.request('tab.select', { owner: 's1', ref: checkControl.ref, checked: true })
+  assert.equal(checked.value, 'true')
+  const stored = await driver.request('tab.storage', { owner: 's1', op: 'set', key: 'probe', value: { ok: 1 } })
+  assert.equal(stored.set, 1)
+  const readBack = await driver.request('tab.storage', { owner: 's1', op: 'get', key: 'probe' })
+  assert.deepEqual(readBack.items.probe, { ok: 1 })
+  const emulated = await driver.request('tab.emulate', { owner: 's1', width: 800, height: 600 })
+  assert.equal(emulated.applied, true)
+  const widthNow = await driver.request('tab.evaluate', { owner: 's1', expression: 'innerWidth' })
+  assert.equal(widthNow.value, 800)
+  const resetViewport = await driver.request('tab.emulate', { owner: 's1', reset: true })
+  assert.equal(resetViewport.applied, false)
+  const dragged = await driver.request('tab.drag', { owner: 's1', fromRef: dragSrc.ref, toRef: dropTarget.ref })
+  assert.equal(dragged.ok, true)
 
   const cast = await driver.request('tab.screencast_start', { owner: 's1', everyNthFrame: 1, quality: 50 })
   assert.equal(cast.active, true)

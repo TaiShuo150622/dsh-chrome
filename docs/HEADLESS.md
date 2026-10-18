@@ -56,6 +56,7 @@ Profile 持久保存（`~/.dsh/cache/dsh-chrome/headless/profile`），但**默�
 | `chrome_html` `chrome_text` `chrome_selection` | ✅ |
 | `chrome_frames` `chrome_a11y` | ✅ CDP frame tree / AX tree |
 | `chrome_history` `chrome_wait` `chrome_pdf` | ✅ |
+| `chrome_select` `chrome_drag` `chrome_storage` `chrome_emulate` `chrome_find` `chrome_get_text` | ✅（ref/selector、select/checkbox、拖拽、localStorage/sessionStorage、CDP 视口覆盖、文本查找/读取） |
 | `chrome_console` | ✅ Runtime.consoleAPICalled / exceptionThrown 缓冲（按 tab，最多 200 条） |
 | `chrome_capture_start/requests/stop` | ✅ Network 域抓包：XHR/fetch/document、URL 脱敏、secret 参数/JSON/form 字段脱敏、body 预算 8MiB、10 分钟自动停、按 owner 隔离 |
 | `chrome_network` | ✅ performance resource timing（URL/type/duration/transferSize） |
@@ -87,6 +88,8 @@ chrome_status                              → desktop 仍 CONNECTED；headless 
 |---|---|---|
 | `chrome_pick` | 无"鼠标点页面"的用户交互语义（headless 没有真人点击） | 明确返回 `UNSUPPORTED_BACKEND`；可选用 selector 流程 |
 | `chrome_pause` | 前台概念（headless 无暂停语义，`chrome_resume` no-op） | 不需要 |
+
+> 覆盖：39 个工具里 headless 支持 38 个（除 `chrome_pick` 外全部），provider 本地工具（status/config/policy/audit/shots）与 backend 无关，照常可用。
 | `chrome_shots` / `chrome_audit` / `chrome_policy` / `chrome_config` | provider 本地工具，与 backend 无关，照常工作 | — |
 
 ## 4. 安全与资源
