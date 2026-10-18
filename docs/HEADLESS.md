@@ -474,7 +474,7 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 - 帧流本身的 10 分钟自动停止、5 分钟 viewer 空闲自停（`src/screencast-guard.js`）行为不变：`tab.screencast` 计数（`frames`）仍是**每帧**累加，只有落盘被节流。
 - 未改协议/参数：`everyNthFrame` 默认仍为 2；提高它（例如 4）可以再降编码/传输成本，但那是画质/流畅度取舍，留给调用方。
 
-**回归**：`node test/headless.mjs` PASS（新增断言：stop 后 `latest.jpg` 是合法 JPEG、`meta.json.bytes` 与文件大小一致、`frames` 不超过流计数、`updatedAt` 新鲜）；`node test/host-reconnect.mjs` PASS（新增断言：连发两帧后磁盘上是**第二帧**——trailing flush 生效——且 meta 的 `frames`/`bytes` 与文件一致）；`node test/liveview.mjs`、`node test/extension-logic.mjs`、`npm test` PASS。
+**回归**：`node test/headless.mjs` PASS（新增断言：stop 后 `latest.jpg` 是合法 JPEG、`meta.json.bytes` 与文件大小一致、`frames` 不超过流计数、`updatedAt` 新鲜）；`node test/host-reconnect.mjs` PASS（新增断言：连发两帧后磁盘上是**第二帧**——trailing flush 生效——且 meta 的 `frames`/`bytes` 与文件一致）；`node test/liveview.mjs`、`node test/extension-logic.mjs`、`npm test` PASS。标准截图 bench（`node scripts/headless-bench.mjs --seconds 10`）不受影响：591 动作/10s、`screenshot` 14.93ms、每轮 16.91ms、每动作 CPU 16.35ms（改前同命令 575 动作、14.84ms、17.39ms、19.30ms——同分布/负载波动内）。
 
 ## 5. 下一步（H1）
 
