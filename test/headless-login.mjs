@@ -50,6 +50,28 @@ try {
   const child = spawned.filter((entry) => entry?.pid === 4242).at(-1)
   assert.equal(child.killed, 'SIGTERM')
   assert.equal(driver.loginStatus().running, false)
+
+  // Visible handoff: show the current page in a real window, then let the next
+  // headless request resume the same URL.
+  const shown = await driver.showVisible({ url: 'https://example.com/step' })
+  assert.equal(shown.running, true)
+  assert.equal(shown.visible, true)
+  assert.equal(shown.url, 'https://example.com/step')
+  assert.equal(driver.loginStatus().visible, true)
+  assert.equal(driver.loginStatus().resumeUrl, 'https://example.com/step')
+  const shownArgs = spawned.filter((entry) => Array.isArray(entry)).at(-1)[1]
+  assert.ok(shownArgs.includes('https://example.com/step'), JSON.stringify(shownArgs))
+  const finished = driver.loginFinish()
+  assert.equal(finished.stopped, true)
+  assert.equal(finished.resumeUrl, 'https://example.com/step')
+  assert.equal(driver.loginStatus().visible, false)
+  let protectedCode = null
+  try {
+    await driver.showVisible({ url: 'file:///etc/hosts' })
+  } catch (error) {
+    protectedCode = error?.code
+  }
+  assert.equal(protectedCode, 'PROTECTED_PAGE')
   console.log('HEADLESS LOGIN TEST: PASS')
 } finally {
   fs.rmSync(home, { recursive: true, force: true })

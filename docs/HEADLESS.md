@@ -87,6 +87,15 @@ chrome_status                              → desktop 仍 CONNECTED；headless 
 headless profile 默认不导入用户 Chrome 的 cookie；需要访问登录站点时用：
 
 ```text
+# 通用人工接管：把后台当前页面显示到屏幕，人工操作完再回后台
+chrome_headless_login {op:"show", url:"https://example.com/step"}
+  → 暂停 headless（关闭后台 Chrome），在同一 profile 的可见窗口打开该页面
+chrome_headless_login {op:"finish"}
+  → 关闭可见窗口；下一次 backend:"headless" 调用会在同一 profile 上恢复该 URL
+```
+
+```text
+# 一次性登录
 chrome_headless_login {op:"start", url:"https://example.com/login"}
   → 关闭正在跑的 headless Chrome（如有），打开一个**可见的专用 Chrome 窗口**（同一 profile）
   → 用户手动登录
@@ -95,7 +104,8 @@ chrome_headless_login {op:"finish"}
 chrome_headless_login {op:"status"}
 ```
 
-- `start` 每次都要 **硬确认**；detail 里写明 cookie 会落到 headless profile；
+- `start` / `show` 每次都要 **硬确认**；`show` 用于登录/CAPTCHA/支付/OTP 等必须人工的步骤；
+- `show` 会暂停当前 headless 会话，`finish` 后下一次 headless 调用自动回到同一 URL；
 - 登录窗口打开期间 headless backend 会拒绝请求（`HEADLESS_LOGIN_OPEN`）；
 - 这是唯一会把登录态写入 headless profile 的入口，日常 Chrome 不受影响。
 

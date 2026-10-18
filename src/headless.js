@@ -1244,6 +1244,8 @@ export class HeadlessDriver {
     this.lastActivity = Date.now()
     this.loginProcess = null
     this.loginProfile = path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'profile')
+    this.resumeUrl = null
+    this.visibleMode = false
     this.captures = new Map()
     this.captureByTab = new Map()
     this.nextCaptureSeq = 1
@@ -1711,7 +1713,9 @@ export class HeadlessDriver {
       return tab
     }
     if (entry.activeTabId != null) return entry.tabs.get(entry.activeTabId)
-    return this.attachTab(entry, 'about:blank')
+    const resumeUrl = this.resumeUrl
+    this.resumeUrl = null
+    return this.attachTab(entry, resumeUrl || 'about:blank')
   }
 
   async evalOn(tab, expression, { awaitPromise = false } = {}) {
@@ -3427,11 +3431,29 @@ export class HeadlessDriver {
     return { running: true, alreadyRunning: false, pid: child.pid ?? null, profile: this.loginProfile, url: target }
   }
 
+  async showVisible({ url } = {}) {
+    if (this.loginProcess) {
+      return { running: true, alreadyRunning: true, visible: true, pid: this.loginProcess.pid ?? null, profile: this.loginProfile, url: this.resumeUrl }
+    }
+    const active = [...this.tabs.values()].find((tab) => tab.url && tab.url !== 'about:blank')
+    const target = url || active?.url || 'about:blank'
+    if (url && !/^https?:\/\//i.test(String(url))) {
+      throw error('PROTECTED_PAGE', 'Only http(s) URLs are allowed.')
+    }
+    this.resumeUrl = target && target !== 'about:blank' ? String(target) : null
+    if (this.chrome || this.cdp || this.tabs.size > 0) await this.close()
+    this.visibleMode = true
+    const opened = await this.loginStart({ url: this.resumeUrl || 'about:blank' })
+    return { ...opened, visible: true, url: this.resumeUrl }
+  }
+
   loginStatus() {
     return {
       running: Boolean(this.loginProcess),
       pid: this.loginProcess?.pid ?? null,
       profile: this.loginProfile,
+      visible: this.visibleMode,
+      resumeUrl: this.resumeUrl,
     }
   }
 
@@ -3444,8 +3466,9 @@ export class HeadlessDriver {
       // already gone
     }
     this.loginProcess = null
-    this.logger?.info?.('headless login window closed')
-    return { running: false, stopped: true, profile: this.loginProfile }
+    this.visibleMode = false
+    this.logger?.info?.('headless visible window closed')
+    return { running: false, stopped: true, profile: this.loginProfile, resumeUrl: this.resumeUrl }
   }
 
   async close() {
@@ -3475,6 +3498,13 @@ export class HeadlessDriver {
       // ignore
     }
     this.chrome = null
+    this.tabs.clear()
+    this.owners.clear()
+    this.bySession.clear()
+    this.consoleBuffers.clear()
+    this.captures.clear()
+    this.captureByTab.clear()
+    this.visibleMode = false
   }
 }
 

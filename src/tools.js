@@ -1590,12 +1590,12 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   list.push({
     name: 'chrome_headless_login',
     description:
-      'Open a visible, dedicated Chrome window so the user can log in once; its cookies persist in the headless profile and are reused by backend:"headless" sessions. op="start" requires hard confirmation and closes the running headless browser first; op="finish" closes the login window; op="status" reports it.',
+      'Open a visible, dedicated Chrome window at a human-interaction step (login, CAPTCHA, payment, OTP) using the headless profile: op="start" opens about:blank, op="show" pauses the current headless session and reopens its current page in a visible window, op="finish" closes the visible window, op="status" reports it. The next backend:"headless" call resumes the page after show/finish. Requires hard confirmation.',
     parameters: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['start', 'status', 'finish'] },
-        url: { type: 'string', description: 'start: URL to open in the login window (default about:blank).' },
+        op: { type: 'string', enum: ['start', 'show', 'status', 'finish'] },
+        url: { type: 'string', description: 'start/show: http(s) URL (show defaults to the current headless page).' },
       },
       required: ['op'],
       additionalProperties: false,
@@ -1605,20 +1605,22 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         running: { type: 'boolean' },
         alreadyRunning: { type: 'boolean' },
         stopped: { type: 'boolean' },
+        visible: { type: 'boolean' },
         pid: {},
         profile: { type: 'string' },
+        resumeUrl: { type: 'string' },
         url: { type: 'string' },
       }),
       render: (args, value) => {
-        if (args?.op === 'start' && value.running) {
+        if ((args?.op === 'start' || args?.op === 'show') && value.running) {
           return renderText(
-            `Login window opened (pid ${value.pid ?? '?'}); log in there, then call chrome_headless_login {op:"finish"}.\nprofile: ${value.profile}\nThis window is visible on purpose; cookies persist in the headless profile only.`,
+            `Visible browser window opened (pid ${value.pid ?? '?'}) at ${value.url || value.resumeUrl || '(blank)'}; interact there, then call chrome_headless_login {op:"finish"}.\nprofile: ${value.profile}\nThe next backend:"headless" call resumes this page.`,
           )
         }
         if (args?.op === 'finish') {
-          return renderText(value.stopped ? 'Login window closed.' : 'No login window was open.')
+          return renderText(value.stopped ? `Visible window closed; headless will resume at ${value.resumeUrl || '(blank)'}.` : 'No visible window was open.')
         }
-        return renderText(`Login window: ${value.running ? `open (pid ${value.pid ?? '?'})` : 'closed'}\nprofile: ${value.profile}`)
+        return renderText(`Visible window: ${value.running ? `open (pid ${value.pid ?? '?'}, ${value.visible ? 'visible' : 'headless'})` : 'closed'}\nprofile: ${value.profile}`)
       },
     },
     async execute(args, exec) {
@@ -1641,6 +1643,16 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           site: null,
         })
         return driver.loginStart({ url: args?.url })
+      }
+      if (op === 'show') {
+        await hardConfirmAsk(exec, 'chrome_headless_login', {
+          header: '把后台浏览器显示到屏幕（人工操作）',
+          question: '允许暂停 headless 浏览器，并把当前页面在一个可见 Chrome 窗口中打开，供你手动操作吗？',
+          detail: '用于登录/CAPTCHA/支付/OTP 等必须人工的步骤；操作完调用 op:"finish" 关闭可见窗口，下一次 backend:"headless" 调用会回到同一页面。',
+          timeoutMs: evaluateConfirmTimeoutMs,
+          site: null,
+        })
+        return driver.showVisible({ url: args?.url })
       }
       if (op === 'finish') return driver.loginFinish()
       return driver.loginStatus()
