@@ -620,6 +620,14 @@ async function handleRequest(message) {
       return stopCapture(owner, params)
     case 'tab.capture_requests':
       return captureRequests(owner, params)
+    case 'tab.screencast_start':
+      return startScreencast(owner, params)
+    case 'tab.screencast_stop':
+      return stopScreencast(owner)
+    case 'tab.screencast_status':
+      return screencastStatus(owner)
+    case 'tab.debug_diag':
+      return readDiag()
     case 'tab.selection':
       return selection(owner, params)
     case 'tab.type':
@@ -872,6 +880,7 @@ function sessionFor(tabId) {
       target: { tabId },
       refs: 0,
       capture: null,
+      screencast: null,
       pageEnabled: false,
       interceptDialogs: false,
       dialogOptions: null,
@@ -882,15 +891,50 @@ function sessionFor(tabId) {
   return session
 }
 
+async function detachOrphanedTargets() {
+  try {
+    if (!chrome.debugger?.getTargets) return
+    const targets = await chrome.debugger.getTargets()
+    for (const target of targets || []) {
+      if (!target?.attached || !Number.isFinite(target.tabId)) continue
+      if (debuggerSessions.has(target.tabId)) continue
+      try {
+        await chrome.debugger.detach({ tabId: target.tabId })
+        diag('orphan-debugger-detached', { tabId: target.tabId })
+      } catch {
+        // another debugger owns it (DevTools); leave it alone
+      }
+    }
+  } catch {
+    // debugger API unavailable; nothing to recover
+  }
+}
+
 async function withDebugger(tabId, fn, options = {}) {
   const session = sessionFor(tabId)
   const { interceptDialogs = false, dialogOptions = null } = options
-  if (session.refs === 0 && !session.capture) {
+  if (session.refs === 0 && !session.capture && !session.screencast) {
     try {
       await chrome.debugger.attach(session.target, '1.3')
     } catch (error) {
-      debuggerSessions.delete(tabId)
-      throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
+      const message = error?.message || String(error)
+      let recovered = false
+      if (/Another debugger is already attached/i.test(message)) {
+        // A previous worker died while its session stayed attached. Detach the
+        // orphan (only succeeds when this extension owns it) and retry once.
+        try {
+          await chrome.debugger.detach({ tabId })
+          await chrome.debugger.attach(session.target, '1.3')
+          recovered = true
+          diag('orphan-debugger-reattached', { tabId })
+        } catch {
+          recovered = false
+        }
+      }
+      if (!recovered) {
+        debuggerSessions.delete(tabId)
+        throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${message}`)
+      }
     }
   }
   session.refs += 1
@@ -906,7 +950,7 @@ async function withDebugger(tabId, fn, options = {}) {
     session.refs -= 1
     session.interceptDialogs = false
     session.dialogOptions = null
-    if (session.refs === 0 && !session.capture) {
+    if (session.refs === 0 && !session.capture && !session.screencast) {
       debuggerSessions.delete(tabId)
       await chrome.debugger.detach(session.target).catch(() => {})
     }
@@ -933,6 +977,76 @@ async function evalInTarget(target, fn, args, timeoutMs = 10000) {
     throw bridgeError('INTERNAL', String(text))
   }
   return response?.result?.value
+}
+
+async function readDiag() {
+  const stored = await chrome.storage.local.get(DIAG_KEY)
+  const list = Array.isArray(stored?.[DIAG_KEY]) ? stored[DIAG_KEY] : []
+  return { entries: list.slice(-50) }
+}
+
+async function startScreencast(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  return withDebugger(tabId, async (session) => {
+    if (session.screencast) {
+      return { active: true, alreadyActive: true, tabId, format: session.screencast.format }
+    }
+    await chrome.debugger.sendCommand(session.target, 'Page.enable').catch(() => {})
+    const format = params.format === 'png' ? 'png' : 'jpeg'
+    const quality = Number.isFinite(params.quality) ? Math.max(1, Math.min(100, params.quality)) : 60
+    const everyNthFrame = Number.isFinite(params.everyNthFrame)
+      ? Math.max(1, Math.min(10, Math.trunc(params.everyNthFrame)))
+      : 2
+    // Set the state BEFORE starting: the first frame can arrive while the
+    // command promise is still pending, and an unacked first frame stalls the
+    // whole screencast (Chrome sends no further frames until ack).
+    session.screencast = { active: true, format, frames: 0, startedAt: Date.now(), lastAt: null }
+    try {
+      await chrome.debugger.sendCommand(session.target, 'Page.startScreencast', {
+        format,
+        quality,
+        maxWidth: 1280,
+        maxHeight: 800,
+        everyNthFrame,
+      })
+    } catch (error) {
+      session.screencast = null
+      throw error
+    }
+    diag('screencast-start', { owner: ownerShort(owner), tabId, format, everyNthFrame })
+    return { active: true, alreadyActive: false, tabId, format, everyNthFrame }
+  })
+}
+
+async function stopScreencast(owner) {
+  const tabId = await resolveOwnedTabId(owner)
+  return withDebugger(tabId, async (session) => {
+    const state = session.screencast
+    await chrome.debugger.sendCommand(session.target, 'Page.stopScreencast').catch(() => {})
+    session.screencast = null
+    diag('screencast-stop', { owner: ownerShort(owner), tabId, frames: state?.frames || 0 })
+    return {
+      active: false,
+      tabId,
+      frames: state?.frames || 0,
+      elapsedMs: state ? Date.now() - state.startedAt : 0,
+    }
+  })
+}
+
+async function screencastStatus(owner) {
+  const tabId = await resolveOwnedTabId(owner)
+  const session = debuggerSessions.get(tabId)
+  const state = session?.screencast
+  if (!state) return { active: false, tabId, frames: 0 }
+  return {
+    active: true,
+    tabId,
+    frames: state.frames,
+    startedAt: new Date(state.startedAt).toISOString(),
+    lastAt: state.lastAt ? new Date(state.lastAt).toISOString() : null,
+    format: state.format,
+  }
 }
 
 const captures = new Map()
@@ -3529,6 +3643,26 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       .catch(() => {})
     return
   }
+  if (method === 'Page.screencastFrame') {
+    if (!session.screencast) return
+    session.screencast.frames += 1
+    session.screencast.lastAt = Date.now()
+    chrome.debugger
+      .sendCommand(session.target, 'Page.screencastFrameAck', { sessionId: params?.sessionId })
+      .catch(() => {})
+    try {
+      port?.postMessage({
+        type: 'screencast-frame',
+        data: params?.data,
+        format: session.screencast.format,
+        metadata: params?.metadata || null,
+        frames: session.screencast.frames,
+      })
+    } catch {
+      // native port unavailable; frames are dropped
+    }
+    return
+  }
   if (String(method).startsWith('Network.')) {
     routeNetworkEvent(session, method, params)
   }
@@ -3575,6 +3709,7 @@ chrome.runtime.onConnect.addListener((keepalivePort) => {
 // clear alarms, so this cannot live only in onInstalled/onStartup: after a
 // reload race a dead worker with no alarm would never wake again.
 ensureReconnectAlarm()
+detachOrphanedTargets().catch(() => {})
 initActiveWindows().catch(() => {})
 if (!port) forceReconnect().catch(() => {})
 

@@ -74,6 +74,9 @@ host.stdout.on(
       'tab.upload': { ok: true, ref: 5, files: 1 },
       'browser.downloads': { items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z' }] },
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
+      'tab.screencast_start': { active: true, alreadyActive: false, tabId: 7, format: 'jpeg' },
+      'tab.screencast_stop': { active: false, tabId: 7, frames: 12, elapsedMs: 3000 },
+      'tab.screencast_status': { active: true, tabId: 7, frames: 12, startedAt: '2026-10-17T10:00:00.000Z', lastAt: '2026-10-17T10:00:03.000Z', format: 'jpeg' },
       'tab.resume': { ok: true, tabId: 7 },
       'tab.pick_start': { started: true, alreadyActive: false, tabId: 7 },
       'tab.pick_status': { available: true, active: false, done: true, canceled: false, result: { ref: 3, selector: '#greet', text: 'Greet', tag: 'button', box: [1, 2, 3, 4] } },
@@ -123,7 +126,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('thirty-eight tools registered', tools.length === 38, tools.map((t) => t.name).join(', '))
+check('thirty-nine tools registered', tools.length === 39, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -269,6 +272,15 @@ check('chrome_pick starts pick mode in the extension', requests.some((request) =
 const cancelValue = await byName.chrome_pick.execute({ cancel: true }, exec())
 check('chrome_pick cancel returns canceled', cancelValue?.canceled === true)
 check('chrome_pick cancel reaches the extension', requests.at(-1)?.method === 'tab.pick_cancel')
+
+// F1: chrome_screencast start/status/stop
+const screencastStart = await byName.chrome_screencast.execute({ op: 'start', quality: 50, everyNthFrame: 3 }, exec())
+check('chrome_screencast start activates', screencastStart?.active === true && screencastStart?.format === 'jpeg')
+check('screencast params reach the extension', requests.at(-2)?.method === 'tab.screencast_start' || requests.slice(-3).some((request) => request.method === 'tab.screencast_start'))
+const screencastStatus = await byName.chrome_screencast.execute({ op: 'status' }, exec())
+check('chrome_screencast status reports frames', screencastStatus?.frames === 12 && screencastStatus?.active === true)
+const screencastStop = await byName.chrome_screencast.execute({ op: 'stop' }, exec())
+check('chrome_screencast stop returns frame count', screencastStop?.active === false && screencastStop?.frames === 12)
 
 // F4: capture start has no config escape hatch
 const bypassTools = chromeTools({
@@ -438,7 +450,7 @@ const allowTools = evalTools(
   { ask: async () => ({ answers: [{ id: 'confirm', selected: ['允许一次'] }] }) },
 )
 const allowByName = Object.fromEntries(allowTools.map((definition) => [definition.name, definition]))
-check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 39 && Boolean(allowByName.chrome_evaluate))
+check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 40 && Boolean(allowByName.chrome_evaluate))
 const evalValue = await allowByName.chrome_evaluate.execute({ expression: '1 + 1' }, exec())
 check('evaluate returns the CDP value', evalValue?.value === 2 && evalValue?.type === 'number')
 check('evaluate params reach the extension', requests.at(-1)?.method === 'tab.evaluate' && requests.at(-1)?.params?.expression === '1 + 1')

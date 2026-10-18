@@ -177,6 +177,9 @@ const chrome = {
     async sendCommand(target, method, params) {
       debuggerCalls.push({ method, target, params })
       if (method === 'Page.enable') return {}
+      if (method === 'Page.startScreencast') return {}
+      if (method === 'Page.stopScreencast') return {}
+      if (method === 'Page.screencastFrameAck') return {}
       if (method === 'Network.enable') return {}
       if (method === 'Network.disable') return {}
       if (method === 'Network.getResponseBody') {
@@ -556,6 +559,17 @@ const resumed = await sandbox.handleRequest({ method: 'tab.resume', params: { ow
 check('tab.resume clears the pause', resumed?.ok === true)
 const afterResume = await sandbox.handleRequest({ method: 'tab.click', params: { ref: 1, owner: 's1' }, id: 'click-after-resume' })
 check('click works again after resume', afterResume?.ok === true)
+
+// F1: screencast dispatch + frame counter (host writes frames to disk)
+const castStart = await sandbox.handleRequest({ method: 'tab.screencast_start', params: { owner: 's1', quality: 50 }, id: 'cast-start' })
+check('tab.screencast_start dispatches', castStart?.active === true)
+for (const listener of eventListeners) {
+  listener({ tabId: 7 }, 'Page.screencastFrame', { sessionId: 's1', data: 'AA==', metadata: { timestamp: 1 } })
+}
+const castStatus = await sandbox.handleRequest({ method: 'tab.screencast_status', params: { owner: 's1' }, id: 'cast-status' })
+check('tab.screencast_status counts frames', castStatus?.active === true && castStatus?.frames === 1)
+const castStop = await sandbox.handleRequest({ method: 'tab.screencast_stop', params: { owner: 's1' }, id: 'cast-stop' })
+check('tab.screencast_stop dispatches', castStop?.active === false && castStop?.frames === 1)
 
 // C2a: capture metadata, pin, redaction and freeze
 const emitNetwork = (method, params) => {

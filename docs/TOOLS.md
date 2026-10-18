@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：38
+> 工具数量：39
 
 ### `chrome_status`
 
@@ -222,6 +222,18 @@ Read the recent site-policy audit log (~/.dsh/cache/dsh-chrome/audit.jsonl): tim
 |---|---|---|---|
 | `limit` | number | no | Max entries returned (default 20, max 100). |
 | `origin` | string | no | Only entries for this origin. |
+
+### `chrome_screencast`
+
+Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image, op="stop" ends the stream; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `op` | enum(start | stop | status | diag) | yes |  |
+| `format` | enum(jpeg | png) | no | start: frame format (default jpeg). |
+| `quality` | number | no | start: JPEG quality 1-100 (default 60). |
+| `everyNthFrame` | number | no | start: deliver every Nth frame, 1-10 (default 2). |
+| `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_shots`
 

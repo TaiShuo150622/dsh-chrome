@@ -1332,6 +1332,127 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   })
 
+  // ----------------------------------------------------- 4j. screencast
+  list.push({
+    name: 'chrome_screencast',
+    description:
+      'Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image, op="stop" ends the stream; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.',
+    parameters: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['start', 'stop', 'status', 'diag'] },
+        format: { type: 'string', enum: ['jpeg', 'png'], description: 'start: frame format (default jpeg).' },
+        quality: { type: 'number', description: 'start: JPEG quality 1-100 (default 60).' },
+        everyNthFrame: { type: 'number', description: 'start: deliver every Nth frame, 1-10 (default 2).' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['op'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        active: { type: 'boolean' },
+        tabId: {},
+        format: { type: 'string' },
+        frames: {},
+        startedAt: { type: 'string' },
+        lastAt: {},
+        updatedAt: {},
+        bytes: {},
+        path: { type: 'string' },
+        metaPath: { type: 'string' },
+        image: {},
+      }),
+      render: (args, value) => {
+        if (args?.op === 'diag') {
+          const entries = Array.isArray(value?.entries) ? value.entries : []
+          return renderText(JSON.stringify(entries.slice(-12), null, 1))
+        }
+        const blocks = []
+        if (value.image) blocks.push({ type: 'image', attachment: value.image })
+        if (value.active) {
+          blocks.push({
+            type: 'text',
+            text: `Screencast active (${value.format || 'jpeg'}), frames=${value.frames ?? '—'}${value.path ? `\nlatest frame: ${value.path}` : '\nwaiting for the first frame…'}`,
+          })
+        } else {
+          blocks.push({
+            type: 'text',
+            text: value.frames != null
+              ? `Screencast stopped; frames=${value.frames}${value.elapsedMs != null ? ` in ${value.elapsedMs}ms` : ''}`
+              : 'Screencast inactive',
+          })
+        }
+        return blocks
+      },
+    },
+    async execute(args, exec) {
+      const op = String(args?.op || 'status')
+      const owner = ownerOf(exec)
+      if (op === 'start') {
+        const started = await call(
+          'tab.screencast_start',
+          {
+            format: args?.format,
+            quality: args?.quality,
+            everyNthFrame: args?.everyNthFrame,
+            tabId: args?.tabId,
+            owner,
+          },
+          30000,
+        )
+        return { ...started, path: screencastLatestPath() }
+      }
+      if (op === 'stop') {
+        return call('tab.screencast_stop', { owner }, 30000)
+      }
+      if (op === 'diag') {
+        return call('tab.debug_diag', { owner }, 15000)
+      }
+      if (op === 'status') {
+        const status = await call('tab.screencast_status', { owner }, 15000)
+        const directory = path.join(dshHome(), 'cache', 'dsh-chrome', 'screencast')
+        const metaPath = path.join(directory, 'meta.json')
+        let meta = null
+        try {
+          meta = JSON.parse(await fsp.readFile(metaPath, 'utf8'))
+        } catch {
+          meta = null
+        }
+        let image = null
+        let bytes = null
+        const file = screencastLatestPath()
+        try {
+          const data = await fsp.readFile(file)
+          bytes = data.byteLength
+          const service = attachments?.()
+          if (service) {
+            image = await service.saveImage({
+              data: new Uint8Array(data),
+              mediaType: /\.png$/.test(file) ? 'image/png' : 'image/jpeg',
+              name: path.basename(file),
+            })
+          }
+        } catch {
+          image = null
+        }
+        return {
+          ...status,
+          updatedAt: meta?.updatedAt ? new Date(meta.updatedAt).toISOString() : null,
+          bytes,
+          path: file,
+          metaPath,
+          image,
+        }
+      }
+      throw new BridgeError('INVALID_ARGUMENT', `unknown screencast op: ${op}`)
+    },
+  })
+
+  function screencastLatestPath() {
+    return path.join(dshHome(), 'cache', 'dsh-chrome', 'screencast', 'latest.jpg')
+  }
+
   // ---------------------------------------------------------- 4i. shots
   list.push({
     name: 'chrome_shots',

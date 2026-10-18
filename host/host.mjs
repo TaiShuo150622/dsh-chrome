@@ -25,6 +25,7 @@ const cacheDir = path.join(home, 'cache', 'dsh-chrome')
 const logPath = path.join(cacheDir, 'host.log')
 const discoveryPath = path.join(cacheDir, 'bridge.json')
 const updateStatePath = path.join(cacheDir, 'update-state.json')
+const screencastDir = path.join(cacheDir, 'screencast')
 const updateLogPath = path.join(cacheDir, 'update.log')
 
 let socket = null
@@ -215,7 +216,38 @@ function writeNative(message) {
   process.stdout.write(Buffer.concat([header, body]))
 }
 
+function materializeScreencastFrame(message) {
+  try {
+    const data = String(message?.data || '')
+    if (!data) return
+    fs.mkdirSync(screencastDir, { recursive: true })
+    const format = message.format === 'png' ? 'png' : 'jpg'
+    const file = path.join(screencastDir, `latest.${format}`)
+    const buffer = Buffer.from(data, 'base64')
+    const tmp = `${file}.${process.pid}.tmp`
+    fs.writeFileSync(tmp, buffer, { mode: 0o600 })
+    fs.renameSync(tmp, file)
+    fs.writeFileSync(
+      path.join(screencastDir, 'meta.json'),
+      `${JSON.stringify({
+        updatedAt: Date.now(),
+        format,
+        bytes: buffer.length,
+        frames: message.frames ?? null,
+        metadata: message.metadata ?? null,
+      })}\n`,
+      { mode: 0o600 },
+    )
+  } catch {
+    // screencast frames are best effort
+  }
+}
+
 function handleNativeMessage(message) {
+  if (message?.type === 'screencast-frame') {
+    materializeScreencastFrame(message)
+    return
+  }
   if (!authed || !socket || socket.destroyed) {
     log('dropping native message: bridge not connected')
     return

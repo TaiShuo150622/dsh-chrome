@@ -13,6 +13,16 @@
 
 ## [Unreleased]
 
+### Added（P1 F1 spike：screencast 帧流）
+
+- `chrome_screencast`（第 39 个工具）：`op=start/stop/status/diag`
+  - CDP `Page.startScreencast` → 扩展 ack/转发 → native host 原子写 `~/.dsh/cache/dsh-chrome/screencast/latest.jpg` + meta.json
+  - `status` 返回最新帧图片附件 + frames/updatedAt
+- 修复：screencast 首帧必须先置状态再发 start（否则不 ack，后续无帧）
+- 修复：pinned screencast 会话不被 withDebugger 重新 attach 打断
+- 修复：worker 重启后清扫 orphan debugger target，attach 冲突时 detach 重试
+- 扩展 0.1.85；`docs/SCREENCAST-SPIKE.md` 记录方案与剩余 viewer 工作
+
 ### Changed（P1 F4：安全收口）
 
 - **移除抓包 start 的 `captureConfirm:"follow-dsh"` 逃逸口**：0.1.76 起 capture start 固定硬确认，没有配置旁路
