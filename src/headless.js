@@ -248,12 +248,15 @@ class Cdp {
 
 // --------------------------------------------------------- page-side helpers
 function snapshotPage(maxChars, boxes) {
-  const visible = (el) => {
-    if (!el) return false
+  // One rect read per candidate: the same rect is reused for visibility and,
+  // when requested, for the control's box coordinates.
+  const visibleRect = (el) => {
+    if (!el) return null
     const rect = el.getBoundingClientRect()
-    if (rect.width <= 1 || rect.height <= 1) return false
+    if (rect.width <= 1 || rect.height <= 1) return null
     const style = getComputedStyle(el)
-    return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0'
+    if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') return null
+    return rect
   }
   const labelOf = (el) => {
     const direct = el.getAttribute('aria-label') || el.getAttribute('title')
@@ -284,7 +287,8 @@ function snapshotPage(maxChars, boxes) {
   )
   const controls = []
   for (const el of all) {
-    if (!visible(el)) continue
+    const rect = visibleRect(el)
+    if (!rect) continue
     let ref = explicitRefs.get(el)
     if (!ref) {
       const existing = Number(el.getAttribute('data-dsh-ref'))
@@ -303,17 +307,18 @@ function snapshotPage(maxChars, boxes) {
     const value = rawValue != null && rawValue !== '' ? String(rawValue).slice(0, 80) : undefined
     const control = { ref, tag, kind, label: labelOf(el), ...(value ? { value } : {}) }
     if (boxes) {
-      const rect = el.getBoundingClientRect()
       control.box = [Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height)]
     }
     controls.push(control)
   }
-  const text = (document.body?.innerText || '').slice(0, maxChars)
+  // body.innerText forces a layout: read it once and derive both text and the
+  // truncation flag from the same string.
+  const bodyText = document.body?.innerText || ''
   return {
     title: document.title || '',
     url: location.href,
-    text,
-    truncated: (document.body?.innerText || '').length > maxChars,
+    text: bodyText.slice(0, maxChars),
+    truncated: bodyText.length > maxChars,
     controls,
     frameCount: 1,
     frames: [{ frameId: 'main', prefix: '', parentFrameId: null, url: location.href, title: document.title || '', controls: [] }],
@@ -349,6 +354,10 @@ function clickPage(ref, selector, clickCount, button) {
     ok: true,
     tag: el.tagName.toLowerCase(),
     label: (el.getAttribute('aria-label') || el.innerText || el.value || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    // Returned inline so the driver can refresh its tab cache without a second
+    // Runtime.evaluate round trip after every click.
+    url: location.href,
+    title: document.title || '',
   }
 }
 
@@ -506,8 +515,16 @@ function dragPage(fromRef, toRef) {
 
 const PAGE_HELPERS = { snapshotPage, clickPage, typePage, currentSelection, findPage, selectPage, dragPage }
 
+// Function.prototype.toString() is not free; serialize each page helper once.
+const helperSources = new Map()
+
 function pageCall(name, args) {
-  return `(() => { const fn = ${PAGE_HELPERS[name].toString()}; return fn(...${JSON.stringify(args)}); })()`
+  let source = helperSources.get(name)
+  if (!source) {
+    source = PAGE_HELPERS[name].toString()
+    helperSources.set(name, source)
+  }
+  return `(() => { const fn = ${source}; return fn(...${JSON.stringify(args)}); })()`
 }
 
 // ------------------------------------------------------------------ driver
@@ -524,6 +541,8 @@ export class HeadlessDriver {
     this.nextTabId = 1
     this.startPromise = null
     this.screenshotDir = path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'screenshots')
+    this.screenshotDirReady = false
+    this.screenshotSeq = 0
     this.downloadDir = path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'downloads')
     this.bySession = new Map()
     this.consoleBuffers = new Map()
@@ -902,6 +921,34 @@ export class HeadlessDriver {
     return tab
   }
 
+  async ensureScreenshotDir() {
+    if (this.screenshotDirReady) return
+    await fsp.mkdir(this.screenshotDir, { recursive: true })
+    this.screenshotDirReady = true
+  }
+
+  async writeCaptureFile(file, data) {
+    await this.ensureScreenshotDir()
+    try {
+      await fsp.writeFile(file, data, { mode: 0o600 })
+    } catch {
+      // the cache directory may have been removed underneath us; recreate once
+      await fsp.mkdir(this.screenshotDir, { recursive: true })
+      await fsp.writeFile(file, data, { mode: 0o600 })
+    }
+  }
+
+  // The headless window is fixed for the process lifetime, so innerWidth /
+  // innerHeight only change through tab.emulate: cache them per tab instead of
+  // paying a Runtime.evaluate on every screenshot.
+  async viewportSize(tab) {
+    if (!tab.viewport) {
+      const meta = await this.evalOn(tab, '({ w: innerWidth, h: innerHeight })')
+      tab.viewport = { w: meta?.w || 0, h: meta?.h || 0 }
+    }
+    return tab.viewport
+  }
+
   async pageAction(tab, name, args, timeoutMs = 15000) {
     return this.evalOn(tab, pageCall(name, args))
   }
@@ -1025,6 +1072,7 @@ export class HeadlessDriver {
         const tab = await this.ensureTab(owner, params.tabId)
         if (params.reset) {
           await this.cdp.send('Emulation.clearDeviceMetricsOverride', {}, tab.sessionId)
+          tab.viewport = null
           return { applied: false, reloaded: false, viewport: { width: 0, height: 0, mobile: false } }
         }
         const width = Math.max(100, Number(params.width) || 1280)
@@ -1035,19 +1083,25 @@ export class HeadlessDriver {
           { width, height, deviceScaleFactor: 1, mobile },
           tab.sessionId,
         )
+        tab.viewport = mobile ? null : { w: width, h: height }
         return { applied: true, reloaded: false, viewport: { width, height, mobile } }
       }
       case 'tab.snapshot': {
         const tab = await this.ensureTab(owner, params.tabId)
-        await this.syncTabMeta(tab)
+        // snapshotPage already reports title/url, so no extra syncTabMeta round trip.
         const value = await this.pageAction(tab, 'snapshotPage', [params.maxChars || 100000, Boolean(params.boxes)])
-        return { ...value, mode: params.mode === 'delta' ? 'full' : 'full' }
+        if (value) {
+          tab.title = value.title || ''
+          if (value.url) tab.url = value.url
+        }
+        return { ...value, mode: 'full' }
       }
       case 'tab.click': {
         const tab = await this.ensureTab(owner, params.tabId)
         const result = await this.pageAction(tab, 'clickPage', [params.ref ?? null, params.selector ?? null, params.clickCount || 1, params.button === 'right' ? 2 : params.button === 'middle' ? 1 : 0])
         if (!result?.ok) throw error(result?.code || 'REF_NOT_FOUND', result?.message || 'click failed')
-        await this.syncTabMeta(tab)
+        if (result.url) tab.url = result.url
+        if (result.title != null) tab.title = result.title
         return { ok: true, tag: result.tag, label: result.label, tabId: tab.tabId }
       }
       case 'tab.type': {
@@ -1074,12 +1128,12 @@ export class HeadlessDriver {
         const tab = await this.ensureTab(owner, params.tabId)
         const amount = Number(params.amount || 600)
         const direction = String(params.direction || 'down')
-        if (direction === 'top' || direction === 'bottom') {
-          await this.evalOn(tab, `window.scrollTo(0, ${direction === 'top' ? 0 : 'document.body.scrollHeight'})`)
-        } else {
-          await this.evalOn(tab, `window.scrollBy(0, ${direction === 'up' ? -amount : amount})`)
-        }
-        const pos = await this.evalOn(tab, '({ x: window.scrollX, y: window.scrollY })')
+        // Scroll and read the resulting position in a single evaluate.
+        const expression =
+          direction === 'top' || direction === 'bottom'
+            ? `(window.scrollTo(0, ${direction === 'top' ? 0 : 'document.body.scrollHeight'}), { x: window.scrollX, y: window.scrollY })`
+            : `(window.scrollBy(0, ${direction === 'up' ? -amount : amount}), { x: window.scrollX, y: window.scrollY })`
+        const pos = await this.evalOn(tab, expression)
         return { ok: true, tabId: tab.tabId, x: pos?.x ?? 0, y: pos?.y ?? 0 }
       }
       case 'tab.press': {
@@ -1118,21 +1172,37 @@ export class HeadlessDriver {
       }
       case 'tab.screenshot': {
         const tab = await this.ensureTab(owner, params.tabId)
-        const shot = await this.cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: Boolean(params.fullPage) }, tab.sessionId)
-        await fsp.mkdir(this.screenshotDir, { recursive: true })
-        const file = path.join(this.screenshotDir, `headless-${Date.now()}.png`)
+        const format = params.format === 'jpeg' ? 'jpeg' : 'png'
+        const captureParams = { format, captureBeyondViewport: Boolean(params.fullPage) }
+        if (format === 'jpeg') {
+          captureParams.quality = Math.max(1, Math.min(100, Number(params.quality) || 70))
+        } else if (params.optimizeForSpeed !== false) {
+          // Fast PNG encoder: ~20% less screenshot CPU on content-heavy pages,
+          // at the cost of a larger (still lossless) PNG. Opt out per call.
+          captureParams.optimizeForSpeed = true
+        }
+        const shot = await this.cdp.send('Page.captureScreenshot', captureParams, tab.sessionId)
         const data = Buffer.from(shot.data, 'base64')
-        await fsp.writeFile(file, data, { mode: 0o600 })
-        const meta = await this.evalOn(tab, '({ w: innerWidth, h: innerHeight })')
-        return { path: file, mediaType: 'image/png', width: meta?.w || 0, height: meta?.h || 0, bytes: data.byteLength }
+        this.screenshotSeq += 1
+        const extension = format === 'jpeg' ? 'jpg' : 'png'
+        const file = path.join(this.screenshotDir, `headless-${Date.now()}-${this.screenshotSeq}.${extension}`)
+        await this.writeCaptureFile(file, data)
+        const viewport = await this.viewportSize(tab)
+        return {
+          path: file,
+          mediaType: format === 'jpeg' ? 'image/jpeg' : 'image/png',
+          width: viewport.w,
+          height: viewport.h,
+          bytes: data.byteLength,
+        }
       }
       case 'tab.pdf': {
         const tab = await this.ensureTab(owner, params.tabId)
         const pdf = await this.cdp.send('Page.printToPDF', { printBackground: true }, tab.sessionId)
-        await fsp.mkdir(this.screenshotDir, { recursive: true })
-        const file = path.join(this.screenshotDir, `headless-${Date.now()}.pdf`)
         const data = Buffer.from(pdf.data, 'base64')
-        await fsp.writeFile(file, data, { mode: 0o600 })
+        this.screenshotSeq += 1
+        const file = path.join(this.screenshotDir, `headless-${Date.now()}-${this.screenshotSeq}.pdf`)
+        await this.writeCaptureFile(file, data)
         return { path: file, bytes: data.byteLength }
       }
       case 'tab.evaluate': {
