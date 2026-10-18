@@ -107,7 +107,39 @@ try {
   assert.ok(fs.existsSync(jpegShot.path))
   const jpegBytes = fs.readFileSync(jpegShot.path)
   assert.deepEqual([...jpegBytes.subarray(0, 3)], [0xff, 0xd8, 0xff])
+  assert.deepEqual([...jpegBytes.subarray(-2)], [0xff, 0xd9])
   assert.ok(jpegShot.bytes > 1000)
+  // JPEG takes the same frame-stream path as PNG (the stream switches format).
+  // A couple of requests make this independent of first-frame timing after the
+  // PNG -> JPEG restart: once a frame is cached, unchanged pages must reuse it.
+  const jpegBefore = (await driver.request('tab.debug_diag')).tabs.find((tab) => tab.tabId === gone.tabId)?.screenshotStream
+  await driver.request('tab.screenshot', { owner: 's1', format: 'jpeg', quality: 60 })
+  const jpegShot3 = await driver.request('tab.screenshot', { owner: 's1', format: 'jpeg', quality: 60 })
+  const jpegShot4 = await driver.request('tab.screenshot', { owner: 's1', format: 'jpeg', quality: 60 })
+  const jpegDiag = (await driver.request('tab.debug_diag')).tabs.find((tab) => tab.tabId === gone.tabId)?.screenshotStream
+  assert.equal(jpegDiag.format, 'jpeg', `jpeg stream format: ${JSON.stringify(jpegDiag)}`)
+  assert.equal(jpegDiag.quality, 60, `jpeg stream quality: ${JSON.stringify(jpegDiag)}`)
+  assert.ok(
+    jpegDiag.served > (jpegBefore?.served || 0),
+    `jpeg screenshot was not served from the frame stream: ${JSON.stringify({ jpegBefore, jpegDiag })}`,
+  )
+  assert.deepEqual(
+    fs.readFileSync(jpegShot4.path),
+    fs.readFileSync(jpegShot3.path),
+    'unchanged page must reuse the same JPEG frame bytes',
+  )
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("out").textContent = "jpeg-freshness"' })
+  const jpegShot5 = await driver.request('tab.screenshot', { owner: 's1', format: 'jpeg', quality: 60 })
+  assert.notDeepEqual(
+    fs.readFileSync(jpegShot5.path),
+    fs.readFileSync(jpegShot4.path),
+    'JPEG screenshot after a page change must not be stale',
+  )
+  // Switching back to PNG restarts the stream with the PNG encoder.
+  const pngAgain = await driver.request('tab.screenshot', { owner: 's1' })
+  assert.equal(pngAgain.mediaType, 'image/png')
+  const pngAgainDiag = (await driver.request('tab.debug_diag')).tabs.find((tab) => tab.tabId === gone.tabId)?.screenshotStream
+  assert.equal(pngAgainDiag.format, 'png', `png stream after jpeg: ${JSON.stringify(pngAgainDiag)}`)
 
   const tabs = await driver.request('tab.tabs', { owner: 's1', op: 'list' })
   assert.equal(tabs.tabs.length, 1)

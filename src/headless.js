@@ -70,17 +70,20 @@ const CAPTURE_MAX_DURATION_MS = 10 * 60 * 1000
 const CAPTURE_DEFAULT_MAX_ENTRIES = 300
 const CAPTURE_HARD_MAX_ENTRIES = 1000
 
-// Screenshot frame streaming (see docs/HEADLESS.md §4.1): while a tab is being
-// screenshotted repeatedly, keep a short-lived PNG screencast running and serve
-// `tab.screenshot` from the compositor's own frames. Chrome encodes a
+// Screenshot frame streaming (see docs/HEADLESS.md §4.1.1): while a tab is
+// being screenshotted repeatedly, keep a short-lived screencast running and
+// serve `tab.screenshot` from the compositor's own frames. Chrome encodes a
 // screencast PNG with the same encoder as Page.captureScreenshot (the bytes are
 // identical for identical content), but the frame is produced off the request
 // path, so a shot costs one compositor frame interval (~16ms) instead of a full
-// capture (~44ms). A driver-side change marker plus the frame timestamp
-// guarantee the returned frame includes the latest tab action; when that cannot
-// be established the call falls back to a capture (first frame missing) or to
-// the latest painted frame (visible page that produced no repaint), so
-// screenshots never silently return a picture older than the last action.
+// capture (~44ms). JPEG requests use a JPEG screencast through the same cache:
+// the frame is cheaper to encode, and capture would otherwise cost ~44ms.
+// A driver-side change marker plus the frame timestamp guarantee the returned
+// frame includes the latest tab action; when that cannot be established the
+// call falls back to a capture (first frame missing) or to the latest painted
+// frame (visible page that produced no repaint), so screenshots never silently
+// return a picture older than the last action.
+const SHOT_STREAM_ENABLED = process.env.DSH_HEADLESS_SHOT_STREAM !== '0'
 const SHOT_STREAM_IDLE_MS = Math.max(250, Number(process.env.DSH_HEADLESS_SHOT_STREAM_IDLE_MS) || 2000)
 const SHOT_STREAM_FRAME_TIMEOUT_MS = Math.max(20, Number(process.env.DSH_HEADLESS_SHOT_STREAM_FRAME_TIMEOUT_MS) || 40)
 const SHOT_STREAM_FIRST_FRAME_TIMEOUT_MS = Math.max(50, Number(process.env.DSH_HEADLESS_FIRST_FRAME_TIMEOUT_MS) || 150)
@@ -1066,6 +1069,8 @@ export class HeadlessDriver {
         repaintMisses: 0,
         failures: 0,
         disabledUntil: 0,
+        format: 'png',
+        quality: 0,
         maxWidth: 0,
         maxHeight: 0,
         startedAt: 0,
@@ -1077,10 +1082,12 @@ export class HeadlessDriver {
     return tab.shotStream
   }
 
-  async ensureShotStream(tab) {
+  async ensureShotStream(tab, { format = 'png', quality = 0 } = {}) {
+    if (!SHOT_STREAM_ENABLED) return null
     // The live viewer owns Page.startScreencast while it runs; screenshots fall
     // back to Page.captureScreenshot rather than fighting over the stream.
     if (tab.screencast?.active) return null
+    const streamQuality = format === 'jpeg' ? quality : 0
     const state = this.shotStreamState(tab)
     const now = Date.now()
     if (state.disabledUntil > now) return null
@@ -1089,18 +1096,25 @@ export class HeadlessDriver {
     const maxWidth = Math.max(1, Math.round((viewport.w || 0) * dpr))
     const maxHeight = Math.max(1, Math.round((viewport.h || 0) * dpr))
     if (state.active) {
-      if (state.maxWidth === maxWidth && state.maxHeight === maxHeight) return state
+      if (
+        state.maxWidth === maxWidth &&
+        state.maxHeight === maxHeight &&
+        state.format === format &&
+        state.quality === streamQuality
+      ) {
+        return state
+      }
+      // A PNG frame cannot serve a JPEG request (or a different JPEG quality),
+      // so switch the stream instead of returning the cached frame.
       await this.stopShotStream(tab)
     }
     // A hidden target (any non-active headless tab) is not composited, so its
     // screencast would never produce a frame. Keep the capture path there.
     if (!(await this.pageVisible(tab))) return null
     try {
-      await this.cdp.send(
-        'Page.startScreencast',
-        { format: 'png', maxWidth, maxHeight, everyNthFrame: 1 },
-        tab.sessionId,
-      )
+      const params = { format, maxWidth, maxHeight, everyNthFrame: 1 }
+      if (format === 'jpeg') params.quality = quality
+      await this.cdp.send('Page.startScreencast', params, tab.sessionId)
     } catch {
       state.failures += 1
       if (state.failures >= SHOT_STREAM_FAILURES_BEFORE_BACKOFF) state.disabledUntil = now + SHOT_STREAM_BACKOFF_MS
@@ -1109,6 +1123,8 @@ export class HeadlessDriver {
     state.active = true
     state.frames = 0
     state.last = null
+    state.format = format
+    state.quality = streamQuality
     state.maxWidth = maxWidth
     state.maxHeight = maxHeight
     state.startedAt = now
@@ -1196,8 +1212,8 @@ export class HeadlessDriver {
   // and a capture would force a repaint just to show the same pixels. The wait
   // is longer for the very first frame of a new stream (Chrome has to start the
   // capture pipeline), where there is no cached frame to fall back on.
-  async screenshotFromStream(tab) {
-    const state = await this.ensureShotStream(tab)
+  async screenshotFromStream(tab, options = {}) {
+    const state = await this.ensureShotStream(tab, options)
     if (!state) return null
     const changeAt = tab.renderChangeAt || 0
     let frame = state.last && state.last.composedAt >= changeAt ? state.last : null
@@ -1475,19 +1491,19 @@ export class HeadlessDriver {
       case 'tab.screenshot': {
         const tab = await this.ensureTab(owner, params.tabId)
         const format = params.format === 'jpeg' ? 'jpeg' : 'png'
-        // A plain viewport PNG (the common case) is served from the compositor's
-        // own frames. Anything that needs a crop, JPEG encoding, the slow-PNG
-        // opt-out, or a full-page capture keeps the exact
+        const quality = Math.max(1, Math.min(100, Number(params.quality) || 70))
+        // A plain viewport shot (the common case for both formats) is served
+        // from the compositor's own frames. Anything that needs a crop, the
+        // slow-PNG opt-out, or a full-page capture keeps the exact
         // Page.captureScreenshot path.
         const needsCapture =
           Boolean(params.fullPage || params.clip || params.ref != null || params.frameRef || params.highlight) ||
-          format === 'jpeg' ||
-          params.optimizeForSpeed === false
-        let data = needsCapture ? null : await this.screenshotFromStream(tab)
+          (format === 'png' && params.optimizeForSpeed === false)
+        let data = needsCapture ? null : await this.screenshotFromStream(tab, { format, quality })
         if (!data) {
           const captureParams = { format, captureBeyondViewport: Boolean(params.fullPage) }
           if (format === 'jpeg') {
-            captureParams.quality = Math.max(1, Math.min(100, Number(params.quality) || 70))
+            captureParams.quality = quality
           } else if (params.optimizeForSpeed !== false) {
             // Fast PNG encoder: ~20% less screenshot CPU on content-heavy pages,
             // at the cost of a larger (still lossless) PNG. Opt out per call.
@@ -1827,6 +1843,8 @@ export class HeadlessDriver {
               screenshotStream: stream
                 ? {
                     active: stream.active,
+                    format: stream.format,
+                    quality: stream.quality,
                     frames: stream.frames,
                     served: stream.served,
                     fallbacks: stream.fallbacks,

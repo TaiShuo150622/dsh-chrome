@@ -11,20 +11,23 @@
  * The scenario is the same as the 2026-10-17 baseline in docs/HEADLESS.md §4.1
  * (181 rounds/10s, 69.89% CPU, 1113MB RSS): `BASELINE` below is that original
  * pre-optimization reference, so `delta` tells the historical story. Current
- * numbers (screenshot frame stream, §4.1.1) are ~585 rounds/10s at ~17ms per
- * round; when a faster path completes more actions in the same 10s, the
- * aggregate `cpuPercent` rises even though `cpuMsPerAction` falls — use
- * `cpuMsPerAction` and `perActionMs` to compare efficiency across revisions.
+ * numbers (screenshot frame stream, §4.1.1/§4.1.2) are ~585 rounds/10s at ~17ms
+ * per round for PNG and ~575 rounds/10s for JPEG; when a faster path completes
+ * more actions in the same 10s, the aggregate `cpuPercent` rises even though
+ * `cpuMsPerAction` falls — use `cpuMsPerAction` and `perActionMs` to compare
+ * efficiency across revisions.
  *
  * Usage:
  *   node scripts/headless-bench.mjs [--seconds 10] [--actions 20]
  *                                   [--shot-format png|jpeg] [--shot-quality 60]
  *                                   [--no-optimize]
  *
- * The PNG path defaults to Chrome's fast PNG encoder (`optimizeForSpeed`).
- * `--no-optimize` measures the old, smaller-PNG path; `--shot-format jpeg`
- * measures the optional JPEG path (not the tool default). The action cap is
- * ACTIONS*50 so the default 10s run is time-bound rather than cap-bound.
+ * Both formats are served from the tab's screenshot frame stream (PNG or JPEG
+ * screencast). The PNG path defaults to Chrome's fast PNG encoder
+ * (`optimizeForSpeed`); `--no-optimize` measures the old, smaller-PNG capture
+ * path. `--shot-format jpeg` measures the JPEG path (not the tool default) with
+ * `--shot-quality`. The action cap is ACTIONS*50 so the default 10s run is
+ * time-bound rather than cap-bound.
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
