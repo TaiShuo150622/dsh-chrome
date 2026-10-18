@@ -11,6 +11,7 @@ const page = `<!doctype html><html><head><title>Overlay Test</title></head><body
 <p>Highlight this sentence for the annotation test.</p>
 <button>Action</button>
 <input placeholder="field">
+<iframe id="child" srcdoc="<button id='frame-btn'>Frame Button</button><p>Frame text</p>"></iframe>
 </body></html>`
 
 const server = http.createServer((req, res) => {
@@ -61,6 +62,37 @@ try {
   assert.equal((await overlay({ op: 'list' })).count, 4)
   assert.equal((await overlay({ op: 'clear' })).ok, true)
   assert.equal((await overlay({ op: 'list' })).count, 0)
+
+  // Persistence/export: annotations auto-save per URL and survive a reload.
+  const persisted = await overlay({ op: 'box', selector: 'button', label: 'persist' })
+  assert.equal(persisted.ok, true)
+  const exported = await overlay({ op: 'export' })
+  assert.equal(exported.ok, true)
+  assert.equal(exported.count, 1)
+  assert.equal(typeof exported.json, 'string')
+  await driver.request('tab.goto', { owner: 's1', url: `http://127.0.0.1:${port}/` })
+  const restored = await overlay({ op: 'list' })
+  assert.equal(restored.count, 1, 'annotations should restore after reload')
+  assert.equal((await overlay({ op: 'clear' })).ok, true)
+
+  // iframe: frame:true searches every frame and returns the matching frameId.
+  await driver.request('tab.goto', { owner: 's1', url: `http://127.0.0.1:${port}/` })
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  const frameBox = await driver.request('tab.overlay', { owner: 's1', op: 'box', frame: true, selector: '#frame-btn', color: '#af52de' })
+  assert.equal(frameBox.ok, true, JSON.stringify(frameBox))
+  assert.ok(frameBox.frameId, 'iframe annotation should report its frameId')
+  const frameShot = await driver.request('tab.screenshot', { owner: 's1' })
+  assert.notDeepEqual(fs.readFileSync(frameShot.path), fs.readFileSync(baseShot.path), 'iframe annotation must be visible in screenshots')
+
+  // Auto-follow: with auto on, a click moves the overlay pointer.
+  await overlay({ op: 'auto', enabled: true })
+  const autoBase = await driver.request('tab.screenshot', { owner: 's1' })
+  await driver.request('tab.click', { owner: 's1', selector: 'button' })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  const autoShot = await driver.request('tab.screenshot', { owner: 's1' })
+  assert.notDeepEqual(fs.readFileSync(autoShot.path), fs.readFileSync(autoBase.path), 'auto-follow pointer must move on click')
+  const autoStatus = await overlay({ op: 'auto', enabled: false })
+  assert.equal(autoStatus.auto, false)
   console.log('OVERLAY TEST: PASS')
 } finally {
   await driver.close()

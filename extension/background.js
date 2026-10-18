@@ -816,6 +816,11 @@ const CURSOR_HELPER_SRC = `
           ring.style.transform = 'scale(2.4)'
         })
       }
+      try {
+        if (window.__dshOverlay && window.__dshOverlay.auto !== false) {
+          window.__dshOverlay.handle({ op: 'follow', x, y, label: 'DSH', pulse: kind === 'click' || kind === 'type' || kind === 'key' })
+        }
+      } catch {}
       clearTimeout(cursor.__dshTimer)
       cursor.__dshTimer = setTimeout(() => { cursor.style.opacity = '0' }, 900)
     } catch {}
@@ -2520,6 +2525,25 @@ async function tabs(owner, params) {
 async function overlayAction(owner, params) {
   await ensureNotPaused(owner)
   const tabId = await resolveOwnedTabId(owner, params.tabId)
+  if (params.frame) {
+    const payload = { ...params }
+    delete payload.frame
+    delete payload.owner
+    try {
+      await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['overlay.js'], world: 'MAIN' })
+      const results = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        world: 'MAIN',
+        args: [payload],
+        func: (value) => (window.__dshOverlay ? window.__dshOverlay.handle(value) : { ok: false, error: 'OVERLAY_NOT_READY' }),
+      })
+      const hit = (results || []).find((entry) => entry?.result?.ok)
+      if (hit) return { ...hit.result, frameId: hit.frameId }
+      return (results || [])[0]?.result || { ok: false, error: 'FRAME_TARGET_NOT_FOUND' }
+    } catch (error) {
+      throw bridgeError('OVERLAY_FAILED', `cannot inject overlay into frames: ${error?.message || error}`)
+    }
+  }
   let result = await callInPage(tabId, 'overlay', [params])
   if (result?.error === 'OVERLAY_NOT_READY') {
     try {

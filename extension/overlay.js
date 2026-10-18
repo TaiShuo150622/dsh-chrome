@@ -11,7 +11,35 @@
   const VERSION = 1
   const ROOT_ID = '__dsh_overlay__'
   const COLORS = ['#007aff', '#ff3b30', '#34c759', '#ff9f0a', '#af52de', '#5ac8fa']
-  const state = { annotations: new Map(), seq: 1 }
+  const state = { annotations: new Map(), seq: 1, auto: true }
+  const STORAGE_KEY = '__dsh_annotations_v1__'
+  const targetSpec = (t = {}) => {
+    const out = {}
+    for (const key of ['ref', 'selector', 'text', 'x', 'y']) if (t[key] != null) out[key] = t[key]
+    return out
+  }
+  const persist = () => {
+    try {
+      const list = [...state.annotations.values()].map((a) => ({
+        kind: a.kind,
+        color: a.color,
+        label: a.label || undefined,
+        index: a.index,
+        target: a.spec.target,
+        from: a.spec.from,
+      }))
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ url: location.href, annotations: list }))
+    } catch {}
+  }
+  const restore = () => {
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEY)
+      if (!raw) return
+      const saved = JSON.parse(raw)
+      if (!saved || saved.url !== location.href || !Array.isArray(saved.annotations)) return
+      for (const spec of saved.annotations) add(spec.kind, { ...(spec.target || {}), from: spec.from, color: spec.color, label: spec.label, index: spec.index, restoring: true })
+    } catch {}
+  }
 
   const root = () => {
     let el = document.getElementById(ROOT_ID)
@@ -146,6 +174,7 @@
       el.querySelector('[data-dsh-overlay-labels]')?.replaceChildren()
       el.querySelector('[data-dsh-overlay-highlights]')?.replaceChildren()
     }
+    persist()
     return { ok: true, cleared: true }
   }
 
@@ -247,13 +276,16 @@
       index: params.index,
       rects: [],
       fromRects: [],
+      spec: { target: targetSpec(params), from: targetSpec(params.from || (params.fromSelector ? { selector: params.fromSelector } : params.fromRef != null ? { ref: params.fromRef } : {})) },
     }
     ann.resolve = () => rectsOfTarget(params)
     if (kind === 'arrow') ann.fromResolve = () => rectsOfTarget(params.from || (params.fromSelector ? { selector: params.fromSelector } : params.fromRef != null ? { ref: params.fromRef } : {}))
     ann.rects = ann.resolve()
     if (kind === 'arrow') ann.fromRects = ann.fromResolve()
+    if (ann.rects.length === 0) return { ok: false, error: 'TARGET_NOT_FOUND', kind }
     state.annotations.set(ann.id, ann)
     drawAnnotation(el, ann)
+    persist()
     return {
       ok: true,
       id: ann.id,
@@ -293,6 +325,11 @@
     return { ok: true, x: point.x, y: point.y, label: params.label || 'DSH', visible: true }
   }
 
+  const autoFollow = (params = {}) => {
+    if (!state.auto) return { ok: true, skipped: 'auto-disabled' }
+    return pointer({ ...params, label: params.label ?? 'DSH' })
+  }
+
   const hidePointer = () => {
     const p = document.querySelector('[data-dsh-overlay-pointer]')
     if (p) p.style.opacity = '0'
@@ -313,13 +350,27 @@
 
   const handle = (params = {}) => {
     const op = String(params.op || params.kind || '')
+    if (op === 'auto') {
+      state.auto = params.enabled !== false
+      return { ok: true, auto: state.auto }
+    }
+    if (op === 'follow') return autoFollow(params)
     if (op === 'pointer' || op === 'move' || op === 'show') return pointer(params)
     if (op === 'hide-pointer') return hidePointer()
-    if (op === 'list') return { ok: true, annotations: [...state.annotations.values()].map((a) => ({ id: a.id, kind: a.kind, label: a.label, color: a.color })), count: state.annotations.size }
+    if (op === 'list') return { ok: true, annotations: [...state.annotations.values()].map((a) => ({ id: a.id, kind: a.kind, label: a.label, color: a.color, spec: a.spec })), count: state.annotations.size }
+    if (op === 'export') {
+      const annotations = [...state.annotations.values()].map((a) => ({ id: a.id, kind: a.kind, label: a.label, color: a.color, rect: union(a.rects), spec: a.spec }))
+      return { ok: true, url: location.href, count: annotations.length, annotations, json: JSON.stringify({ url: location.href, annotations }) }
+    }
+    if (op === 'restore') {
+      restore()
+      return { ok: true, count: state.annotations.size }
+    }
     if (op === 'clear') {
       if (params.id) {
         state.annotations.delete(params.id)
         scheduleRedraw()
+        persist()
         return { ok: true, cleared: params.id }
       }
       return clearAll()
@@ -328,5 +379,6 @@
     return { ok: false, error: `UNKNOWN_OP:${op}` }
   }
 
-  window.__dshOverlay = { version: VERSION, handle }
+  window.__dshOverlay = { version: VERSION, handle, get auto() { return state.auto } }
+  try { if (document.readyState !== 'loading') restore() } catch {}
 })();

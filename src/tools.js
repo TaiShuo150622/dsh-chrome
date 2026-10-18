@@ -1663,33 +1663,38 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   list.push({
     name: 'chrome_pointer',
     description:
-      'Show a persistent virtual pointer pinned to an element (ref/selector) or viewport coordinates, with an optional label; op="show"/"move" pins it, op="hide" hides it, pulse:true plays a click ripple. The pointer is an overlay (pointer-events:none) and appears in screenshots but not in page text snapshots.',
+      'Show a persistent virtual pointer pinned to an element (ref/selector) or viewport coordinates, with an optional label; op="show"/"move" pins it, op="hide" hides it, op="auto" enables/disables automatic following of click/type/hover actions, pulse:true plays a click ripple. The pointer is an overlay (pointer-events:none) and appears in screenshots but not in page text snapshots.',
     parameters: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['show', 'move', 'hide'] },
+        op: { type: 'string', enum: ['show', 'move', 'hide', 'auto'] },
         ref: { type: 'number', description: 'Pin to the element with this snapshot ref.' },
         selector: { type: 'string', description: 'Pin to this CSS selector instead of ref.' },
         x: { type: 'number', description: 'Viewport x (CSS px) when not using ref/selector.' },
         y: { type: 'number', description: 'Viewport y (CSS px) when not using ref/selector.' },
         label: { type: 'string', description: 'Label next to the pointer (default "DSH"; empty hides it).' },
         pulse: { type: 'boolean', description: 'Play a click ripple after moving.' },
+        enabled: { type: 'boolean', description: 'op=auto: enable/disable automatic follow (default true).' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+        frame: { type: 'boolean', description: 'Search all frames/iframes for the target (annotation inside an iframe).' },
       },
       required: ['op'],
       additionalProperties: false,
     },
     output: {
       schema: outputSchema({ ok: { type: 'boolean' }, visible: { type: 'boolean' }, x: { type: 'number' }, y: { type: 'number' }, label: { type: 'string' }, error: { type: 'string' } }),
-      render: (_args, value) =>
-        value?.visible
+      render: (_args, value) => {
+        if (value?.auto != null) return renderText(`Pointer auto-follow: ${value.auto ? 'on' : 'off'}`)
+        return value?.visible
           ? renderText(`Pointer at (${Math.round(value.x)}, ${Math.round(value.y)}) label=${JSON.stringify(value.label || '')}`)
-          : renderText(value?.error ? `Pointer error: ${value.error}` : 'Pointer hidden'),
+          : renderText(value?.error ? `Pointer error: ${value.error}` : 'Pointer hidden')
+      },
     },
     async execute(args, exec) {
       const op = String(args?.op || 'show')
       return call('tab.overlay', {
-        op: op === 'hide' ? 'hide-pointer' : 'pointer',
+        op: op === 'hide' ? 'hide-pointer' : op === 'auto' ? 'auto' : 'pointer',
+        enabled: args?.enabled,
         ref: args?.ref,
         selector: args?.selector,
         x: args?.x,
@@ -1697,6 +1702,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         label: args?.label,
         pulse: Boolean(args?.pulse),
         tabId: args?.tabId,
+        frame: Boolean(args?.frame),
         owner: ownerOf(exec),
       })
     },
@@ -1705,11 +1711,11 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   list.push({
     name: 'chrome_annotate',
     description:
-      'Draw annotations over the current page: highlight text (text/ref/selector), box/circle an element, draw an arrow from one target to another, or add a text label/index bubble; op="list" returns current annotations and op="clear" removes them (all, or one by id). Overlays appear in screenshots and are excluded from page text snapshots.',
+      'Draw annotations over the current page: highlight text (text/ref/selector), box/circle an element, draw an arrow from one target to another, or add a text label/index bubble; op="list" returns current annotations, op="clear" removes them (all, or one by id), op="export" returns the JSON/report and op="restore" reloads the persisted set. Annotations auto-persist per tab URL in sessionStorage and survive reloads. Overlays appear in screenshots and are excluded from page text snapshots.',
     parameters: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['highlight', 'box', 'circle', 'arrow', 'label', 'list', 'clear'] },
+        op: { type: 'string', enum: ['highlight', 'box', 'circle', 'arrow', 'label', 'list', 'clear', 'export', 'restore'] },
         ref: { type: 'number', description: 'Target element ref (highlight/box/circle/arrow/label).' },
         selector: { type: 'string', description: 'Target CSS selector instead of ref.' },
         text: { type: 'string', description: 'Text to find/highlight when no ref/selector is given.' },
@@ -1720,6 +1726,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         id: { type: 'string', description: 'clear: remove this annotation id only.' },
         index: { type: 'number', description: 'label: numeric badge shown in the bubble.' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+        frame: { type: 'boolean', description: 'Search all frames/iframes for the target (annotate inside an iframe); returns frameId/frameUrl.' },
       },
       required: ['op'],
       additionalProperties: false,
@@ -1732,6 +1739,10 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         count: { type: 'number' },
         cleared: {},
         annotations: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        url: { type: 'string' },
+        json: { type: 'string' },
+        frameId: { type: 'string' },
+        frameUrl: { type: 'string' },
         rect: { type: 'object', additionalProperties: true },
         error: { type: 'string' },
       }),
@@ -1758,6 +1769,7 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
         id: args?.id,
         index: args?.index,
         tabId: args?.tabId,
+        frame: Boolean(args?.frame),
         owner: ownerOf(exec),
       })
     },

@@ -11,6 +11,13 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.92] - 2026-10-18
+
+- `chrome_pointer` 自动跟随 click/type/hover（op=auto，桌面默认开、headless 默认关）
+- `chrome_annotate` 支持 `frame:true` 搜索所有 iframe（extension allFrames / headless isolated world），返回 frameId/frameUrl
+- 标注按 URL 持久化到 sessionStorage，刷新自动恢复；新增 `export`/`restore`
+- overlay 目标不存在时返回 TARGET_NOT_FOUND（不再静默画空框）
+
 ## [0.1.91] - 2026-10-18
 
 - 新增 `chrome_pointer`（常驻虚拟鼠标/标签/点击波纹）与 `chrome_annotate`（文本高亮/框/圈/箭头/说明气泡/列出/清除）

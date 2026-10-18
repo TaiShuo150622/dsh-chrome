@@ -1262,6 +1262,7 @@ export class HeadlessDriver {
     this.loginProfile = path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'profile')
     this.resumeUrl = null
     this.visibleMode = false
+    this.autoPointerEnabled = process.env.DSH_AUTO_POINTER === '1'
     this.captures = new Map()
     this.captureByTab = new Map()
     this.nextCaptureSeq = 1
@@ -1745,6 +1746,78 @@ export class HeadlessDriver {
       throw error('INTERNAL', String(message))
     }
     return result.result?.value
+  }
+
+  async ensureOverlay(tab) {
+    if (tab.overlayReady) return true
+    const source = overlaySource()
+    if (!source) return false
+    await this.evalOn(tab, `(() => { if (!window.__dshOverlay) { ${source} } return Boolean(window.__dshOverlay) })()`)
+    tab.overlayReady = true
+    return true
+  }
+
+  async ensureFrameOverlays(tab) {
+    if (tab.frameContexts) return tab.frameContexts
+    const tree = await this.cdp.send('Page.getFrameTree', {}, tab.sessionId)
+    const frames = []
+    const walk = (node) => {
+      frames.push({ frameId: node.frame.id, url: node.frame.url, parentFrameId: node.frame.parentId || null })
+      for (const child of node.childFrames || []) walk(child)
+    }
+    if (tree?.frameTree) walk(tree.frameTree)
+    const contexts = []
+    for (const frame of frames) {
+      try {
+        const { executionContextId } = await this.cdp.send(
+          'Page.createIsolatedWorld',
+          { frameId: frame.frameId, worldName: 'dsh-overlay', grantUniveralAccess: false },
+          tab.sessionId,
+        )
+        contexts.push({ ...frame, contextId: executionContextId })
+      } catch {
+        // A detached/crashed frame cannot host an overlay.
+      }
+    }
+    tab.frameContexts = contexts
+    return contexts
+  }
+
+  async evalInContext(tab, contextId, expression) {
+    const result = await this.cdp.send(
+      'Runtime.evaluate',
+      { expression, contextId, returnByValue: true },
+      tab.sessionId,
+    )
+    if (result.exceptionDetails) {
+      const message = result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'frame evaluation failed'
+      throw error('INTERNAL', String(message))
+    }
+    return result.result?.value
+  }
+
+  async autoPointer(tab, params = {}, kind = 'move') {
+    if (!this.autoPointerEnabled) return null
+    try {
+      if (!(await this.ensureOverlay(tab))) return null
+      const payload = {
+        op: 'follow',
+        ref: params.ref,
+        selector: params.selector,
+        x: params.x,
+        y: params.y,
+        label: 'DSH',
+        pulse: kind === 'click' || kind === 'type' || kind === 'key',
+      }
+      const value = await this.evalOn(tab, `window.__dshOverlay.handle(${JSON.stringify(payload)})`)
+      if (value && !value.skipped) {
+        tab.renderChangeAt = Date.now() / 1000
+        tab.overlayChangedAt = Date.now() / 1000
+      }
+      return value
+    } catch {
+      return null
+    }
   }
 
   async syncTabMeta(tab) {
@@ -2635,6 +2708,8 @@ export class HeadlessDriver {
       case 'tab.goto': {
         const url = safeTabUrl(params.url)
         const tab = await this.ensureTab(owner, params.tabId)
+        tab.overlayReady = false
+        tab.frameContexts = null
         await this.cdp.send('Page.navigate', { url }, tab.sessionId)
         await this.waitReady(tab)
         await this.syncTabMeta(tab)
@@ -2747,15 +2822,31 @@ export class HeadlessDriver {
       }
       case 'tab.overlay': {
         const tab = await this.ensureTab(owner, params.tabId)
-        const source = overlaySource()
-        if (!source) throw error('UNSUPPORTED_BACKEND', 'overlay script is not available')
-        await this.evalOn(
-          tab,
-          `(() => { if (!window.__dshOverlay) { ${source} } return Boolean(window.__dshOverlay) })()`,
-        )
         const payload = { ...params }
         delete payload.owner
         delete payload.tabId
+        if (payload.frame) {
+          delete payload.frame
+          const contexts = await this.ensureFrameOverlays(tab)
+          let firstError = null
+          for (const context of contexts) {
+            try {
+              await this.evalInContext(tab, context.contextId, `(() => { if (!window.__dshOverlay) { ${overlaySource()} } return true })()`)
+              const value = await this.evalInContext(tab, context.contextId, `window.__dshOverlay.handle(${JSON.stringify(payload)})`)
+              if (value?.ok) {
+                tab.renderChangeAt = Date.now() / 1000
+                tab.overlayChangedAt = Date.now() / 1000
+                return { ...value, frameId: context.frameId, frameUrl: context.url }
+              }
+              if (value && !firstError) firstError = { ...value, frameId: context.frameId, frameUrl: context.url }
+            } catch {
+              // try the next frame
+            }
+          }
+          return firstError || { ok: false, error: 'FRAME_TARGET_NOT_FOUND' }
+        }
+        if (!(await this.ensureOverlay(tab))) throw error('UNSUPPORTED_BACKEND', 'overlay script is not available')
+        if (String(params.op) === 'auto') this.autoPointerEnabled = params.enabled !== false
         const result = await this.evalOn(tab, `window.__dshOverlay.handle(${JSON.stringify(payload)})`)
         // Overlay changes are page paints; make the next screenshot wait for a
         // fresh frame instead of serving the cached pre-overlay frame.
@@ -2789,6 +2880,7 @@ export class HeadlessDriver {
         if (!result?.ok) throw error(result?.code || 'REF_NOT_FOUND', result?.message || 'click failed')
         if (result.url) tab.url = result.url
         if (result.title != null) tab.title = result.title
+        await this.autoPointer(tab, params, 'click')
         return { ok: true, tag: result.tag, label: result.label, tabId: tab.tabId }
       }
       case 'tab.type': {
@@ -2823,6 +2915,7 @@ export class HeadlessDriver {
           (value) => (value?.ok === true && value.probeBefore ? value.probeBefore : null),
         )
         if (!result?.ok) throw error(result?.code || 'REF_NOT_FOUND', result?.message || 'type failed')
+        await this.autoPointer(tab, params, 'type')
         return { ok: true, value: result.value, submitted: result.submitted, tabId: tab.tabId }
       }
       case 'tab.clickAt': {
@@ -2851,6 +2944,7 @@ export class HeadlessDriver {
           (before) => (point ? clickAtProbeEligible(before, point) : false),
           point,
         )
+        await this.autoPointer(tab, params, 'click')
         return { ok: true, tabId: tab.tabId, x, y }
       }
       case 'tab.hover': {
@@ -2862,6 +2956,7 @@ export class HeadlessDriver {
           () => this.pageAction(tab, 'clickPage', [params.ref ?? null, params.selector ?? null, 1, 0]),
           (value) => value?.ok === true && value.hazard === null,
         )
+        if (result?.ok) await this.autoPointer(tab, params, 'hover')
         return result?.ok ? { ok: true, tag: result.tag, label: result.label, tabId: tab.tabId } : { ok: false, message: result?.message }
       }
       case 'tab.scroll': {
@@ -2917,6 +3012,8 @@ export class HeadlessDriver {
       }
       case 'tab.history': {
         const tab = await this.ensureTab(owner, params.tabId)
+        tab.overlayReady = false
+        tab.frameContexts = null
         if (params.op === 'back') await this.evalOn(tab, 'history.back()')
         else if (params.op === 'forward') await this.evalOn(tab, 'history.forward()')
         else await this.cdp.send('Page.reload', {}, tab.sessionId)

@@ -234,26 +234,28 @@ Open a visible, dedicated Chrome window at a human-interaction step (login, CAPT
 
 ### `chrome_pointer`
 
-Show a persistent virtual pointer pinned to an element (ref/selector) or viewport coordinates, with an optional label; op="show"/"move" pins it, op="hide" hides it, pulse:true plays a click ripple. The pointer is an overlay (pointer-events:none) and appears in screenshots but not in page text snapshots.
+Show a persistent virtual pointer pinned to an element (ref/selector) or viewport coordinates, with an optional label; op="show"/"move" pins it, op="hide" hides it, op="auto" enables/disables automatic following of click/type/hover actions, pulse:true plays a click ripple. The pointer is an overlay (pointer-events:none) and appears in screenshots but not in page text snapshots.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `op` | enum(show | move | hide) | yes |  |
+| `op` | enum(show | move | hide | auto) | yes |  |
 | `ref` | number | no | Pin to the element with this snapshot ref. |
 | `selector` | string | no | Pin to this CSS selector instead of ref. |
 | `x` | number | no | Viewport x (CSS px) when not using ref/selector. |
 | `y` | number | no | Viewport y (CSS px) when not using ref/selector. |
 | `label` | string | no | Label next to the pointer (default "DSH"; empty hides it). |
 | `pulse` | boolean | no | Play a click ripple after moving. |
+| `enabled` | boolean | no | op=auto: enable/disable automatic follow (default true). |
 | `tabId` | number | no | Optional tab id owned by this session. |
+| `frame` | boolean | no | Search all frames/iframes for the target (annotation inside an iframe). |
 
 ### `chrome_annotate`
 
-Draw annotations over the current page: highlight text (text/ref/selector), box/circle an element, draw an arrow from one target to another, or add a text label/index bubble; op="list" returns current annotations and op="clear" removes them (all, or one by id). Overlays appear in screenshots and are excluded from page text snapshots.
+Draw annotations over the current page: highlight text (text/ref/selector), box/circle an element, draw an arrow from one target to another, or add a text label/index bubble; op="list" returns current annotations, op="clear" removes them (all, or one by id), op="export" returns the JSON/report and op="restore" reloads the persisted set. Annotations auto-persist per tab URL in sessionStorage and survive reloads. Overlays appear in screenshots and are excluded from page text snapshots.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `op` | enum(highlight | box | circle | arrow | label | list | clear) | yes |  |
+| `op` | enum(highlight | box | circle | arrow | label | list | clear | export | restore) | yes |  |
 | `ref` | number | no | Target element ref (highlight/box/circle/arrow/label). |
 | `selector` | string | no | Target CSS selector instead of ref. |
 | `text` | string | no | Text to find/highlight when no ref/selector is given. |
@@ -264,6 +266,7 @@ Draw annotations over the current page: highlight text (text/ref/selector), box/
 | `id` | string | no | clear: remove this annotation id only. |
 | `index` | number | no | label: numeric badge shown in the bubble. |
 | `tabId` | number | no | Optional tab id owned by this session. |
+| `frame` | boolean | no | Search all frames/iframes for the target (annotate inside an iframe); returns frameId/frameUrl. |
 
 ### `chrome_screencast`
 
