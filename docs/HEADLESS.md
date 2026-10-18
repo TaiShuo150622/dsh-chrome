@@ -534,13 +534,75 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 - 合成 click 与 `Input.*` 系动作（press / clickAt / hover / drag）仍走满窗口：它们可能改变焦点轮廓、`:active`、真实输入状态，本轮不覆盖（下一轮候选）。
 - **为什么不用更省事的替代**（都量过，别再试）：`Page.captureScreenshot` 空闲表面 15.6 ms、有未提交重绘 45–47 ms、负载下 34.5 ms；`Page.stopScreencast`+`startScreencast` 取首帧在静态页 14.7–15.0 ms，但刚改过页面后 17.6–23 ms、连续重启时偶发 ~200 ms；`document.timeline.currentTime` 在静态页上也一直前进（见上）。所以「等一帧再 capture」「重启流取首帧」都不比 40ms 窗口稳，而且会把已改页面的截图拖慢到 30–65 ms。
 
+### 4.1.8 2026-10-17 第九轮：合成 click / hover 的重绘窗（Ralph 循环第 4 轮）
+
+背景：§4.1.7 的页面侧追踪器只包住了 `tab.evaluate` 与边界 scroll。合成 `tab.click`/`tab.hover` 仍盲等 40ms 重绘窗：点一个没有任何 handler 的普通元素（页面不可能重绘）也要 43.2ms，而静态页缓存命中只要 0.2–0.3ms。
+
+**难点**：click 的目标元素自己可能触发 UA 默认动作，而且这些动作**不产生 DOM mutation**，§4.1.7 的计数器看不见：`<a href>`/`<area href>` 导航、`<button type=submit>` 表单提交（`button.form` 关联的也算）、`<label>` 转发激活、checkbox/radio/select/file/range 等控件的 UA 状态、`<video controls>` 播放、`popover`/`command` 顶层浮层。JS handler 里的 `checkbox.click()`、`showPopover()`、`location.assign`、`element.scrollTop = ...` 也是「无 mutation 的重绘」。
+
+**实现**（`src/headless.js`）：
+
+1. `clickPage` 在派发前算 `hazard`（`null` 才允许短路）：`a[href]`/`area[href]` → `navigation`；`label` → `label-activation`；`input/select/textarea`（含后代）→ `form-control`；`button` 且 `button.form`（或祖先 form）存在、类型不是 button/reset → `form-submit`；`video/audio` 后代 → `media-control`；`[popovertarget]`/`[commandfor]` → `ua-toggle`。
+2. `tab.click`/`tab.hover` 走 `visualProbeAction(action, accept)`：`accept` 只在 `ok && hazard === null` 时允许取第二张快照；hazard 非空时只多付一次快照（~0.23ms）就保持保守窗口。
+3. 追踪器新增 `change`（checkbox/radio/select/file 激活）与 `beforetoggle`/`toggle`（popover/details/command）计数器；快照新增 `changes`/`toggles`/`media`。任一计数器变化、页面里有 `video`/`audio`（媒体面像 canvas 一样无 mutation 重绘）→ `unknown`。
+4. `DSH_HEADLESS_VISUAL_PROBE=0` 仍然一键回退（click/hover 一起回退）。
+
+**A/B**（同机交替，`git archive 023bb89` 导出原树 vs 本轮；探针 `/tmp/perf-s4/probe.mjs`，每侧 3 次取中位；1-min load 5.7–5.9）：
+
+| 动作 → 截图 | 改前 | 改后 | 说明 |
+|---|---|---|---|
+| 普通 click（无 handler 的 div） | **43.19 ms**（0/25 短路、25/25 走满窗口） | **0.23 ms**（25/25 短路、0 帧、像素不变） | −99.5% |
+| hover 同一元素 | 43.39 ms | **0.21 ms** | −99.5% |
+| click 改 DOM 的按钮（handler 写 textContent） | 15.00 ms | 14.22 ms | 不短路，帧数/结果不变 |
+| click checkbox（UA 切换，无 mutation） | 14.60 ms | 13.18 ms | 不短路；像素变化 5/5 |
+| click `<a download>` | 42.67 ms | 42.55 ms | 导航 hazard，保持保守 |
+| press(Shift) | 43.94 ms | 42.98 ms | `Input.*` 未覆盖，仍走满 |
+| 只读 evaluate / 边界 scroll（§4.1.7 回归） | 0.55 / 0.54 ms | 0.38 / 0.29 ms | 仍短路 |
+
+`node scripts/headless-bench.mjs --seconds 10 --noop-click`（新场景：snapshot + 点普通 div + 截图，页面全程不重绘）：
+
+| 指标 | 改前（023bb89） | 改后 |
+|---|---|---|
+| 动作/10s | 224 / 225 / 227 | 7570 / 7649 / 7584 |
+| 轮/s | 22.36–22.61 | 727.9–764.8 |
+| `click` | 0.46–0.54 ms | 0.59 ms |
+| `screenshot` | 43.01–43.27 ms | 0.38–0.45 ms |
+| 每轮合计 | 44.21–44.71 ms | 1.30–1.37 ms |
+| 每动作 CPU | 14.44–16.08 ms | 1.18–1.22 ms |
+| RSS | 1089–1175 MB | 1171–1382 MB（run 间波动，无系统性变化） |
+
+标准场景（页面每轮都变）不回归：改前 583/600/600/601 动作、`screenshot` 14.52–15.36 ms、每轮 16.65–17.14 ms、每动作 CPU 16.67–17.48 ms；改后 583/599/600/600、14.57–15.28 ms、16.67–17.16 ms、17.02–17.58 ms。只读 evaluate 场景也不回归：7683 → 8210 动作、`screenshot` 0.41 → 0.39 ms、每动作 CPU 1.19 → 1.14 ms。
+
+**代价**：每次 click 多两次快照；hazard 命中只多一次。200 次连点（无截图）中位：普通 click 0.27 → 0.68 ms（+0.41）、导航 hazard 0.25 → 0.48 ms（+0.23）、改 DOM 的 click 0.35 → 0.85 ms（+0.50）。一次「click → 截图」省 43 ms，所以只有「截图紧跟 click」才需要它；若 click 后不截图，这 0.2–0.5ms 是纯成本（相对一次工具调用的秒级节奏可忽略）。
+
+**正确性（探针 3/3 次全真）**：
+
+- 普通 click / hover → 短路（`visualSkips` 25/25）、帧计数不变、像素与上一帧逐字节相同；
+- click 改 DOM → 不短路、帧数 +25、`out` 文本是 handler 写的值；
+- click checkbox → 不短路、像素变化（勾选可见）；从 evaluate 里 `checkbox.click()` 同样不短路（change 计数器）；
+- click `<a download>` / `<button type=submit>`（form onsubmit 取消提交）→ 不短路（导航 hazard）；
+- click popover 触发器、evaluate 里 `showPopover()` → 不短路（hazard / toggle 计数器），浮层可见；DOM 里有未打开的 popover 不影响短路；
+- 页面含 `<video>`/`<canvas>` 时 evaluate 与 click 都不短路（媒体面/canvas 像素不可见）；移除 canvas 后恢复（§4.1.7 用例保留）；
+- press(Shift) 仍不短路（`Input.*` 未覆盖）。
+
+`node test/headless.mjs` 新增断言：普通 click/hover 的 `visualSkips`/帧计数/像素、改 DOM 的 click 新鲜性、checkbox 点击与 JS 激活不短路、form submit 不短路、press 仍保守、下载链接点击不短路（导航 hazard）；连跑 5 次 PASS。`npm test` exit 0。
+
+**边界与取舍**：
+
+- **异步/间接重绘**：handler 里 `setTimeout`/`fetch().then`/`element.scrollTop = ...`（元素滚动事件下一帧才发）等，在两张快照之后才画。截图反映「动作完成那一刻」的页面；与 §4.1.7 的 evaluate 语义相同，旧 40ms 窗口对 >40ms 的效果同样会漏。
+- **媒体面**：`video`/`audio` 现在让整个 tab 的 evaluate/click 都保守。这是顺带的正确性修复（播放中的媒体重绘没有 DOM mutation，旧实现会误判 clean），代价是含媒体元素的页面失去短路。
+- 声明式导航由 hazard 挡住；JS handler 里的 `location.assign` 无法同步观测，属于上面「异步效果」一类。
+- shadow DOM 里的 canvas、跨源 iframe 的绘制仍是既有边界（不可见）。
+- `Input.*`（press / clickAt / drag）仍走满窗口：它们走 CDP Input，页面侧探针不覆盖，留给下一轮。
+
 ## 5. 下一步（H1）
 
 1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
 2. capture 引擎与扩展共享（两套行为一致性）；
 3. 截图性能：PNG/JPEG 帧流（§4.1.1、§4.1.2）、静态页空闲保活（§4.1.3）、`clip`/`ref` 从帧缓存裁剪（§4.1.4）都已落地；整视口「页面变了」的下限仍是合成器帧间隔 ~15–16ms。本轮之后剩余的方向：
    - `clip` 的 JPEG 请求仍走 capture（driver 里没有 JPEG 解码），~45ms；如要补，需要 JPEG 帧流 + 一个能裁剪 JPEG 的路径（或让调用方接受 PNG）。
-   - ~~只读 evaluate 后的 40ms 重绘窗~~ ✅ **已落地（§4.1.7）**：页面侧视觉变更追踪器证明「没重绘」时不再推进 change marker，只读 evaluate → 截图 43.2 → 0.26 ms、边界 scroll 42.2 → 0.22 ms；有 canvas / 同源 subframe / 异步重绘时保持保守。剩余同类项：合成 click 与 `Input.*` 动作（press / clickAt / hover / drag）仍走满窗口。
+   - ~~只读 evaluate 后的 40ms 重绘窗~~ ✅ **已落地（§4.1.7）**：页面侧视觉变更追踪器证明「没重绘」时不再推进 change marker，只读 evaluate → 截图 43.2 → 0.26 ms、边界 scroll 42.2 → 0.22 ms；有 canvas / 同源 subframe / 异步重绘时保持保守。剩余同类项：`Input.*` 动作（press / clickAt / drag）仍走满窗口。
+   - ~~合成 click / hover 后的 40ms 重绘窗~~ ✅ **已落地（§4.1.8）**：普通 click → 截图 43.2 → 0.23 ms、hover 43.4 → 0.21 ms；目标可能导航 / 提交表单 / 激活控件 / 操作媒体 / 开关 popover 时保持保守（hazard），无 mutation 的 UA 状态变化由 change/toggle 计数器兜底。剩余同类项：`Input.*`（press / clickAt / drag）。
    - viewer 分支每帧的 base64+磁盘写已节流（§4.1.6）：headless 落盘 15.0→10.0 帧/s、fs 同步耗时中位 −31%、node CPU −13%；桌面 host 落盘 29.7→10.4 帧/s、fs 同步耗时 −55%。
    - 冷启动剩下的 ~750ms 在 Chrome 进程启动与 CDP 端口就绪（§4.1.5），Node 侧不可控；不建议预热进程（空闲即 672MB RSS）。
 4. 启动参数在帧流路径上扫过（§4.1.3），没有净收益；`--disable-frame-rate-limit` 仍是否掉的（每动作 CPU +41%）。
@@ -549,11 +611,11 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 
 | 文件 | 内容 |
 |---|---|
-| `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7） |
+| `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7）、合成 click/hover 的 hazard 判定与 change/toggle 计数（§4.1.8） |
 | `host/host.mjs` | Chrome native messaging host：扩展 ↔ provider 的 JSON 帧中继、discovery 文件重连、viewer 帧落盘（节流，§4.1.6）与扩展热更新监听 |
 | `src/backend.js` | BackendRouter + AsyncLocalStorage + `wrapToolsForBackend`（给 39 个工具加 `backend` 参数） |
 | `index.js` | 创建 HeadlessDriver/Router，包装工具，卸载时关闭 |
-| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）；动作上限 `ACTIONS*50`（只读场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
+| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）、`--noop-click` 普通 click + 截图场景（§4.1.8）；动作上限 `ACTIONS*50`（短路场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
 | `test/backend-router.mjs` | 路由/参数剥离/默认桌面回归 |
-| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、viewer 帧落盘产物断言） |
+| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、viewer 帧落盘产物断言、只读 evaluate/边界 scroll/合成 click/hover 的视觉探针短路与陈旧帧断言） |
 | `test/host-reconnect.mjs` | native host 持久化（provider 重启后重连）+ viewer 帧落盘/节流 trailing flush 断言（§4.1.6） |
