@@ -191,7 +191,7 @@ check('chrome_goto rejects non-http(s) URLs', rejected)
 
 host.kill('SIGTERM')
 await bridge.stop()
-await fsp.rm(home, { recursive: true, force: true })
+await fsp.rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => {})
 
 console.log(failures === 0 ? '\nP0 TOOLS TEST: PASS' : `\nP0 TOOLS TEST: ${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

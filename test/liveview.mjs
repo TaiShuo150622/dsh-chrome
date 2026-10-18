@@ -72,5 +72,5 @@ try {
   assert.equal(getLiveViewUrl(), null)
   console.log('LIVEVIEW TEST: PASS')
 } finally {
-  fs.rmSync(home, { recursive: true, force: true })
+  fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 }
