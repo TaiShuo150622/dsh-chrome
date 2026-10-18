@@ -35,6 +35,7 @@ let nextPageValue = { ok: true, tag: 'button', label: 'OK' }
 let nextTabId = 100
 
 const runtimeMessageListeners = []
+const tabGroupUpdates = []
 let connectNativeCalls = 0
 let runtimeReloads = 0
 const nativePortListeners = { message: [], disconnect: [] }
@@ -123,7 +124,14 @@ const chrome = {
     async reload() {},
     onUpdated: { addListener() {}, removeListener() {} },
   },
-  tabGroups: { async update() {} },
+  tabGroups: {
+    async query() {
+      return []
+    },
+    async update(id, props) {
+      tabGroupUpdates.push({ id, ...props })
+    },
+  },
   alarms: { create() {}, onAlarm: { addListener() {} } },
   offscreen: {
     async hasDocument() {
@@ -364,6 +372,14 @@ check('tab.screenshot with ref returns base64 data', typeof refShot?.dataBase64 
 
 const focus = await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'focus', tabId: 7, owner: 's1' }, id: 'tabs-focus' })
 check('tab.tabs op=focus activates the tab', focus?.focused === true && tabs.get(7)?.active === true)
+
+// readable group label reaches tabGroups.update on new tab
+const labelled = await sandbox.handleRequest({
+  method: 'tab.tabs',
+  params: { op: 'new', url: 'https://example.com/', owner: 's9', ownerLabel: 'demo-project' },
+  id: 'tabs-label',
+})
+check('new tab uses a readable group label', labelled?.tabId != null && tabGroupUpdates.some((update) => update.title === 'DSH · demo-project'))
 
 // drag + emulate dispatch
 nextPageValue = { ok: true, from: 1, to: 2 }

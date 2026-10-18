@@ -92,6 +92,18 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   const list = []
   const ownerOf = (exec) => exec?.agent?.id ?? 'default'
 
+  const sessionLabel = (exec) => {
+    try {
+      const services = sessionContext?.()
+      const session = services?.sessions?.get?.(exec?.agent?.id)
+      const cwd = session?.header?.cwd ?? session?.cwd ?? session?.meta?.cwd
+      if (typeof cwd === 'string' && cwd.trim()) return path.basename(cwd)
+    } catch {
+      // fall through to short id in the extension
+    }
+    return null
+  }
+
   async function call(method, params, timeoutMs = MUTATION_TIMEOUT_MS) {
     try {
       return await bridge.call(method, params, timeoutMs)
@@ -159,6 +171,11 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         autoReload: { type: 'boolean' },
         providerVersion: {},
         updateState: { type: 'object', additionalProperties: true },
+        groupCount: {},
+        groups: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+        },
         error: { type: 'string' },
       }),
       render: (_args, value) => {
@@ -169,7 +186,15 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           `extension id: ${value.extensionId ?? 'unknown'}`,
           `disk version: ${value.diskVersion ?? 'unknown'}  auto-reload: ${value.autoReload ? 'on' : 'off'}`,
           `provider: ${value.providerVersion ?? 'unknown'}  last reload: ${value.updateState?.lastReloadRequestedAt ?? 'never'}`,
+          `session tab groups: ${value.groupCount ?? 'unknown'}`,
         ]
+        if (Array.isArray(value.groups) && value.groups.length > 0) {
+          lines.push(
+            `groups: ${value.groups
+              .map((group) => `#${group.id} ${JSON.stringify(group.title)} tabs=${group.tabs}`)
+              .join(' | ')}`,
+          )
+        }
         if (!value.connected) lines.push('', installHint(assets()))
         if (value.error) lines.push('', `last error: ${value.error}`)
         return renderText(lines.join('\n'))
@@ -201,6 +226,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           }
           if (typeof status?.diskVersion === 'string') value.diskVersion = status.diskVersion
           value.autoReload = Boolean(status?.autoReload)
+          value.groupCount = status?.groupCount ?? null
+          if (Array.isArray(status?.groups)) value.groups = status.groups
         } catch (error) {
           value.error = error?.message || String(error)
         }
@@ -235,7 +262,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     async execute(args, exec) {
       const url = validateHttpUrl(args?.url)
       await guard(exec, 'chrome_goto', `navigate to ${url}`)
-      return call('tab.goto', { url, owner: ownerOf(exec) })
+      return call('tab.goto', { url, owner: ownerOf(exec), ownerLabel: sessionLabel(exec) })
     },
   })
 
@@ -1210,6 +1237,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         url: args?.url,
         tabId: args?.tabId,
         owner: ownerOf(exec),
+        ownerLabel: sessionLabel(exec),
       })
     },
   })

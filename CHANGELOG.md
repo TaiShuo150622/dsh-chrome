@@ -11,6 +11,14 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.60] - 2026-10-17
+
+### Fixed / Changed
+
+- **会话标签组去重**：自动更新导致 groupId 失效时会按标题复用/合并重复组（此前每次 reload 后的新标签会各建一个 `DSH · <短id>` 组）；合并后同步 `tabIds`，`close_session` 不再留孤儿标签
+- **可读组名**：provider 传 `ownerLabel`（会话 cwd 的 basename），组名从 `DSH · c4be1d` 变为 `DSH · <项目/目录名>`；旧组会被重命名合并
+- `chrome_status` 增加 `groupCount` 与 `groups`（id/title/tabs），便于观察分组结构
+
 ## [Unreleased]
 
 ### Added

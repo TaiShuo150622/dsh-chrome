@@ -116,8 +116,76 @@ async function getSessionEntry(owner) {
   return entry
 }
 
-async function attachGroup(owner, entry, tabIds) {
+function groupTitle(owner) {
+  return `DSH · ${ownerShort(owner)}`
+}
+
+function sessionGroupTitle(owner, entry) {
+  const label = typeof entry?.label === 'string' ? entry.label.trim().slice(0, 40) : ''
+  return label ? `DSH · ${label}` : groupTitle(owner)
+}
+
+async function reconcileGroups(owner, entry) {
   try {
+    const title = sessionGroupTitle(owner, entry)
+    const legacyTitle = groupTitle(owner)
+    const all = await chrome.tabGroups.query({})
+    const groups = all.filter((group) => {
+      const current = String(group.title || '')
+      return current === title || current === legacyTitle
+    })
+    if (groups.length === 0) return
+    const canonical = groups.find((group) => group.id === entry.groupId) ?? groups[0]
+    for (const group of groups) {
+      if (group.id === canonical.id) continue
+      // Merge tabs from duplicate groups (usually created after an extension
+      // reload lost the old group id) into one canonical group.
+      const tabs = await chrome.tabs.query({ groupId: group.id })
+      const ids = tabs.map((tab) => tab.id).filter((id) => Number.isFinite(id))
+      if (ids.length > 0) await chrome.tabs.group({ tabIds: ids, groupId: canonical.id })
+    }
+    entry.groupId = canonical.id
+    if (String(canonical.title || '') !== title) {
+      try {
+        await chrome.tabGroups.update(canonical.id, { title, color: 'blue', collapsed: true })
+      } catch {
+        // renaming is best effort
+      }
+    }
+    // Sync tracked tab ids with the actual group contents: after reloads the
+    // stored list can miss tabs, which would make close_session leave orphans.
+    try {
+      const groupTabs = await chrome.tabs.query({ groupId: canonical.id })
+      const ids = groupTabs.map((tab) => tab.id).filter((id) => Number.isFinite(id))
+      entry.tabIds = ids
+      if (!ids.includes(entry.activeTabId)) entry.activeTabId = ids[0] ?? null
+    } catch {
+      // keep stored ids
+    }
+    await saveSessions()
+    diag('groups-reconciled', { owner: ownerShort(owner), groups: groups.length, canonical: canonical.id })
+  } catch (error) {
+    log('group reconcile failed', error?.message || error)
+  }
+}
+
+async function reconcileAllGroups() {
+  try {
+    const sessions = await loadSessions()
+    for (const owner of Object.keys(sessions || {})) {
+      const entry = await getSessionEntry(owner)
+      if (entry) await reconcileGroups(owner, entry)
+    }
+  } catch (error) {
+    log('group reconcile-all failed', error?.message || error)
+  }
+}
+
+async function attachGroup(owner, entry, tabIds, label) {
+  if (typeof label === 'string' && label.trim()) entry.label = label.trim().slice(0, 40)
+  try {
+    await reconcileGroups(owner, entry)
+    const title = sessionGroupTitle(owner, entry)
     if (entry.groupId != null) {
       try {
         await chrome.tabs.group({ tabIds, groupId: entry.groupId })
@@ -126,10 +194,24 @@ async function attachGroup(owner, entry, tabIds) {
         entry.groupId = null
       }
     }
+    // Reuse an existing group with our title (current or legacy short id).
+    const all = await chrome.tabGroups.query({})
+    const existing = all.find((group) => {
+      const current = String(group.title || '')
+      return current === title || current === groupTitle(owner)
+    })
+    if (existing) {
+      entry.groupId = existing.id
+      await chrome.tabs.group({ tabIds, groupId: existing.id })
+      if (String(existing.title || '') !== title) {
+        await chrome.tabGroups.update(existing.id, { title, color: 'blue', collapsed: true }).catch(() => {})
+      }
+      return
+    }
     const groupId = await chrome.tabs.group({ tabIds })
     entry.groupId = groupId
     await chrome.tabGroups.update(groupId, {
-      title: `DSH · ${ownerShort(owner)}`,
+      title,
       color: 'blue',
       collapsed: true,
     })
@@ -138,11 +220,11 @@ async function attachGroup(owner, entry, tabIds) {
   }
 }
 
-async function addTabToSession(owner, tab, { activate = true } = {}) {
+async function addTabToSession(owner, tab, { activate = true, label = null } = {}) {
   const entry = await getSessionEntry(owner)
-  entry.tabIds.push(tab.id)
+  if (!entry.tabIds.includes(tab.id)) entry.tabIds.push(tab.id)
   if (activate) entry.activeTabId = tab.id
-  await attachGroup(owner, entry, [tab.id])
+  await attachGroup(owner, entry, [tab.id], label)
   await saveSessions()
   return entry
 }
@@ -369,15 +451,31 @@ async function handleRequest(message) {
   const params = message.params || {}
   const owner = params.owner ?? 'default'
   switch (method) {
-    case 'browser.status':
+    case 'browser.status': {
+      let groupCount = null
+      let groups = []
+      try {
+        const all = await chrome.tabGroups.query({})
+        const ours = all.filter((group) => String(group.title || '').startsWith('DSH · '))
+        groupCount = ours.length
+        for (const group of ours) {
+          const tabs = await chrome.tabs.query({ groupId: group.id })
+          groups.push({ id: group.id, title: group.title, collapsed: group.collapsed, tabs: tabs.length })
+        }
+      } catch {
+        groupCount = null
+      }
       return {
         extensionVersion: VERSION,
         connected: true,
         diskVersion: lastDiskVersion,
         autoReload: Boolean(lastDiskVersion),
+        groupCount,
+        groups,
       }
+    }
     case 'tab.goto':
-      return gotoUrl(owner, String(params.url || ''))
+      return gotoUrl(owner, String(params.url || ''), params.ownerLabel || null)
     case 'tab.snapshot':
       return snapshot(owner, params)
     case 'tab.screenshot':
@@ -431,7 +529,7 @@ async function handleRequest(message) {
   }
 }
 
-async function gotoUrl(owner, url) {
+async function gotoUrl(owner, url, label = null) {
   if (!/^https?:\/\//i.test(url)) {
     throw bridgeError('PROTECTED_PAGE', 'Only http(s) URLs are allowed.')
   }
@@ -827,7 +925,7 @@ async function tabs(owner, params) {
       throw bridgeError('PROTECTED_PAGE', 'Only http(s) URLs are allowed.')
     }
     const tab = await chrome.tabs.create({ url, active: false, pinned: false })
-    await addTabToSession(owner, tab, { activate: false })
+    await addTabToSession(owner, tab, { activate: false, label: params.ownerLabel || null })
     if (url !== 'about:blank') await waitForComplete(tab.id, 45000).catch(() => {})
     const created = await chrome.tabs.get(tab.id)
     return { tabId: tab.id, url: created.url || url, title: created.title || '' }
@@ -876,7 +974,7 @@ async function claimTab(owner, params) {
   if (!/^https?:/i.test(tab.url || '')) {
     throw bridgeError('PROTECTED_PAGE', 'only http(s) tabs can be claimed')
   }
-  await addTabToSession(owner, tab, { activate: false })
+  await addTabToSession(owner, tab, { activate: false, label: params.ownerLabel || null })
   const claimed = await chrome.tabs.get(tab.id)
   return { tabId: tab.id, url: claimed.url || '', title: claimed.title || '', claimed: true }
 }
@@ -2046,3 +2144,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 diag('worker-start', { version: VERSION, hasPort: Boolean(port) })
 ensureReconnectAlarm()
 ensurePort().catch(() => {})
+setTimeout(() => {
+  reconcileAllGroups().catch(() => {})
+}, 1200)
