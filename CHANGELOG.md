@@ -13,6 +13,15 @@
 
 ## [Unreleased]
 
+### Added（后台浏览器 H0：headless Chromium）
+
+- 每个 `chrome_*` 工具新增可选 `backend: "desktop" | "headless"`；默认桌面原样
+- headless：provider 自起 Chrome `--headless=new --remote-debugging-port=0`，独立 profile、无窗口、CDP 驱动
+- 已支持：status/tabs/goto/snapshot/click/type/click_at/hover/scroll/press/screenshot/evaluate/html/text/selection/frames/a11y/history/wait/pdf/close_session
+- 未支持：console/network/capture/upload/download/pick/screencast/pause → 明确 `UNSUPPORTED_BACKEND`
+- `src/headless.js` + `src/backend.js`；端到端测试 `test/headless.mjs`；真机验证桌面 Chrome 不受影响
+- provider 0.1.80；`docs/HEADLESS.md`
+
 ### Added（P1 F1 spike：screencast 帧流）
 
 - `chrome_screencast`（第 39 个工具）：`op=start/stop/status/diag`

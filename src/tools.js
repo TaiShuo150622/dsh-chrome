@@ -292,6 +292,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         diskVersion: {},
         autoReload: { type: 'boolean' },
         providerVersion: {},
+        backend: { type: 'string' },
+        headless: { type: 'object', additionalProperties: true },
         updateState: { type: 'object', additionalProperties: true },
         groupCount: {},
         groups: {
@@ -302,6 +304,12 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       }),
       render: (_args, value) => {
         const lines = [
+          `Browser backend: ${value.backend || 'desktop'} — ${value.connected ? 'CONNECTED' : 'NOT CONNECTED'}`,
+          ...(value.headless
+            ? [
+                `headless: ${value.headless.supported ? 'available' : 'unavailable'}${value.headless.running ? ` (running ${value.headless.browserVersion || ''})` : ''}`,
+              ]
+            : []),
           `Chrome bridge: ${value.connected ? 'CONNECTED' : 'NOT CONNECTED'}`,
           `provider: ${value.provider}  protocol: ${value.protocol}`,
           `extension: ${value.extensionVersion ?? 'unknown'}  host: ${value.hostVersion ?? 'unknown'}`,
@@ -326,6 +334,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       const info = assets() ?? {}
       const value = {
         connected: bridge.connected,
+        backend: bridge.backend || 'desktop',
+        headless: typeof bridge.headlessInfo === 'function' ? bridge.headlessInfo() : null,
         provider: 'chrome-extension',
         protocol: 1,
         hostVersion: bridge.hostVersion,

@@ -10,7 +10,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { BackendRouter, wrapToolsForBackend } from './src/backend.js'
 import { BridgeServer } from './src/bridge.js'
+import { HeadlessDriver, headlessSupported } from './src/headless.js'
 import { ensureInstallAssets } from './src/install.js'
 import { chromeTools } from './src/tools.js'
 
@@ -35,6 +37,12 @@ export function apply(ctx) {
   const sandboxPolicy = { current: null }
   const userQuestions = { current: null }
   const logger = ctx.logger
+  const headlessDriver = new HeadlessDriver({ home, logger })
+  const router = new BackendRouter({
+    desktop: bridge,
+    headless: headlessDriver,
+    headlessSupported: headlessSupported(),
+  })
 
   ctx.inject(['attachments'], (scoped) => {
     attachments.current = scoped.get('attachments')
@@ -130,15 +138,18 @@ export function apply(ctx) {
   // service has no browser methods); this provider keeps owning its tools,
   // state and cleanup, exactly like the official Playwright/Stagehand providers.
   ctx.effect(() => {
-    const disposers = chromeTools({
-      bridge,
-      attachments: () => attachments.current,
-      assets: () => assets.current,
-      approval: () => approval.current,
-      sessionContext: () => ({ sessions: sessions.current, sandboxPolicy: sandboxPolicy.current }),
-      userQuestions: () => userQuestions.current,
-      config: () => providerConfig,
-    }).map((definition) => ctx.tools.register(definition))
+    const disposers = wrapToolsForBackend(
+      chromeTools({
+        bridge: router,
+        attachments: () => attachments.current,
+        assets: () => assets.current,
+        approval: () => approval.current,
+        sessionContext: () => ({ sessions: sessions.current, sandboxPolicy: sandboxPolicy.current }),
+        userQuestions: () => userQuestions.current,
+        config: () => providerConfig,
+      }),
+      router,
+    ).map((definition) => ctx.tools.register(definition))
 
     let releaseBrowserUse = null
     if (hasBrowserUse) {
@@ -159,6 +170,11 @@ export function apply(ctx) {
         } catch {
           // unloading continues even if one disposer throws
         }
+      }
+      try {
+        await router.close()
+      } catch (error) {
+        logger?.warn?.('dsh-chrome: headless close failed: %s', error?.message || String(error))
       }
       if (releaseBrowserUse) {
         try {
