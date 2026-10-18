@@ -112,7 +112,7 @@ chrome_headless_login {op:"status"}
 ## 4. 安全与资源
 
 - headless profile 独立，默认**不携带**用户 Chrome 的 cookie/登录态；
-- 无窗口、无扩展、无用户桌面干扰；Chrome 进程随 provider 卸载关闭；
+- 无窗口、无扩展、无用户桌面干扰；启动时不建初始窗口（`--no-startup-window`，第一个 tab 才建，§4.1.10）；Chrome 进程随 provider 卸载关闭；
 - 页面内容仍按不可信处理；`chrome_evaluate` 的 `allowEvaluate` 硬确认照旧；
 - 同一 owner 的 headless tabs 隔离；不同 DSH session 的 owner 互见不到；
 - **空闲回收**：没有 tab 且 5 分钟无请求时自动关闭 headless Chrome（`DSH_HEADLESS_IDLE_MINUTES` 可调）；
@@ -121,13 +121,15 @@ chrome_headless_login {op:"status"}
 
 ### 4.1 空闲与活跃基线（本机，Chrome 155）
 
-headless 无 tab、无请求，60s `ps` 时间差：
+headless 无 tab、无请求，60s `ps` 时间差（**2026-10-18 起**，`--no-startup-window` 落地后，§4.1.10）：
 
 | 指标 | 值 |
 |---|---|
-| CPU（全部 7 个 headless 进程合计） | **1.34%**（0.84s / 62.5s） |
-| 内存 RSS | **672 MB** |
-| 进程数 | 7 |
+| CPU（全部 5 个 headless 进程合计） | **0.1–0.3%** |
+| 内存 RSS（进程求和，共享页重复计） | **449 MB**（`footprint` 的 phys footprint 151 MB，更接近真实占用） |
+| 进程数 | 5 |
+
+改前同一状态（Chrome 自己开一个没人用的 `about:blank` 窗口）：7 进程、RSS 692–700 MB、footprint 298–307 MB、CPU 0.1%；历史基线记作 1.34% / 672 MB——那 1.34% 里含 Chrome 启动后 ~40s 的自身 CPU 尾巴（§4.1.10）。
 
 **活跃压测**（`node scripts/headless-bench.mjs --seconds 10`，每轮 snapshot + type + screenshot + scroll，10 个进程）：
 
@@ -432,7 +434,7 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 
 **否掉：`DevToolsActivePort` 轮询 150 → 20ms。** 轮询超时是真的（n=18，中位 30.6ms，范围 −0.6–136.5ms），但 Chrome 写完端口文件后还要 300–570ms 才接受 WebSocket：探针在端口文件一出现就连接，WS open 相对 driver 只差 −2.5/−0.4/−0.3ms；配对 A/B 里 `port → ws open` 不变（+2.8ms 中位差）。轮询等待完全被 launch 覆盖，保持 150ms（注释里记了这个结论，防止后来者再「优化」它）。
 
-**边界**：剩下 ~750ms 是 Chrome 进程启动（435ms）+ Chrome 在端口写完到能服务 CDP 之间（316ms），Node 侧动不了。不建议为了第一条工具调用预热 Chrome 进程：空闲 headless 进程树 RSS 就有 672MB（§4.1），不用 headless 后端的桌面用户不该付这份常驻内存。标准 bench 不受影响（启动发生在计时窗口外，bench 先 warm-up 再计时）：改后复跑 539 / 558 / 577 动作/10s。
+**边界**：剩下 ~750ms 是 Chrome 进程启动（435ms）+ Chrome 在端口写完到能服务 CDP 之间（316ms），Node 侧动不了。不建议为了第一条工具调用预热 Chrome 进程：空闲 headless 进程树 RSS 就有 449MB（§4.1，`--no-startup-window` 之前是 672–700MB），不用 headless 后端的桌面用户不该付这份常驻内存。标准 bench 不受影响（启动发生在计时窗口外，bench 先 warm-up 再计时）：改后复跑 539 / 558 / 577 动作/10s。
 
 **回归**：`node test/headless.mjs` PASS。
 
@@ -655,6 +657,50 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 
 **回归**：`node test/headless.mjs` 新增 12 组断言（JPEG clip 的 SOI/EOI、SOF 像素尺寸 = 600×300×dpr、同一页字节相同、改页后必须变、`ref` 尺寸 = 元素框、主世界覆盖 `toDataURL` 后裁剪仍正确且不是页面给的字节、页面状态复原），清理探针残留的 141 个 headless Chrome 后连跑 7 次 PASS（机器被占满时，既有断言「两张截图都要由 stream 提供」会偶发假失败——那是旧竞态、与本次改动无关，负载正常后稳定）；`npm test` exit 0（含 `HEADLESS TEST: PASS`、`EXTENSION LOGIC TEST: PASS`、`13 checks passed, 0 failed`）。
 
+### 4.1.10 2026-10-18 第十一轮：不启初始窗口（Ralph 循环第 6 轮）
+
+**改了什么**（`src/headless.js`，launch args 一行）：`--no-startup-window`。driver 的每个 tab 都是自己用 `Target.createTarget` 建的，Chrome 启动时自己开的那个 `about:blank` 页面从来没人驱动；不开它，Chrome 启动后零 tab，第一个 tab 才建窗口。
+
+**为什么安全**（4 条实测，都在同一棵树上交替跑）：
+
+1. **关掉所有 session tab 后 Chrome 不退出**：`tab.close_session` 之后两棵树都 `cdp: true`、进程存活、`tabs: 0`，再建 tab 正常（base 77ms / new 279ms，一次性的窗口重建）。
+2. **视口不变**：`--window-size=1440,900` 仍作用于后来创建的窗口——`innerWidth/innerHeight = 1440/813`、`dpr = 1`，同一页同一张视口截图**字节完全相同**（21708 B）。
+3. **冷启动不回归**（3 对交替，fresh profile）：`ensureStarted` 740/754/530 → 528/536/341 ms（中位 740→528），第一个 `tab.goto` 173/187/254 → 280/296/346 ms（中位 187→296，要建窗口），到第一张截图 972/967/832 → 732/897/861 ms（中位 967→861）。启动省的时间基本被「第一个 tab 建窗口」吃掉，净持平偏好。
+4. 位置参数 `about:blank` **保留**：Chrome 认 `--no-startup-window` 时会忽略它；万一某个版本不认这个开关，位置参数还能退回旧的「开一个 about:blank 窗口」行为。
+
+**空闲 A/B**（`git archive 98b35e2` 导出原树 vs 本轮；每个状态 60s 预热 + 15s 采样，交替 1–2 对，1-min load 3.4–5.4；RSS = 所有进程 `ps -o rss` 求和，会把共享页重复计；footprint = `footprint -p` 的 phys footprint）：
+
+| 空闲状态 | 改前 | 改后 |
+|---|---|---|
+| **从没用过（零 tab）** | 7 进程 / 3 renderer / RSS 692,700 / footprint 298,307 / CPU 0.1% | **5 / 1 / 449,450 / 150,152 / 0.1–0.3%** |
+| 用一个 tab、页面闲着 | 8 / 4 / 813,820 / 336,339 / CPU 0.4–1.0% | **7 / 3 / 712,715 / 307,309 / 0.2–0.6%** |
+| 所有 tab 都关了 | 7 / 3 / 705 / 304 / 0.3% | **5 / 1 / 497 / 177 / 0.2%** |
+
+最常用的是「从没用过」态：**footprint −150 MB（−50%）、RSS −246 MB（−35%）、进程 7→5**；开着一个 tab 时 **footprint −30 MB（−9%）、RSS −103 MB（−13%）**。
+
+**为什么零 tab 比一个 tab 降得多**：Chrome 的 top-chrome 浏览器 UI 是两个 `browser_ui` target（`chrome://omnibox-popup.top-chrome/` 和 `.../omnibox_popup_aim.html`），随窗口创建，合计 ≈25 + 49 MB footprint。零 tab 时没窗口 → 不创建；有一个 tab 时它们会被建出来，只有关掉最后一个 tab 才一起消失。
+
+**活跃压测不回归**（同机交替 A/B，`--seconds 10`，`node scripts/headless-bench.mjs`）：
+
+| 场景 | 改前 | 改后 |
+|---|---|---|
+| 标准 PNG（3 对） | 601/601/589 动作、screenshot 15.11/14.92/15.23 ms、每动作 CPU 17.20/16.84/17.47 ms、RSS 1180/1147/1145 MB、10 进程 | 595/584/586 动作、14.50/14.80/15.47 ms、17.18/16.25/17.32 ms、RSS 1023/1023/1015 MB、9 进程 |
+| JPEG clip 600×300（3 对） | 465/457/458 动作、19.69/20.00/19.57 ms、每动作 CPU 23.61/23.61/25.41 ms | 426/468/533 动作、21.20/19.29/16.87 ms、25.94/24.21/23.30 ms |
+
+（都在既有噪声带内：上一轮同场景 457–465 动作 / 19.6–20.0 ms。活跃期 RSS 降 130–155 MB 来自少一个空闲 renderer。）
+
+**空闲 CPU：没有可优化的了。** 三种空闲态的 Chrome 合计 CPU 都是 0.1–1.0%，Node driver 0.1%。文档里旧的「空闲 1.34%」主要是**启动尾巴**——同一台机器、完全不经 CDP 直接起 Chrome（raw 探针）：browser 进程启动后前 20s ≈40%、第二个 20s ≈13%，之后 0.1–1.3%。那是 Chrome 自己的 profile/首启工作，Node 侧没有可动的；A/B 两侧的空闲 CPU 都在这个噪声量级。
+
+**量过但不采纳**：
+
+- `--renderer-process-limit=1`（配合本改动）：6 进程 / 2 renderer / RSS 636 MB（比改前 −176 MB），但把所有 tab 并进一个 renderer：丢站点隔离（恶意页可在同进程读其它站点内存）、多 tab 时互相拖慢。不做默认。
+- 用 CDP 关 `browser_ui` target：`Target.closeTarget` 返回 `{success:true}` 但 target 仍在、进程不掉。
+- `--disable-features=WebUIOmniboxPopup`：只去掉 `omnibox-popup.top-chrome/` 一个 target（`.../omnibox_popup_aim.html` 还在），进程数/RSS 不变（同窗口态 3 renderer / 709 MB）。`AimEnabled`、`WebUIOmniboxFullPopup`、`PreloadTopChromeWebUI`、`--app=about:blank` 对 target 集合没有影响。另外把 `--disable-features` 写进默认参数会覆盖用户经 `DSH_HEADLESS_CHROME_ARGS` 传的同名开关，收益又不确定，不做。
+- `--disable-component-extensions-with-background-pages --disable-default-apps`：只去掉两个组件扩展 target（`fignfif…`/`nkeimh…` 的 service worker / background page），它们启动十几秒后自己就退了，稳态 RSS 无变化（796 vs 806 MB）。不做。
+- 拿不到窗口就关不掉 Chrome top-chrome UI；要更省只能换 `chrome-headless-shell` 一类的独立二进制（本机没装，不引入）。
+
+**回归**：`node test/headless.mjs` 3 次 PASS（没加新断言——改的只是启动参数，行为由既有 e2e 覆盖，含 tab 生命周期、截图/帧流、capture、screencast、downloads）；`npm test` exit 0（含 `HEADLESS TEST: PASS`、`EXTENSION LOGIC TEST: PASS`、`13 checks passed, 0 failed`）。
+
 ## 5. 下一步（H1）
 
 1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
@@ -664,14 +710,15 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
    - ~~只读 evaluate 后的 40ms 重绘窗~~ ✅ **已落地（§4.1.7）**：页面侧视觉变更追踪器证明「没重绘」时不再推进 change marker，只读 evaluate → 截图 43.2 → 0.26 ms、边界 scroll 42.2 → 0.22 ms；有 canvas / 同源 subframe / 异步重绘时保持保守。剩余同类项：`Input.*` 动作（press / clickAt / drag）仍走满窗口。
    - ~~合成 click / hover 后的 40ms 重绘窗~~ ✅ **已落地（§4.1.8）**：普通 click → 截图 43.2 → 0.23 ms、hover 43.4 → 0.21 ms；目标可能导航 / 提交表单 / 激活控件 / 操作媒体 / 开关 popover 时保持保守（hazard），无 mutation 的 UA 状态变化由 change/toggle 计数器兜底。剩余同类项：`Input.*`（press / clickAt / drag）。
    - viewer 分支每帧的 base64+磁盘写已节流（§4.1.6）：headless 落盘 15.0→10.0 帧/s、fs 同步耗时中位 −31%、node CPU −13%；桌面 host 落盘 29.7→10.4 帧/s、fs 同步耗时 −55%。
-   - 冷启动剩下的 ~750ms 在 Chrome 进程启动与 CDP 端口就绪（§4.1.5），Node 侧不可控；不建议预热进程（空闲即 672MB RSS）。
+   - 冷启动剩下的 ~750ms 在 Chrome 进程启动与 CDP 端口就绪（§4.1.5），Node 侧不可控；不建议预热进程（空闲即 449MB RSS，§4.1）。
+   - ~~headless 空闲内存~~ ✅ **已落地（§4.1.10）**：`--no-startup-window` 去掉了没人用的初始 `about:blank` 窗口——零 tab 空闲 7 进程/700MB RSS/footprint 302MB → **5 / 449MB / 151MB**；开着一个 tab 8/816 → 7/714；关掉所有 tab 7/705 → 5/497。**别再做**：`--renderer-process-limit=1`（丢站点隔离）、用 CDP 关 `browser_ui` target（关不掉）、`--disable-features` 关 omnibox popup（只少一个 target、RSS 不变，还会覆盖用户传的 `--disable-features`）。**剩余**：有窗口时 Chrome 的两个 top-chrome UI renderer（≈74MB footprint）关不掉，除非换 `chrome-headless-shell` 独立二进制（本机没装）。
 4. 启动参数在帧流路径上扫过（§4.1.3），没有净收益；`--disable-frame-rate-limit` 仍是否掉的（每动作 CPU +41%）。
 
 ## 6. 代码
 
 | 文件 | 内容 |
 |---|---|
-| `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7）、合成 click/hover 的 hazard 判定与 change/toggle 计数（§4.1.8）、JPEG `clip`/`ref` 的 isolated-world 页面裁剪与 screencast 帧几何过滤（§4.1.9） |
+| `src/headless.js` | headless Chromium 启动（`--no-startup-window`：只有 tab 才建窗口，§4.1.10）、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7）、合成 click/hover 的 hazard 判定与 change/toggle 计数（§4.1.8）、JPEG `clip`/`ref` 的 isolated-world 页面裁剪与 screencast 帧几何过滤（§4.1.9） |
 | `host/host.mjs` | Chrome native messaging host：扩展 ↔ provider 的 JSON 帧中继、discovery 文件重连、viewer 帧落盘（节流，§4.1.6）与扩展热更新监听 |
 | `src/backend.js` | BackendRouter + AsyncLocalStorage + `wrapToolsForBackend`（给 39 个工具加 `backend` 参数） |
 | `index.js` | 创建 HeadlessDriver/Router，包装工具，卸载时关闭 |
