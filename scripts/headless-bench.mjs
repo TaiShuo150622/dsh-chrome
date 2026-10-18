@@ -29,8 +29,10 @@
  * path. `--shot-format jpeg` measures the JPEG path (not the tool default) with
  * `--shot-quality`. `--shot-clip WxH` screenshots a fixed viewport region and
  * `--shot-ref` screenshots the round's input element by ref: both exercise the
- * element/region screenshot path (`clip`/`ref` are CSS px; the PNG is device
- * px), which used to fall back to Page.captureScreenshot. `--gap-ms` inserts
+ * element/region screenshot path (`clip`/`ref` are CSS px). PNG regions are
+ * cropped in the driver, JPEG regions by the page's own codec inside an
+ * isolated world (docs/HEADLESS.md §4.1.4/§4.1.9); both used to fall back to
+ * Page.captureScreenshot. `--gap-ms` inserts
  * that much idle time between rounds, which
  * is the realistic tool-call cadence for the frame-stream idle policy (the
  * default 0 gap is the back-to-back worst case; use a gap longer than
@@ -182,6 +184,28 @@ function createTimer() {
   }
 }
 
+// Screenshot frame-stream counters: shows how many region shots were served by
+// the crop path (driver PNG crop / page-side JPEG crop) versus the capture
+// fallback (docs/HEADLESS.md §4.1.4/§4.1.9).
+function shotStreamDiag() {
+  for (const tab of driver.tabs.values()) {
+    const state = tab.shotStream
+    if (!state) continue
+    return {
+      format: state.format,
+      quality: state.quality,
+      restarts: state.restarts,
+      frames: state.frames,
+      served: state.served,
+      cropped: state.cropped,
+      jpegCropped: state.jpegCropped,
+      fallbacks: state.fallbacks,
+      repaintMisses: state.repaintMisses,
+    }
+  }
+  return null
+}
+
 try {
   await driver.ensureStarted()
   await driver.request('tab.goto', { owner: 'bench', url: `http://127.0.0.1:${port}/` })
@@ -282,6 +306,7 @@ try {
           format: SHOT_FORMAT,
           ...(SHOT_FORMAT === 'jpeg' ? { quality: SHOT_QUALITY } : { optimizeForSpeed: SHOT_OPTIMIZE }),
         },
+        screenshotStream: shotStreamDiag(),
         baseline: BASELINE,
         delta: {
           actionsPercent: percentDelta(actions, BASELINE.actions),

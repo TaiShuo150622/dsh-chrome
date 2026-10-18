@@ -111,6 +111,16 @@ const SHOT_STREAM_FIRST_FRAME_TIMEOUT_MS = Math.max(50, Number(process.env.DSH_H
 const SHOT_STREAM_KEEPALIVE = process.env.DSH_HEADLESS_SHOT_STREAM_KEEPALIVE !== '0'
 const SHOT_STREAM_FAILURES_BEFORE_BACKOFF = 2
 const SHOT_STREAM_BACKOFF_MS = 5000
+// JPEG `clip`/`ref` shots are cropped by the page's own decoder/encoder inside
+// an isolated world, because the driver has no JPEG codec (docs/HEADLESS.md
+// §4.1.9). The frame bytes are stored on that world's `window`, so cropping an
+// unchanged frame again pays no transfer. A frame above this size is left to
+// Page.captureScreenshot: a 2MB+ JPEG is a 4K-class fully-detailed page, where
+// the data-URL round trip stops paying for itself.
+// `DSH_HEADLESS_JPEG_CROP=0` restores the capture path.
+const SHOT_JPEG_CROP_ENABLED = process.env.DSH_HEADLESS_JPEG_CROP !== '0'
+const SHOT_JPEG_CROP_MAX_FRAME_BYTES = 2 * 1024 * 1024
+const SHOT_JPEG_CROP_WORLD = 'dsh-shot-crop'
 
 // Page-side visual-change probe (docs/HEADLESS.md §4.1.7/§4.1.8). The repaint
 // window above is a blind wait for a composited frame, so an action that cannot
@@ -322,6 +332,42 @@ function pngFrameSize(buffer) {
   const height = buffer.readUInt32BE(20)
   if (!width || !height) return null
   return { width, height }
+}
+
+// Cheap SOF-only parse of a JPEG frame: same job as pngFrameSize (turn the CSS
+// px clip into source pixels) without decoding anything. Segments are walked
+// marker to marker, so the cost is a few hundred bytes of header, not the
+// entropy-coded image. Returns null for anything that is not a well-formed
+// JPEG header (the caller then keeps the capture path).
+function jpegFrameSize(buffer) {
+  if (!buffer || buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return null
+  let offset = 2
+  while (offset + 4 <= buffer.length) {
+    if (buffer[offset] !== 0xff) return null
+    const marker = buffer[offset + 1]
+    if (marker === 0xff) {
+      offset += 1 // fill byte before a marker
+      continue
+    }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      offset += 2
+      continue
+    }
+    if (marker === 0xd8 || marker === 0xd9 || marker === 0xda) return null
+    const length = buffer.readUInt16BE(offset + 2)
+    if (length < 2 || offset + 2 + length > buffer.length) return null
+    // SOF0..SOF15 except DHT (C4), JPG (C8) and DAC (CC).
+    const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
+    if (isSof) {
+      if (length < 7) return null
+      const height = buffer.readUInt16BE(offset + 5)
+      const width = buffer.readUInt16BE(offset + 7)
+      if (!width || !height) return null
+      return { width, height }
+    }
+    offset += 2 + length
+  }
+  return null
 }
 
 function decodePngFrame(buffer, { maxColumns = 0, maxRows = 0 } = {}) {
@@ -1254,13 +1300,27 @@ export class HeadlessDriver {
         const data = String(params.data || '')
         if (Number.isFinite(composedAt) && data) {
           shot.frames += 1
-          shot.last = {
-            buffer: Buffer.from(data, 'base64'),
-            composedAt,
-            width: Number(params.metadata?.deviceWidth) || 0,
-            height: Number(params.metadata?.deviceHeight) || 0,
+          const buffer = Buffer.from(data, 'base64')
+          // Chrome can emit a frame of the wrong geometry right after a
+          // capture-with-clip (observed 600x300 and 1440x720 frames where the
+          // stream was asked for 1440x813): that is the clip/old surface, not
+          // the viewport. Such a frame cannot be mapped back to CSS px, so it
+          // must not become the cached frame; it counts as "no frame" so the
+          // clip path takes its capture fallback immediately instead of waiting
+          // a repaint window for a frame it cannot use.
+          const pixelSize = shot.format === 'jpeg' ? jpegFrameSize(buffer) : pngFrameSize(buffer)
+          const usable =
+            !pixelSize ||
+            (Math.abs(pixelSize.width - shot.maxWidth) <= 2 && Math.abs(pixelSize.height - shot.maxHeight) <= 2)
+          if (usable) {
+            shot.last = {
+              buffer,
+              composedAt,
+              width: Number(params.metadata?.deviceWidth) || 0,
+              height: Number(params.metadata?.deviceHeight) || 0,
+            }
+            this.resolveShotWaiters(shot)
           }
-          this.resolveShotWaiters(shot)
         }
       }
       return
@@ -1538,6 +1598,7 @@ export class HeadlessDriver {
         frames: 0,
         served: 0,
         cropped: 0,
+        jpegCropped: 0,
         fallbacks: 0,
         timeouts: 0,
         repaintMisses: 0,
@@ -1786,6 +1847,180 @@ export class HeadlessDriver {
     return encodePngFrame(width, height, channels, cropped)
   }
 
+  // The same region crop for JPEG frames, which the driver cannot decode
+  // itself. The page has a JPEG codec (the one that decoded the <img> the user
+  // is looking at), so the crop is done there with `createImageBitmap` +
+  // `canvas.toDataURL('image/jpeg', q)`, and the frame is passed in as a
+  // `data:` URL. Two properties make that safe and cheap:
+  //
+  // - The code runs in a **dedicated isolated world** (`Page.createIsolatedWorld`).
+  //   Page scripts have their own globals and DOM prototypes there, so a page
+  //   cannot patch `createImageBitmap`/`toDataURL` to break the crop or to forge
+  //   pixels for its own screenshot. Anything that fails (context destroyed by a
+  //   navigation, no canvas support, encode error, malformed output) returns
+  //   null and the caller falls back to a full-viewport capture + crop and then
+  //   to Page.captureScreenshot with the clip.
+  // - The frame bytes are cached on the isolated world's `window` under a token
+  //   derived from the frame (composition timestamp + encoded size). Re-cropping
+  //   an unchanged frame therefore skips the transfer; only a new frame pays it.
+  //
+  // Cost is content-dependent: a light text page crops in ~5ms, a fully-detailed
+  // frame pays a full decode (~10ms) + crop encode (~10ms), still ~half of the
+  // ~50ms capture. Frames above SHOT_JPEG_CROP_MAX_FRAME_BYTES keep capture.
+  async shotCropContext(tab) {
+    if (tab.shotCropWorld != null) return tab.shotCropWorld
+    // A new world has no cached frame, so the next crop embeds the bytes again.
+    tab.shotCropFrameToken = null
+    try {
+      const tree = await this.cdp.send('Page.getFrameTree', {}, tab.sessionId)
+      const frameId = tree?.frameTree?.frame?.id
+      if (!frameId) return null
+      const world = await this.cdp.send(
+        'Page.createIsolatedWorld',
+        { frameId, worldName: SHOT_JPEG_CROP_WORLD },
+        tab.sessionId,
+      )
+      const contextId = world?.executionContextId
+      tab.shotCropWorld = Number.isFinite(contextId) ? contextId : null
+      return tab.shotCropWorld
+    } catch {
+      tab.shotCropWorld = null
+      return null
+    }
+  }
+
+  async cropJpegScreenshotFrame(tab, frame, clip, quality) {
+    if (!frame?.buffer) return null
+    if (!frame.jpegSize) frame.jpegSize = jpegFrameSize(frame.buffer)
+    return this.cropJpegBuffer(tab, frame.buffer, frame.jpegSize, clip, quality, `${frame.composedAt}:${frame.buffer.length}`)
+  }
+
+  // A JPEG+clip shot whose frame-stream crop could not be used is served by
+  // capturing the **whole viewport** and cropping that, never by capturing with
+  // a clip while the stream runs: a clip capture makes Chrome's screencast emit
+  // frames sized to the clip for this tab, which poisons every later crop
+  // (measured; see docs/HEADLESS.md §4.1.9). The full capture also repaints the
+  // full surface, so the next stream crop has a usable frame again.
+  async captureFullJpegClip(tab, clip, quality) {
+    if (!SHOT_JPEG_CROP_ENABLED) return null
+    try {
+      const shot = await this.cdp.send(
+        'Page.captureScreenshot',
+        { format: 'jpeg', quality, captureBeyondViewport: false },
+        tab.sessionId,
+      )
+      if (!shot?.data) return null
+      const buffer = Buffer.from(shot.data, 'base64')
+      return await this.cropJpegBuffer(tab, buffer, jpegFrameSize(buffer), clip, quality, `capture:${Date.now()}`)
+    } catch {
+      return null
+    }
+  }
+
+  // The exact clipped capture. Cheap (Chrome encodes only the region) and used
+  // for a cold JPEG region shot *before* any screencast exists for the tab;
+  // afterwards the stream is warmed for the shots that follow. The caller must
+  // not use this while the stream is running — see captureFullJpegClip.
+  async captureClippedJpeg(tab, clip, quality) {
+    try {
+      const shot = await this.cdp.send(
+        'Page.captureScreenshot',
+        { format: 'jpeg', quality, captureBeyondViewport: false, clip: { ...clip, scale: 1 } },
+        tab.sessionId,
+      )
+      if (!shot?.data) return null
+      return Buffer.from(shot.data, 'base64')
+    } catch {
+      return null
+    }
+  }
+
+  async cropJpegBuffer(tab, buffer, size, clip, quality, token) {
+    if (!SHOT_JPEG_CROP_ENABLED) return null
+    if (!buffer || !size) return null
+    if (buffer.length > SHOT_JPEG_CROP_MAX_FRAME_BYTES) return null
+    const viewport = await this.viewportSize(tab)
+    // Chrome can emit frames of the wrong geometry right after a capture with a
+    // clip (observed 1440x720 and 600x300 where the stream was asked for
+    // 1440x813). Cropping one of those would silently return the right region
+    // at the wrong resolution, so anything that does not match the current
+    // device size keeps the capture path instead. The +-2px tolerance covers
+    // encoder rounding.
+    const expectedWidth = Math.max(1, Math.round((viewport.w || size.width) * (viewport.dpr || 1)))
+    const expectedHeight = Math.max(1, Math.round((viewport.h || size.height) * (viewport.dpr || 1)))
+    if (Math.abs(size.width - expectedWidth) > 2 || Math.abs(size.height - expectedHeight) > 2) return null
+    const scale = size.width / (viewport.w || size.width)
+    const requestedX = Math.round(clip.x * scale)
+    const requestedY = Math.round(clip.y * scale)
+    const requestedWidth = Math.max(1, Math.round(clip.width * scale))
+    const requestedHeight = Math.max(1, Math.round(clip.height * scale))
+    if (
+      requestedX >= size.width ||
+      requestedY >= size.height ||
+      requestedX + requestedWidth <= 0 ||
+      requestedY + requestedHeight <= 0
+    ) {
+      return null
+    }
+    const x = Math.max(0, requestedX)
+    const y = Math.max(0, requestedY)
+    const width = Math.min(size.width - x, requestedWidth - (x - requestedX))
+    const height = Math.min(size.height - y, requestedHeight - (y - requestedY))
+    if (width < 1 || height < 1) return null
+    const encodeQuality = Math.max(0.1, Math.min(1, quality / 100))
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const contextId = await this.shotCropContext(tab)
+      if (contextId == null) return null
+      const reuse = tab.shotCropFrameToken === token
+      const expression = `(async () => {
+  ${reuse ? '' : `window.__dshShotFrame = ${JSON.stringify(buffer.toString('base64'))}`}
+  const image = await createImageBitmap(await (await fetch('data:image/jpeg;base64,' + window.__dshShotFrame)).blob())
+  const canvas = document.createElement('canvas')
+  canvas.width = ${width}
+  canvas.height = ${height}
+  canvas.getContext('2d').drawImage(image, ${x}, ${y}, ${width}, ${height}, 0, 0, ${width}, ${height})
+  image.close()
+  const url = canvas.toDataURL('image/jpeg', ${encodeQuality})
+  return url.slice(url.indexOf(',') + 1)
+})()`
+      let value
+      try {
+        const result = await this.cdp.send(
+          'Runtime.evaluate',
+          { expression, contextId, returnByValue: true, awaitPromise: true },
+          tab.sessionId,
+        )
+        if (result.exceptionDetails) {
+          throw new Error(result.exceptionDetails.exception?.description || 'jpeg crop failed')
+        }
+        value = result.result?.value
+      } catch {
+        // The isolated world dies with its document (navigation). Drop it and
+        // retry once with a fresh world; the retry re-embeds the frame.
+        tab.shotCropWorld = null
+        tab.shotCropFrameToken = null
+        continue
+      }
+      if (typeof value !== 'string' || value.length < 32) return null
+      const bytes = Buffer.from(value, 'base64')
+      if (
+        bytes.length < 128 ||
+        bytes[0] !== 0xff ||
+        bytes[1] !== 0xd8 ||
+        bytes[2] !== 0xff ||
+        bytes[bytes.length - 2] !== 0xff ||
+        bytes[bytes.length - 1] !== 0xd9
+      ) {
+        // Do not trust the world's frame cache after a malformed result.
+        tab.shotCropFrameToken = null
+        return null
+      }
+      tab.shotCropFrameToken = token
+      return bytes
+    }
+    return null
+  }
+
   // Returns a PNG buffer for the current viewport (or for the requested `clip`
   // region), or null when no frame is available at all (caller falls back to
   // Page.captureScreenshot).
@@ -1798,10 +2033,18 @@ export class HeadlessDriver {
   // and a capture would force a repaint just to show the same pixels. The wait
   // is longer for the very first frame of a new stream (Chrome has to start the
   // capture pipeline), where there is no cached frame to fall back on.
+  //
+  // JPEG + clip is the one case that does not wait for a first frame: nothing
+  // is cached yet on a just-started stream, and taking the capture right away
+  // (see captureJpegClip, ~full-viewport capture + crop) is cheaper than the
+  // up-to-150ms first-frame wait. The stream keeps warming in the background,
+  // so the next clip shot within the idle window is a crop.
   async screenshotFromStream(tab, options = {}) {
     const state = await this.ensureShotStream(tab, options)
     if (!state) return null
+    if (options.clip && options.format === 'jpeg' && !state.last) return null
     const changeAt = tab.renderChangeAt || 0
+    let repaintMiss = false
     let frame = state.last && state.last.composedAt >= changeAt ? state.last : null
     if (frame && Date.now() / 1000 - frame.composedAt > 1) {
       // A stale-but-fresh-enough frame from a tab that was backgrounded since
@@ -1822,6 +2065,7 @@ export class HeadlessDriver {
         // nothing is being composited at all — fall back to capture.
         if (!(await this.pageVisible(tab))) return null
         state.repaintMisses += 1
+        repaintMiss = true
         frame = state.last
       }
     }
@@ -1838,6 +2082,26 @@ export class HeadlessDriver {
     state.served += 1
     this.touchShotStream(tab, state)
     if (!options.clip) return frame.buffer
+    if (options.format === 'jpeg') {
+      // A repaint-miss frame is the *previous* paint: honest for a page that
+      // provably did not repaint, but the JPEG crop path cannot tell the two
+      // apart from its own side, so it keeps the capture for that case instead
+      // of possibly returning pre-action pixels. (The PNG path has always used
+      // the miss frame; its bytes are lossless and driver-side, so a stale
+      // frame there is a freshness question, not a resolution one.)
+      if (repaintMiss) {
+        state.fallbacks += 1
+        return null
+      }
+      const jpegCropped = await this.cropJpegScreenshotFrame(tab, frame, options.clip, options.quality)
+      if (jpegCropped) {
+        state.cropped += 1
+        state.jpegCropped += 1
+        return jpegCropped
+      }
+      state.fallbacks += 1
+      return null
+    }
     const cropped = await this.cropScreenshotFrame(tab, frame, options.clip)
     if (!cropped) {
       state.fallbacks += 1
@@ -2134,16 +2398,39 @@ export class HeadlessDriver {
         const fullPage = Boolean(params.fullPage)
         const clip = fullPage ? null : await this.resolveScreenshotClip(tab, params)
         // A plain viewport shot (the common case for both formats) is served
-        // from the compositor's own frames, and PNG clip/ref shots are cropped
-        // out of that frame in the driver (see cropScreenshotFrame). The
-        // slow-PNG opt-out, full-page, frameRef, highlight and JPEG crops keep
-        // the exact Page.captureScreenshot path; the resolved clip is passed
-        // through so the fallback is still the requested region.
+        // from the compositor's own frames, PNG clip/ref shots are cropped out
+        // of that frame in the driver (see cropScreenshotFrame), and JPEG
+        // clip/ref shots are cropped by the page's own codec inside an isolated
+        // world (see cropJpegScreenshotFrame, docs/HEADLESS.md §4.1.9). The
+        // slow-PNG opt-out, full-page, frameRef and highlight keep the exact
+        // Page.captureScreenshot path; the resolved clip is passed through so
+        // the fallback is still the requested region (except for JPEG regions,
+        // which take the clipped capture before the stream exists and a
+        // full-viewport capture + crop after, see captureClippedJpeg /
+        // captureFullJpegClip).
         const needsCapture =
           Boolean(fullPage || params.frameRef || params.highlight) ||
-          (format === 'png' && params.optimizeForSpeed === false) ||
-          (format === 'jpeg' && clip != null)
-        let data = needsCapture ? null : await this.screenshotFromStream(tab, { format, quality, clip })
+          (format === 'png' && params.optimizeForSpeed === false)
+        // A cold JPEG region shot (no screencast running yet) takes the cheap
+        // clipped capture *first* and only then starts the stream: taken while
+        // the stream runs, a clipped capture makes Chrome emit clip-sized
+        // screencast frames for the tab and poisons every following crop.
+        const coldJpegRegion = format === 'jpeg' && clip && !needsCapture && !tab.shotStream?.active
+        let data = coldJpegRegion ? await this.captureClippedJpeg(tab, clip, quality) : null
+        if (coldJpegRegion) {
+          // Warm the stream for the shots that follow; a failure only means the
+          // next shot takes the same cold path again.
+          await this.ensureShotStream(tab, { format, quality }).catch(() => null)
+        }
+        if (!data && !needsCapture) {
+          data = await this.screenshotFromStream(tab, { format, quality, clip })
+        }
+        if (!data && format === 'jpeg' && clip) {
+          // The stream is running (or its crop failed): capture the whole
+          // viewport and crop it the same way, which also repaints the full
+          // surface so the next stream crop is usable again.
+          data = await this.captureFullJpegClip(tab, clip, quality)
+        }
         if (!data) {
           const captureParams = { format, captureBeyondViewport: fullPage }
           if (clip) captureParams.clip = { ...clip, scale: 1 }
@@ -2521,6 +2808,7 @@ export class HeadlessDriver {
                     restarts: stream.restarts,
                     served: stream.served,
                     cropped: stream.cropped,
+                    jpegCropped: stream.jpegCropped,
                     fallbacks: stream.fallbacks,
                     timeouts: stream.timeouts,
                     repaintMisses: stream.repaintMisses,

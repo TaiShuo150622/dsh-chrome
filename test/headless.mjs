@@ -11,6 +11,32 @@ if (!headlessSupported()) {
   process.exit(0)
 }
 
+// JPEG SOF pixel size, parsed independently of the driver's helper so the tests
+// check the bytes that were actually written rather than the reported numbers.
+function jpegSofSize(buffer) {
+  let offset = 2
+  while (offset + 4 <= buffer.length) {
+    if (buffer[offset] !== 0xff) return null
+    const marker = buffer[offset + 1]
+    if (marker === 0xff) {
+      offset += 1
+      continue
+    }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      offset += 2
+      continue
+    }
+    if (marker === 0xd8 || marker === 0xd9 || marker === 0xda) return null
+    const length = buffer.readUInt16BE(offset + 2)
+    if (length < 2 || offset + 2 + length > buffer.length) return null
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return { width: buffer.readUInt16BE(offset + 7), height: buffer.readUInt16BE(offset + 5) }
+    }
+    offset += 2 + length
+  }
+  return null
+}
+
 const page = `<!doctype html><html><head><title>Headless Test</title></head><body>
 <h1>Headless Test</h1>
 <label>Name <input id="name" placeholder="name"></label>
@@ -189,6 +215,95 @@ try {
     (err) => err.code === 'INVALID_ARGUMENT',
     'empty clip must be rejected like the desktop backend',
   )
+
+  // JPEG clip/ref shots (docs/HEADLESS.md §4.1.9): the driver has no JPEG
+  // codec, so a JPEG region is decoded/encoded by the page inside a dedicated
+  // isolated world. Chrome needs a paint before the JPEG stream holds a frame
+  // of the right size (the first frame after a stream start can be a stale,
+  // smaller surface), so poll for a shot the driver actually cropped; the
+  // capture fallback is correct too, it is just not what this path is about.
+  const jpegStreamDiag = async () =>
+    (await driver.request('tab.debug_diag')).tabs.find((tab) => tab.tabId === gone.tabId)?.screenshotStream
+  const jpegClipRequest = () =>
+    driver.request('tab.screenshot', { owner: 's1', format: 'jpeg', quality: 60, clip: clipRegion })
+  let jpegClipShot = null
+  for (let attempt = 0; attempt < 16 && !jpegClipShot; attempt += 1) {
+    const before = (await jpegStreamDiag())?.jpegCropped || 0
+    const candidate = await jpegClipRequest()
+    if (((await jpegStreamDiag())?.jpegCropped || 0) > before) {
+      jpegClipShot = candidate
+      break
+    }
+    // Force a paint so the freshly (re)started JPEG stream gets a real frame.
+    await driver.request('tab.evaluate', {
+      owner: 's1',
+      expression: `document.getElementById("out").textContent = "jpeg-clip-warm-${attempt}"`,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  assert.ok(jpegClipShot, 'the driver never cropped a JPEG clip screenshot')
+  const jpegClipBytes = fs.readFileSync(jpegClipShot.path)
+  assert.equal(jpegClipShot.mediaType, 'image/jpeg')
+  assert.ok(jpegClipShot.path.endsWith('.jpg'), `jpeg clip path: ${jpegClipShot.path}`)
+  assert.deepEqual([...jpegClipBytes.subarray(0, 3)], [0xff, 0xd8, 0xff], 'jpeg clip must start with SOI')
+  assert.deepEqual([...jpegClipBytes.subarray(-2)], [0xff, 0xd9], 'jpeg clip must end with EOI')
+  assert.deepEqual(
+    jpegSofSize(jpegClipBytes),
+    { width: Math.round(600 * dpr), height: Math.round(300 * dpr) },
+    `jpeg clip pixel size: ${JSON.stringify(jpegSofSize(jpegClipBytes))}`,
+  )
+  assert.deepEqual([jpegClipShot.width, jpegClipShot.height], [600, 300])
+  // An unchanged page re-crops the same cached frame.
+  const jpegClipAgain = await jpegClipRequest()
+  assert.deepEqual(fs.readFileSync(jpegClipAgain.path), jpegClipBytes, 'unchanged page must reuse the same cropped JPEG bytes')
+  // A page change must produce new pixels (never a stale frame).
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: 'document.getElementById("out").textContent = "jpeg-clip-freshness"',
+  })
+  const jpegClipChanged = await jpegClipRequest()
+  assert.notDeepEqual(
+    fs.readFileSync(jpegClipChanged.path),
+    jpegClipBytes,
+    'JPEG clip screenshot after a page change must not be stale',
+  )
+  // `ref` returns the element box in the same JPEG format.
+  const jpegRef = await driver.request('tab.screenshot', { owner: 's1', format: 'jpeg', quality: 60, ref: button.ref })
+  assert.deepEqual(
+    jpegSofSize(fs.readFileSync(jpegRef.path)),
+    { width: Math.round(buttonBox.width * dpr), height: Math.round(buttonBox.height * dpr) },
+    `jpeg ref pixel size: ${JSON.stringify(jpegSofSize(fs.readFileSync(jpegRef.path)))}`,
+  )
+  // The crop runs in an isolated world, so a page that breaks its own canvas
+  // encoder must neither break the crop nor be able to supply its own bytes.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression:
+      'window.__realToDataURL = HTMLCanvasElement.prototype.toDataURL; HTMLCanvasElement.prototype.toDataURL = () => "data:image/jpeg;base64,////"; true',
+  })
+  const croppedBeforeOverride = (await jpegStreamDiag())?.jpegCropped || 0
+  const jpegClipIsolated = await jpegClipRequest()
+  const croppedAfterOverride = (await jpegStreamDiag())?.jpegCropped || 0
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: 'HTMLCanvasElement.prototype.toDataURL = window.__realToDataURL; delete window.__realToDataURL; true',
+  })
+  assert.ok(
+    croppedAfterOverride > croppedBeforeOverride,
+    `a page canvas override broke the isolated-world JPEG crop: ${JSON.stringify(await jpegStreamDiag())}`,
+  )
+  const isolatedBytes = fs.readFileSync(jpegClipIsolated.path)
+  assert.deepEqual(
+    jpegSofSize(isolatedBytes),
+    { width: Math.round(600 * dpr), height: Math.round(300 * dpr) },
+    'page-supplied canvas bytes must not replace the screenshot',
+  )
+  assert.ok(isolatedBytes.length > 128, 'page-supplied canvas bytes must not replace the screenshot')
+  // Restore the page state the later visual-probe assertions expect.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: 'document.getElementById("out").textContent = "clip-freshness"',
+  })
 
   // Page-side visual probe (docs/HEADLESS.md §4.1.7): an action that provably
   // painted nothing (read-only evaluate, scroll that does not move the
