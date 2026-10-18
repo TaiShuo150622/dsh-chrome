@@ -9,7 +9,12 @@
  * screenshot / scroll).
  *
  * The scenario is the same as the 2026-10-17 baseline in docs/HEADLESS.md §4.1
- * (181 rounds/10s, 69.89% CPU, 1113MB RSS), so `delta` is directly comparable.
+ * (181 rounds/10s, 69.89% CPU, 1113MB RSS): `BASELINE` below is that original
+ * pre-optimization reference, so `delta` tells the historical story. Current
+ * numbers (screenshot frame stream, §4.1.1) are ~585 rounds/10s at ~17ms per
+ * round; when a faster path completes more actions in the same 10s, the
+ * aggregate `cpuPercent` rises even though `cpuMsPerAction` falls — use
+ * `cpuMsPerAction` and `perActionMs` to compare efficiency across revisions.
  *
  * Usage:
  *   node scripts/headless-bench.mjs [--seconds 10] [--actions 20]
@@ -18,7 +23,8 @@
  *
  * The PNG path defaults to Chrome's fast PNG encoder (`optimizeForSpeed`).
  * `--no-optimize` measures the old, smaller-PNG path; `--shot-format jpeg`
- * measures the optional JPEG path (not the tool default).
+ * measures the optional JPEG path (not the tool default). The action cap is
+ * ACTIONS*50 so the default 10s run is time-bound rather than cap-bound.
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -161,13 +167,20 @@ try {
   const until = t0 + DURATION * 1000
   const timer = createTimer()
   let actions = 0
-  while (Date.now() < until && actions < ACTIONS * 20) {
+  // Hard cap so a stuck fast path cannot loop forever; high enough that the
+  // default 10s run is time-bound (the screenshot frame stream made 58+ rounds
+  // per second possible, which used to hit the old ACTIONS*20=400 cap early).
+  while (Date.now() < until && actions < ACTIONS * 50) {
     await runRound(timer, actions)
     actions += 1
   }
   const elapsed = (Date.now() - t0) / 1000
   const after = processStats()
   const cpuPercent = round(((after.cpuSeconds - before.cpuSeconds) / elapsed) * 100, 2)
+  const cpuSeconds = round(after.cpuSeconds - before.cpuSeconds, 2)
+  // Per-action CPU is the latency-efficiency number: the aggregate percentage
+  // rises whenever a faster path simply completes more rounds in the same 10s.
+  const cpuMsPerAction = round((cpuSeconds * 1000) / Math.max(1, actions), 2)
   const perActionMs = timer.averages()
   const roundTotalMs = round((timer.buckets.snapshot + timer.buckets.type + timer.buckets.screenshot + timer.buckets.scroll) / Math.max(1, actions), 2)
   const roundsPerSecond = round(actions / elapsed, 2)
@@ -182,7 +195,8 @@ try {
         processes: after.processes,
         rssMb,
         cpuPercent,
-        cpuSeconds: round(after.cpuSeconds - before.cpuSeconds, 2),
+        cpuSeconds,
+        cpuMsPerAction,
         perActionMs: { ...perActionMs, roundTotal: roundTotalMs },
         screenshot: {
           format: SHOT_FORMAT,

@@ -69,6 +69,44 @@ const MAX_TABS = Number(process.env.DSH_HEADLESS_MAX_TABS) || 12
 const CAPTURE_MAX_DURATION_MS = 10 * 60 * 1000
 const CAPTURE_DEFAULT_MAX_ENTRIES = 300
 const CAPTURE_HARD_MAX_ENTRIES = 1000
+
+// Screenshot frame streaming (see docs/HEADLESS.md §4.1): while a tab is being
+// screenshotted repeatedly, keep a short-lived PNG screencast running and serve
+// `tab.screenshot` from the compositor's own frames. Chrome encodes a
+// screencast PNG with the same encoder as Page.captureScreenshot (the bytes are
+// identical for identical content), but the frame is produced off the request
+// path, so a shot costs one compositor frame interval (~16ms) instead of a full
+// capture (~44ms). A driver-side change marker plus the frame timestamp
+// guarantee the returned frame includes the latest tab action; when that cannot
+// be established the call falls back to a capture (first frame missing) or to
+// the latest painted frame (visible page that produced no repaint), so
+// screenshots never silently return a picture older than the last action.
+const SHOT_STREAM_IDLE_MS = Math.max(250, Number(process.env.DSH_HEADLESS_SHOT_STREAM_IDLE_MS) || 2000)
+const SHOT_STREAM_FRAME_TIMEOUT_MS = Math.max(20, Number(process.env.DSH_HEADLESS_SHOT_STREAM_FRAME_TIMEOUT_MS) || 40)
+const SHOT_STREAM_FIRST_FRAME_TIMEOUT_MS = Math.max(50, Number(process.env.DSH_HEADLESS_FIRST_FRAME_TIMEOUT_MS) || 150)
+const SHOT_STREAM_FAILURES_BEFORE_BACKOFF = 2
+const SHOT_STREAM_BACKOFF_MS = 5000
+
+// Every request that can change what the page renders bumps the owning tab's
+// change marker. `tab.screenshot` only reuses a streamed frame (or waits for a
+// new one) whose composition timestamp is at least this marker.
+const SHOT_STREAM_METHODS = new Set([
+  'tab.goto',
+  'tab.click',
+  'tab.clickAt',
+  'tab.type',
+  'tab.scroll',
+  'tab.press',
+  'tab.history',
+  'tab.select',
+  'tab.drag',
+  'tab.hover',
+  'tab.upload',
+  'tab.evaluate',
+  'tab.wait',
+  'tab.storage',
+  'tab.emulate',
+])
 const CAPTURE_BODY_TOTAL_LIMIT = 8 * 1024 * 1024
 const CAPTURE_RESPONSE_BODY_CHARS = 4096
 const CAPTURE_REQUEST_BODY_CHARS = 2048
@@ -815,34 +853,58 @@ export class HeadlessDriver {
     }
     if (message.method === 'Page.screencastFrame') {
       const tab = sessionTab
-      const state = tab?.screencast
-      if (!tab || !state) return
-      state.frames += 1
-      state.lastAt = Date.now()
+      if (!tab) return
+      // Ack immediately in both modes: an unacked frame pauses the stream.
       this.cdp
         .send('Page.screencastFrameAck', { sessionId: message.params?.sessionId }, tab.sessionId)
         .catch(() => {})
-      try {
-        const data = Buffer.from(String(message.params?.data || ''), 'base64')
-        fs.mkdirSync(this.screencastDir, { recursive: true })
-        const file = path.join(this.screencastDir, `latest.${state.format === 'png' ? 'png' : 'jpg'}`)
-        const tmp = `${file}.${process.pid}.tmp`
-        fs.writeFileSync(tmp, data, { mode: 0o600 })
-        fs.renameSync(tmp, file)
-        fs.writeFileSync(
-          path.join(this.screencastDir, 'meta.json'),
-          `${JSON.stringify({
-            updatedAt: Date.now(),
-            format: state.format === 'png' ? 'png' : 'jpg',
-            bytes: data.byteLength,
-            frames: state.frames,
-            metadata: message.params?.metadata || null,
-            backend: 'headless',
-          })}\n`,
-          { mode: 0o600 },
-        )
-      } catch {
-        // best effort
+      const params = message.params || {}
+      const state = tab.screencast
+      if (state) {
+        state.frames += 1
+        state.lastAt = Date.now()
+        try {
+          const data = Buffer.from(String(params.data || ''), 'base64')
+          fs.mkdirSync(this.screencastDir, { recursive: true })
+          const file = path.join(this.screencastDir, `latest.${state.format === 'png' ? 'png' : 'jpg'}`)
+          const tmp = `${file}.${process.pid}.tmp`
+          fs.writeFileSync(tmp, data, { mode: 0o600 })
+          fs.renameSync(tmp, file)
+          fs.writeFileSync(
+            path.join(this.screencastDir, 'meta.json'),
+            `${JSON.stringify({
+              updatedAt: Date.now(),
+              format: state.format === 'png' ? 'png' : 'jpg',
+              bytes: data.byteLength,
+              frames: state.frames,
+              metadata: params.metadata || null,
+              backend: 'headless',
+            })}\n`,
+            { mode: 0o600 },
+          )
+        } catch {
+          // best effort
+        }
+        return
+      }
+      // Screenshot frame cache: keep only the newest composited frame. Its
+      // `metadata.timestamp` is a Unix-epoch timestamp (same clock as Date.now),
+      // which is what lets `tab.screenshot` prove the frame is not older than
+      // the last page-changing request.
+      const shot = tab.shotStream
+      if (shot?.active) {
+        const composedAt = Number(params.metadata?.timestamp)
+        const data = String(params.data || '')
+        if (Number.isFinite(composedAt) && data) {
+          shot.frames += 1
+          shot.last = {
+            buffer: Buffer.from(data, 'base64'),
+            composedAt,
+            width: Number(params.metadata?.deviceWidth) || 0,
+            height: Number(params.metadata?.deviceHeight) || 0,
+          }
+          this.resolveShotWaiters(shot)
+        }
       }
       return
     }
@@ -896,7 +958,7 @@ export class HeadlessDriver {
     if (this.tabs.size >= MAX_TABS) {
       throw error('RESOURCE_LIMIT', `headless tab limit reached (${MAX_TABS}); close a tab first`)
     }
-    const tab = { tabId, targetId, sessionId, url: url || 'about:blank', title: '' }
+    const tab = { tabId, targetId, sessionId, url: url || 'about:blank', title: '', renderChangeAt: 0, shotStream: null }
     this.bySession.set(sessionId, tab)
     this.consoleBuffers.set(tabId, [])
     this.tabs.set(tabId, tab)
@@ -967,10 +1029,213 @@ export class HeadlessDriver {
   // paying a Runtime.evaluate on every screenshot.
   async viewportSize(tab) {
     if (!tab.viewport) {
-      const meta = await this.evalOn(tab, '({ w: innerWidth, h: innerHeight })')
-      tab.viewport = { w: meta?.w || 0, h: meta?.h || 0 }
+      const meta = await this.evalOn(tab, '({ w: innerWidth, h: innerHeight, dpr: devicePixelRatio })')
+      tab.viewport = { w: meta?.w || 0, h: meta?.h || 0, dpr: meta?.dpr || 1 }
     }
     return tab.viewport
+  }
+
+  // Only the active headless target composites; background tabs report
+  // visibilityState "hidden" and would never emit screencast frames.
+  async pageVisible(tab) {
+    try {
+      return (await this.evalOn(tab, `document.visibilityState === 'visible'`)) === true
+    } catch {
+      return false
+    }
+  }
+
+  // ---------------------------------------------------- screenshot frame stream
+  tabForParams(params = {}) {
+    const tabId = Number(params.tabId)
+    if (Number.isFinite(tabId)) return this.tabs.get(tabId) || null
+    if (params.owner == null) return null
+    const entry = this.owners.get(String(params.owner || 'default'))
+    if (entry?.activeTabId == null) return null
+    return entry.tabs.get(entry.activeTabId) || null
+  }
+
+  shotStreamState(tab) {
+    if (!tab.shotStream) {
+      tab.shotStream = {
+        active: false,
+        frames: 0,
+        served: 0,
+        fallbacks: 0,
+        timeouts: 0,
+        repaintMisses: 0,
+        failures: 0,
+        disabledUntil: 0,
+        maxWidth: 0,
+        maxHeight: 0,
+        startedAt: 0,
+        last: null,
+        waiters: [],
+        stopTimer: null,
+      }
+    }
+    return tab.shotStream
+  }
+
+  async ensureShotStream(tab) {
+    // The live viewer owns Page.startScreencast while it runs; screenshots fall
+    // back to Page.captureScreenshot rather than fighting over the stream.
+    if (tab.screencast?.active) return null
+    const state = this.shotStreamState(tab)
+    const now = Date.now()
+    if (state.disabledUntil > now) return null
+    const viewport = await this.viewportSize(tab)
+    const dpr = viewport.dpr || 1
+    const maxWidth = Math.max(1, Math.round((viewport.w || 0) * dpr))
+    const maxHeight = Math.max(1, Math.round((viewport.h || 0) * dpr))
+    if (state.active) {
+      if (state.maxWidth === maxWidth && state.maxHeight === maxHeight) return state
+      await this.stopShotStream(tab)
+    }
+    // A hidden target (any non-active headless tab) is not composited, so its
+    // screencast would never produce a frame. Keep the capture path there.
+    if (!(await this.pageVisible(tab))) return null
+    try {
+      await this.cdp.send(
+        'Page.startScreencast',
+        { format: 'png', maxWidth, maxHeight, everyNthFrame: 1 },
+        tab.sessionId,
+      )
+    } catch {
+      state.failures += 1
+      if (state.failures >= SHOT_STREAM_FAILURES_BEFORE_BACKOFF) state.disabledUntil = now + SHOT_STREAM_BACKOFF_MS
+      return null
+    }
+    state.active = true
+    state.frames = 0
+    state.last = null
+    state.maxWidth = maxWidth
+    state.maxHeight = maxHeight
+    state.startedAt = now
+    state.failures = 0
+    // Even if the first screenshot falls back (no frame in time), the stream
+    // must not stay on forever.
+    this.touchShotStream(tab, state)
+    return state
+  }
+
+  async stopShotStream(tab, { keepLast = false } = {}) {
+    const state = tab?.shotStream
+    if (!state) return
+    this.dropShotStream(tab, { keepLast })
+    if (!state.active) return
+    state.active = false
+    try {
+      await this.cdp?.send('Page.stopScreencast', {}, tab.sessionId)
+    } catch {
+      // tab already gone
+    }
+  }
+
+  // Drop local stream state without talking to CDP (tab closing / browser
+  // shutdown), resolving any in-flight screenshot waiters with null.
+  dropShotStream(tab, { keepLast = false } = {}) {
+    const state = tab?.shotStream
+    if (!state) return
+    if (state.stopTimer) {
+      clearTimeout(state.stopTimer)
+      state.stopTimer = null
+    }
+    for (const waiter of state.waiters.splice(0)) {
+      clearTimeout(waiter.timer)
+      waiter.resolve(null)
+    }
+    if (!keepLast) state.last = null
+  }
+
+  touchShotStream(tab, state) {
+    if (state.stopTimer) clearTimeout(state.stopTimer)
+    state.stopTimer = setTimeout(() => {
+      state.stopTimer = null
+      this.stopShotStream(tab).catch(() => {})
+    }, SHOT_STREAM_IDLE_MS)
+    state.stopTimer.unref?.()
+  }
+
+  resolveShotWaiters(state) {
+    if (state.waiters.length === 0 || !state.last) return
+    const frame = state.last
+    const pending = []
+    for (const waiter of state.waiters) {
+      if (frame.composedAt >= waiter.changeAt) {
+        clearTimeout(waiter.timer)
+        waiter.resolve(frame)
+      } else {
+        pending.push(waiter)
+      }
+    }
+    state.waiters = pending
+  }
+
+  waitShotFrame(state, changeAt, timeoutMs) {
+    if (state.last && state.last.composedAt >= changeAt) return Promise.resolve(state.last)
+    return new Promise((resolve) => {
+      const waiter = { changeAt, timer: null, resolve: null }
+      waiter.timer = setTimeout(() => {
+        state.waiters = state.waiters.filter((item) => item !== waiter)
+        resolve(null)
+      }, timeoutMs)
+      waiter.resolve = (frame) => resolve(frame)
+      state.waiters.push(waiter)
+    })
+  }
+
+  // Returns a PNG buffer for the current viewport, or null when no frame is
+  // available at all (caller falls back to Page.captureScreenshot).
+  //
+  // Freshness rule: a cached frame is only reused when its composition
+  // timestamp is at or after the last page-changing request. Otherwise wait for
+  // the compositor's next frame. If that frame does not arrive within
+  // SHOT_STREAM_FRAME_TIMEOUT_MS the change was not painted (yet), so the
+  // latest painted frame is returned — that is still what the page looks like,
+  // and a capture would force a repaint just to show the same pixels. The wait
+  // is longer for the very first frame of a new stream (Chrome has to start the
+  // capture pipeline), where there is no cached frame to fall back on.
+  async screenshotFromStream(tab) {
+    const state = await this.ensureShotStream(tab)
+    if (!state) return null
+    const changeAt = tab.renderChangeAt || 0
+    let frame = state.last && state.last.composedAt >= changeAt ? state.last : null
+    if (frame && Date.now() / 1000 - frame.composedAt > 1) {
+      // A stale-but-fresh-enough frame from a tab that was backgrounded since
+      // may hide page-internal changes (hidden tabs are not composited).
+      if (!(await this.pageVisible(tab))) return null
+    }
+    if (!frame) {
+      const hasCached = Boolean(state.last)
+      frame = await this.waitShotFrame(
+        state,
+        changeAt,
+        hasCached ? SHOT_STREAM_FRAME_TIMEOUT_MS : SHOT_STREAM_FIRST_FRAME_TIMEOUT_MS,
+      )
+      if (!frame && hasCached) {
+        // No new frame within the repaint window. On a visible page that means
+        // the change produced no painted output (e.g. a read-only evaluate), so
+        // the latest painted frame is the honest screenshot. On a hidden tab
+        // nothing is being composited at all — fall back to capture.
+        if (!(await this.pageVisible(tab))) return null
+        state.repaintMisses += 1
+        frame = state.last
+      }
+    }
+    if (!frame) {
+      state.timeouts += 1
+      state.fallbacks += 1
+      if (state.timeouts >= SHOT_STREAM_FAILURES_BEFORE_BACKOFF) {
+        await this.stopShotStream(tab)
+        state.disabledUntil = Date.now() + SHOT_STREAM_BACKOFF_MS
+      }
+      return null
+    }
+    state.timeouts = 0
+    state.served += 1
+    this.touchShotStream(tab, state)
+    return frame.buffer
   }
 
   async pageAction(tab, name, args, timeoutMs = 15000) {
@@ -1008,6 +1273,15 @@ export class HeadlessDriver {
   }
 
   async request(method, params = {}) {
+    const result = await this.dispatch(method, params)
+    if (SHOT_STREAM_METHODS.has(method)) {
+      const tab = this.tabForParams(params)
+      if (tab) tab.renderChangeAt = Date.now() / 1000
+    }
+    return result
+  }
+
+  async dispatch(method, params = {}) {
     await this.ensureStarted()
     this.noteActivity()
     const owner = params.owner
@@ -1098,6 +1372,8 @@ export class HeadlessDriver {
         if (params.reset) {
           await this.cdp.send('Emulation.clearDeviceMetricsOverride', {}, tab.sessionId)
           tab.viewport = null
+          // A running screenshot stream was sized for the old viewport.
+          await this.stopShotStream(tab)
           return { applied: false, reloaded: false, viewport: { width: 0, height: 0, mobile: false } }
         }
         const width = Math.max(100, Number(params.width) || 1280)
@@ -1108,7 +1384,8 @@ export class HeadlessDriver {
           { width, height, deviceScaleFactor: 1, mobile },
           tab.sessionId,
         )
-        tab.viewport = mobile ? null : { w: width, h: height }
+        tab.viewport = mobile ? null : { w: width, h: height, dpr: 1 }
+        await this.stopShotStream(tab)
         return { applied: true, reloaded: false, viewport: { width, height, mobile } }
       }
       case 'tab.snapshot': {
@@ -1198,16 +1475,27 @@ export class HeadlessDriver {
       case 'tab.screenshot': {
         const tab = await this.ensureTab(owner, params.tabId)
         const format = params.format === 'jpeg' ? 'jpeg' : 'png'
-        const captureParams = { format, captureBeyondViewport: Boolean(params.fullPage) }
-        if (format === 'jpeg') {
-          captureParams.quality = Math.max(1, Math.min(100, Number(params.quality) || 70))
-        } else if (params.optimizeForSpeed !== false) {
-          // Fast PNG encoder: ~20% less screenshot CPU on content-heavy pages,
-          // at the cost of a larger (still lossless) PNG. Opt out per call.
-          captureParams.optimizeForSpeed = true
+        // A plain viewport PNG (the common case) is served from the compositor's
+        // own frames. Anything that needs a crop, JPEG encoding, the slow-PNG
+        // opt-out, or a full-page capture keeps the exact
+        // Page.captureScreenshot path.
+        const needsCapture =
+          Boolean(params.fullPage || params.clip || params.ref != null || params.frameRef || params.highlight) ||
+          format === 'jpeg' ||
+          params.optimizeForSpeed === false
+        let data = needsCapture ? null : await this.screenshotFromStream(tab)
+        if (!data) {
+          const captureParams = { format, captureBeyondViewport: Boolean(params.fullPage) }
+          if (format === 'jpeg') {
+            captureParams.quality = Math.max(1, Math.min(100, Number(params.quality) || 70))
+          } else if (params.optimizeForSpeed !== false) {
+            // Fast PNG encoder: ~20% less screenshot CPU on content-heavy pages,
+            // at the cost of a larger (still lossless) PNG. Opt out per call.
+            captureParams.optimizeForSpeed = true
+          }
+          const shot = await this.cdp.send('Page.captureScreenshot', captureParams, tab.sessionId)
+          data = Buffer.from(shot.data, 'base64')
         }
-        const shot = await this.cdp.send('Page.captureScreenshot', captureParams, tab.sessionId)
-        const data = Buffer.from(shot.data, 'base64')
         this.screenshotSeq += 1
         const extension = format === 'jpeg' ? 'jpg' : 'png'
         const file = path.join(this.screenshotDir, `headless-${Date.now()}-${this.screenshotSeq}.${extension}`)
@@ -1462,6 +1750,9 @@ export class HeadlessDriver {
         if (tab.screencast?.active) {
           return { active: true, alreadyActive: true, tabId: tab.tabId, format: tab.screencast.format }
         }
+        // The viewer takes over Page.startScreencast; stop the screenshot
+        // stream first (screenshots then fall back to capture while it runs).
+        await this.stopShotStream(tab)
         const format = params.format === 'png' ? 'png' : 'jpeg'
         const quality = Number.isFinite(params.quality) ? Math.max(1, Math.min(100, params.quality)) : 60
         const everyNthFrame = Number.isFinite(params.everyNthFrame)
@@ -1511,6 +1802,7 @@ export class HeadlessDriver {
         const entry = this.ownerEntry(owner)
         let closed = 0
         for (const tab of [...entry.tabs.values()]) {
+          this.dropShotStream(tab)
           try {
             await this.cdp.send('Target.closeTarget', { targetId: tab.targetId })
           } catch {
@@ -1528,6 +1820,25 @@ export class HeadlessDriver {
           backend: 'headless',
           browserVersion: this.browserVersion,
           owners: [...this.owners.entries()].map(([key, entry]) => ({ owner: key, tabs: entry.tabs.size, activeTabId: entry.activeTabId })),
+          tabs: [...this.tabs.values()].map((tab) => {
+            const stream = tab.shotStream
+            return {
+              tabId: tab.tabId,
+              screenshotStream: stream
+                ? {
+                    active: stream.active,
+                    frames: stream.frames,
+                    served: stream.served,
+                    fallbacks: stream.fallbacks,
+                    timeouts: stream.timeouts,
+                    repaintMisses: stream.repaintMisses,
+                    maxWidth: stream.maxWidth,
+                    maxHeight: stream.maxHeight,
+                    disabled: stream.disabledUntil > Date.now(),
+                  }
+                : null,
+            }
+          }),
         }
       default:
         throw error('UNSUPPORTED_BACKEND', `${method} is not implemented by the headless backend yet`)
@@ -1643,11 +1954,14 @@ export class HeadlessDriver {
       // ignore
     }
     this.loginProcess = null
+    for (const tab of this.tabs.values()) this.dropShotStream(tab)
     try {
       await this.cdp?.send('Browser.close')
     } catch {
       // browser already gone or does not support close
     }
+    this.bySession.clear()
+    this.tabs.clear()
     try {
       this.cdp?.close()
     } catch {

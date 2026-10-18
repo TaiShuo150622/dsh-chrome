@@ -182,11 +182,83 @@ node scripts/headless-bench.mjs --seconds 10 --shot-format jpeg --shot-quality 6
 node test/headless.mjs                                        # headless 回归
 ```
 
+### 4.1.1 2026-10-17 第二轮：截图帧流（Ralph 循环第 1 轮）
+
+先量「40ms 到底花在哪」，否掉两个方向，第三个方向拿到收益。
+
+**方向 A（否决）：截图参数 / 编码路径。** 同一页面、同一台机器，只改一处，20 次取中位：
+
+| 变体 | 单次截图（中位） |
+|---|---|
+| 快 PNG（现状） | 44.5 ms |
+| 普通 PNG | 48.9 ms |
+| JPEG q60 | 41.6 ms |
+| JPEG q30 | 35.3 ms（均值 40.4，噪声内） |
+| `fromSurface:false` | 347 ms |
+| `clip` 全视口 / 半视口 | 48.9 / 45.9 ms |
+| `captureBeyondViewport:false` | 42.8 ms |
+
+编码格式、压缩率、截取面积都只动几个百分点，`fromSurface:false` 反而慢 7 倍：40ms 主要不在 PNG 编码，而在「等一帧可截的合成帧」。
+
+**方向 B（否决）：Chrome 启动参数。** 每个参数单独起一个探针 Chrome，60 次截图取中位 + 进程树 CPU：
+
+| 参数 | 单次墙钟 | 每动作 CPU |
+|---|---|---|
+| 默认 | 42.9 ms | 26.3 ms |
+| `--disable-frame-rate-limit` | **13.2 ms** | **56.5 ms** |
+| `--disable-gpu-vsync` | 42.4 ms | 39.0 ms |
+| `--disable-gpu` / `--disable-gpu-compositing` | 42.5–42.9 ms | 26–28 ms |
+| `--enable-begin-frame-control`、`--run-all-compositor-stages-before-draw`、`--disable-threaded-animation`、`--disable-new-content-rendering-timeout`、`--disable-lcd-text`、`--disable-partial-raster` | 43–50 ms | 噪声内 |
+| `--use-angle=metal` | 43 ms | 噪声内 |
+| `--use-angle=swiftshader` | 66 ms | 更差 |
+
+`--disable-frame-rate-limit` 用 2.1× 的每动作 CPU（空闲合成器常驻，探针里进程树合计一度 370–420%）换 3.2× 墙钟，对后台浏览器是净亏，未采纳。
+
+**方向 C（采纳）：PNG `Page.startScreencast` 帧即截图。** 关键事实（探针实测）：同一内容下，screencast 的 PNG 帧与 `Page.captureScreenshot` 的输出**字节相同**（MD5 一致、1440×813），因为 Chrome 走同一个编码器；但帧由合成器按自己的节奏产出，不在请求-响应路径上。所以截图请求到达后只等「请求之后合成的那一帧」（帧 metadata 的 `timestamp` 是 Unix epoch 秒，可直接和 `Date.now()` 比较）：没变就复用上一帧（0–3ms），变了等下一帧（15–16ms），等不到就退回 `Page.captureScreenshot`。
+
+实现（`src/headless.js`）：
+
+- `tab.screenshot` 的默认 PNG 走帧流；JPEG、`clip`/`ref`/`frameRef`/`highlight`、`fullPage`、`optimizeForSpeed:false`、以及 live viewer 占用 screencast 时保持原截图路径。
+- 每个可能改变渲染的请求（goto/click/type/scroll/evaluate/emulate/wait/…）返回后写 `tab.renderChangeAt`；只有 `frame.composedAt >= renderChangeAt` 的帧才可复用，保证不返回早于最后一次动作的画面。
+- 首帧最多等 150ms；已有缓存时重绘窗口 40ms，超时且 `visibilityState === 'visible'` 说明这次动作没产生重绘（例如只读 evaluate），复用最近一帧；隐藏 tab 不合成，直接走 capture。
+- 最后一次截图后 2s 关掉 screencast（`DSH_HEADLESS_SHOT_STREAM_IDLE_MS` 可调）；`tab.emulate` 按新视口重启流；`tab.debug_diag` 暴露 `screenshotStream {frames, served, fallbacks, repaintMisses}`。
+- 回归：`test/headless.mjs` 增加「未变页面两次截图字节相同」「evaluate 改页面后截图必须变」「emulate 后 PNG 头是 800×600」「帧流确实被使用」四条断言。
+
+**前后数字**（本机，同样命令 `node scripts/headless-bench.mjs --seconds 10`，每轮 snapshot + type + screenshot + scroll）：
+
+| 指标 | 改前（本轮基线） | 改后（3 次复跑，中位） |
+|---|---|---|
+| 动作/10s | 229 | **585**（577–596） |
+| 每轮墙钟 | 43.76 ms | **17.11 ms**（16.79–17.35） |
+| `tab.screenshot` | 41.59 ms | **15.48 ms**（15.15–15.52） |
+| 每动作 CPU | 26.7 ms | **17.45 ms**（16.91–17.57，**-35%**） |
+| CPU 总量 | 61.05% | 98.7–104.6%（中位 100.6%） |
+| 内存 RSS | 991 MB | 1038–1122 MB（中位 1105） |
+
+吞吐 +155%、每轮墙钟 -61%、单次截图 -63%、每动作 CPU -35%。CPU 百分比总量反而上升，是因为 10s 内多做了 2.55 倍的截图：按 229 轮/10s 折算，帧流路径约用 40% CPU（0.4s/s），低于改前的 61%。**衡量交互延迟看每动作墙钟/CPU，不是 10s 总量。**
+
+bench 小改动：原硬上限 `ACTIONS*20`（默认 400）会把这次 10s 跑截断在 6.7s，改为 `ACTIONS*50`（默认 1000），让 `--seconds 10` 真正跑满；输出新增 `cpuMsPerAction`。
+
+**代价与边界**：
+
+- 帧流活跃期截图更快，但 2s 没有截图就停流；静态页上流只产出一帧，两次空闲探针的差值（+9、+29 个百分点）与机器负载噪声同量级，未分离出稳定开销，停流后为 0。
+- 后台 tab（`visibilityState=hidden`）不合成，仍走 capture（36–48ms），不会为了省时间返回陈旧帧。
+- 只读 `tab.evaluate` 后没有重绘时，截图为等满 40ms 后复用缓存（与 capture 的 44ms 大致持平）；这是为了让「evaluate → screenshot」这种常见序列不被误判成陈旧。
+- 剩余瓶颈：合成器帧间隔（~15–16ms）就是「页面变了」的截图下限；PNG 编码仍在合成器线程上。再往下需要：从帧里裁 `clip`/`ref`（要解码图像）、让 viewer 的 screencast 与截图缓存共用、或对 JPEG 请求单开 JPEG 帧流。
+
+复跑（本轮验收）：
+
+```bash
+cd /Users/taishuo/projects/dsh-chrome
+node test/headless.mjs
+node scripts/headless-bench.mjs --seconds 10
+```
+
 ## 5. 下一步（H1）
 
 1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
 2. capture 引擎与扩展共享（两套行为一致性）；
-3. 截图性能的剩余大头是 Chrome 取帧 + PNG 编码（~40ms/次）：可选方向是「同一帧内复用/限频」（需要页面变更信号才能保证不返回陈旧画面）、JPEG 快照（已测：与快 PNG 同速，故未改默认）、或把 `chrome_screenshot` 的 `clip`/`ref` 参数接到 headless（能直接缩小区块）。
+3. 截图性能：帧流已落地（§4.1.1），「页面变了」的截图下限是合成器帧间隔 ~15–16ms；剩余方向是 `clip`/`ref` 从帧里裁剪、viewer screencast 与截图缓存共用、JPEG 请求单独走 JPEG 帧流。
 
 ## 6. 代码
 
@@ -195,6 +267,6 @@ node test/headless.mjs                                        # headless 回归
 | `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现 |
 | `src/backend.js` | BackendRouter + AsyncLocalStorage + `wrapToolsForBackend`（给 39 个工具加 `backend` 参数） |
 | `index.js` | 创建 HeadlessDriver/Router，包装工具，卸载时关闭 |
-| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 相对 §4.1 基线的 delta + 截图格式选项 |
+| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项（动作上限 `ACTIONS*50`，保证 `--seconds` 跑满） |
 | `test/backend-router.mjs` | 路由/参数剥离/默认桌面回归 |
-| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、JPEG 可选路径断言） |
+| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、JPEG 可选路径、截图帧流复用/新鲜度/emulate 尺寸断言） |
