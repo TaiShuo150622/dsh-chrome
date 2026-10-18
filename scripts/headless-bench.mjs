@@ -178,6 +178,12 @@ const DRAG = hasFlag('--drag')
 let dragRefs = null
 const SHOT_CHAIN_SHOTS = 3
 let shotChainPoints = null
+// Same-value re-type scenario (docs/HEADLESS.md §4.1.16): snapshot + `tab.type`
+// of the value the field already holds + screenshot. The field value, its focus
+// and the caret stay exactly as they were, so the type cannot repaint and the
+// screenshot must reuse the cached frame instead of paying the repaint window.
+const TYPE_SAME = hasFlag('--type-same')
+const TYPE_SAME_VALUE = 'same'
 // Element/region screenshot scenarios. Clip coordinates are CSS px like the
 // `clip` tool parameter; ref mode uses the input control from the same snapshot
 // the round already takes, so it measures ref resolution + crop end to end.
@@ -422,6 +428,10 @@ try {
       // click keeps the conservative wait even though nothing paints.
       const point = shotChainPoints[((index % 2) + 2) % 2]
       await timed('clickAt', () => driver.request('tab.clickAt', { owner: 'bench', x: point.x, y: point.y }))
+    } else if (TYPE_SAME) {
+      // Every round types the value the field already holds at the same caret:
+      // the probe proves it paint-free, so the screenshot is a cache hit.
+      await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: TYPE_SAME_VALUE, replace: true }))
     } else if (input && !STATIC) {
       await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${index}`, replace: true }))
     }
@@ -435,7 +445,7 @@ try {
     // viewport offset, otherwise half the rounds would fall back to capture
     // because the element left the viewport (the honest off-screen case, but
     // not what this scenario is measuring).
-    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK && !PRESS && !CLICK_AT && !SHOT_CHAIN && !DRAG) {
+    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK && !PRESS && !CLICK_AT && !SHOT_CHAIN && !DRAG && !TYPE_SAME) {
       await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: SHOT_REF ? 60 : 200 }))
     }
   }
@@ -455,7 +465,7 @@ try {
   // The read-only evaluate, no-op click, pointer and chained-screenshot
   // scenarios are orders of magnitude cheaper per round, so they need a much
   // higher cap to stay time-bound.
-  const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK || PRESS || CLICK_AT || SHOT_CHAIN || DRAG ? 2000 : 50)
+  const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK || PRESS || CLICK_AT || SHOT_CHAIN || DRAG || TYPE_SAME ? 2000 : 50)
   while (Date.now() < until && actions < ACTION_CAP) {
     await runRound(timer, actions, true)
     actions += 1
@@ -543,11 +553,13 @@ try {
                       ? 'snapshot/press(Escape,k)/screenshot (no editable focus, page never repaints)'
                       : DRAG
                         ? 'snapshot/drag(handler-free buttons)/screenshot (page never repaints)'
-                        : READONLY_EVAL
-                        ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)'
-                        : STATIC
-                          ? 'snapshot/screenshot (static page)'
-                          : 'snapshot/type/screenshot/scroll'
+                        : TYPE_SAME
+                          ? 'snapshot/type(same value)/screenshot (page never repaints)'
+                          : READONLY_EVAL
+                            ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)'
+                            : STATIC
+                              ? 'snapshot/screenshot (static page)'
+                              : 'snapshot/type/screenshot/scroll'
             } rounds${SHOT_MODE === 'viewport' ? '' : ` (${SHOT_MODE} screenshot)`}`,
         elapsedSeconds: round(elapsed, 1),
         // The effective inter-round gap: the fixed `--gap-ms` value, or the
@@ -561,6 +573,8 @@ try {
         ...(CLICK_AT && clickAtPoint ? { clickAtPoint } : {}),
         dragMode: DRAG,
         ...(DRAG && dragRefs ? { drag: { shotsPerRound: 1, refs: dragRefs } } : {}),
+        typeSameMode: TYPE_SAME,
+        ...(TYPE_SAME ? { typeSame: { text: TYPE_SAME_VALUE, replace: true } } : {}),
         shotChainMode: SHOT_CHAIN,
         ...(SHOT_CHAIN && shotChainPoints
           ? { shotChain: { shotsPerRound: SHOT_CHAIN_SHOTS, points: shotChainPoints } }

@@ -1127,6 +1127,135 @@ try {
     'a DOM-mutating drag was served a stale frame',
   )
 
+  // Same-value re-types (docs/HEADLESS.md §4.1.16). `tab.type` writes the field
+  // and dispatches the events a keystroke would, but repeating the value that is
+  // already there leaves the value, the focus and the caret untouched, so the
+  // next screenshot must reuse the cached frame instead of paying the repaint
+  // window. Everything that does change something keeps the conservative wait:
+  // a new value, a focus move, a `submit` and a contenteditable write.
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const typeSnap = await driver.request('tab.snapshot', { owner: 's1', maxChars: 5000 })
+  const typeInput = typeSnap.controls.find((control) => control.label === 'name')
+  assert.ok(typeInput, `type probe input missing: ${JSON.stringify(typeSnap.controls)}`)
+  // The first type moves focus into the field and changes its value: a real
+  // paint, so the base frame is taken after it has landed.
+  await driver.request('tab.type', { owner: 's1', ref: typeInput.ref, text: 'same', replace: true })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const typeBaseBytes = await stableFrameBytes()
+  const typeBaseDiag = await tabDiag()
+  const typeSameStartedAt = performance.now()
+  const typeSame = await driver.request('tab.type', { owner: 's1', ref: typeInput.ref, text: 'same', replace: true })
+  const typeSameShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const typeSameMs = performance.now() - typeSameStartedAt
+  const typeSameDiag = await tabDiag()
+  assert.equal(typeSame.value, 'same', 'a same-value type changed the field value')
+  assert.equal(
+    typeSameDiag.visualSkips,
+    typeBaseDiag.visualSkips + 1,
+    `a same-value type did not skip the repaint window: ${JSON.stringify({ before: typeBaseDiag.visualSkips, after: typeSameDiag.visualSkips })}`,
+  )
+  assert.equal(
+    typeSameDiag.screenshotStream.repaintMisses,
+    typeBaseDiag.screenshotStream.repaintMisses,
+    'a same-value type ran into the repaint window',
+  )
+  assert.ok(typeSameMs < 25, `a same-value type + screenshot paid the repaint window (${typeSameMs.toFixed(1)}ms)`)
+  assert.deepEqual(fs.readFileSync(typeSameShot.path), typeBaseBytes, 'a same-value type returned a different frame')
+  // A new value is a real paint: the conservative wait stays and the screenshot
+  // must show the new text. The replacement is deliberately the same length as
+  // the old value, so the caret stays put and only the value comparison can
+  // tell the type apart from a no-op (a length change would move the caret too
+  // and hide a missing value check).
+  const typeChange = await driver.request('tab.type', { owner: 's1', ref: typeInput.ref, text: 'SAME', replace: true })
+  const typeChangeDiag = await tabDiag()
+  assert.equal(typeChange.value, 'SAME')
+  assert.equal(
+    typeChangeDiag.visualSkips,
+    typeSameDiag.visualSkips,
+    'a value-changing type must keep the conservative wait',
+  )
+  const typeChangeShot = await driver.request('tab.screenshot', { owner: 's1' })
+  assert.notDeepEqual(fs.readFileSync(typeChangeShot.path), typeBaseBytes, 'a value-changing type was served a stale frame')
+  // A page with a canvas repaints pixels the tracker cannot see: the same-value
+  // type must keep the wait there even though nothing changes in the DOM.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: '(() => { const c = document.createElement("canvas"); c.id = "type-probe-canvas"; c.width = 40; c.height = 10; document.body.appendChild(c); return true })()',
+  })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const canvasTypeBaseDiag = await tabDiag()
+  const canvasType = await driver.request('tab.type', { owner: 's1', ref: typeInput.ref, text: 'SAME', replace: true })
+  const canvasTypeDiag = await tabDiag()
+  assert.equal(canvasType.value, 'SAME')
+  assert.equal(
+    canvasTypeDiag.visualSkips,
+    canvasTypeBaseDiag.visualSkips,
+    'a page with a canvas must keep the conservative wait for same-value types',
+  )
+  await driver.request('tab.screenshot', { owner: 's1' })
+  const canvasTypeShotDiag = await tabDiag()
+  assert.equal(
+    canvasTypeShotDiag.screenshotStream.repaintMisses,
+    canvasTypeBaseDiag.screenshotStream.repaintMisses + 1,
+    'the vetoed same-value type did not pay the repaint window once',
+  )
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("type-probe-canvas").remove()' })
+  await settle()
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  // The same value typed into an unfocused field still moves focus (and paints
+  // the field's focus ring), so the page-side result must veto the shortcut.
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const unfocusedTypeBaseDiag = await tabDiag()
+  const unfocusedType = await driver.request('tab.type', { owner: 's1', ref: typeInput.ref, text: 'SAME', replace: true })
+  const unfocusedTypeDiag = await tabDiag()
+  assert.equal(unfocusedType.value, 'SAME')
+  assert.equal(
+    unfocusedTypeDiag.visualSkips,
+    unfocusedTypeBaseDiag.visualSkips,
+    'a type that moves focus must keep the conservative wait',
+  )
+  // `submit` can navigate after the after-snapshot, so it never shortcuts, even
+  // when the value is unchanged.
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const submitTypeBaseDiag = await tabDiag()
+  const submitType = await driver.request('tab.type', { owner: 's1', ref: typeInput.ref, text: 'SAME', replace: true, submit: true })
+  const submitTypeDiag = await tabDiag()
+  assert.equal(submitType.submitted, true)
+  assert.equal(submitTypeDiag.visualSkips, submitTypeBaseDiag.visualSkips, 'a submitted type must keep the conservative wait')
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  // A contenteditable write rebuilds the text node even for the same string:
+  // that is a mutation, so it must keep the conservative wait.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression:
+      '(() => { const box = document.createElement("div"); box.id = "type-probe-editable"; box.setAttribute("contenteditable", "true"); box.textContent = "editable text"; document.body.appendChild(box); return true })()',
+  })
+  await driver.request('tab.type', { owner: 's1', selector: '#type-probe-editable', text: 'editable text', replace: true })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const editableTypeBaseDiag = await tabDiag()
+  const editableType = await driver.request('tab.type', { owner: 's1', selector: '#type-probe-editable', text: 'editable text', replace: true })
+  const editableTypeDiag = await tabDiag()
+  assert.equal(editableType.value, 'editable text')
+  assert.equal(
+    editableTypeDiag.visualSkips,
+    editableTypeBaseDiag.visualSkips,
+    'a same-text contenteditable write must keep the conservative wait',
+  )
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("type-probe-editable").remove()' })
+  await settle()
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+
   // Frame-stream keep-alive (docs/HEADLESS.md §4.1.3): an unchanged visible
   // page that produced no frame for longer than the idle window must keep its
   // cached frame and its screencast instead of restarting, so the next

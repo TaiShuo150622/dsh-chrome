@@ -177,4 +177,44 @@ assert.ok(
 )
 assert.equal(drag.screenshotStream.repaintMisses, 0, `drag rounds paid the repaint window: ${JSON.stringify(drag.screenshotStream)}`)
 
+// `--type-same` (docs/HEADLESS.md §4.1.16): every round types the value the
+// field already holds. The page-side type result proves the value, focus and
+// caret did not move, so every round must skip the repaint window; a driver
+// without the type probe pays it on every round instead.
+const typeSameRun = spawnSync(
+  process.execPath,
+  [path.join(root, 'scripts', 'headless-bench.mjs'), '--seconds', '4', '--type-same'],
+  { cwd: root, encoding: 'utf8', timeout: 120000 },
+)
+assert.equal(
+  typeSameRun.status,
+  0,
+  `type-same bench exited ${typeSameRun.status}\nstdout: ${typeSameRun.stdout}\nstderr: ${typeSameRun.stderr}`,
+)
+const typeSame = JSON.parse(typeSameRun.stdout)
+assert.equal(typeSame.typeSameMode, true)
+assert.ok(
+  typeSame.scenario.includes('snapshot/type(same value)'),
+  `unexpected type-same scenario: ${typeSame.scenario}`,
+)
+assert.equal(typeSame.typeSame.text, 'same')
+assert.ok(typeSame.actions >= 100, `too few type-same rounds: ${typeSame.actions}`)
+assert.ok(
+  typeSame.perActionMs.type > 0 && typeSame.perActionMs.screenshot > 0,
+  `type-same timings missing: ${JSON.stringify(typeSame.perActionMs)}`,
+)
+assert.ok(
+  typeSame.perActionMs.screenshot < 5,
+  `type-same screenshots still pay the repaint window: ${typeSame.perActionMs.screenshot}ms`,
+)
+assert.ok(
+  typeSame.visualSkips >= typeSame.actions,
+  `type-same rounds were not proven paint-free: ${JSON.stringify({ visualSkips: typeSame.visualSkips, actions: typeSame.actions })}`,
+)
+assert.equal(
+  typeSame.screenshotStream.repaintMisses,
+  0,
+  `type-same rounds paid the repaint window: ${JSON.stringify(typeSame.screenshotStream)}`,
+)
+
 console.log('BENCH SCENARIO TEST: PASS')

@@ -387,6 +387,26 @@ function dragProbeEligible(before) {
   return true
 }
 
+// `tab.type` (docs/HEADLESS.md §4.1.16) writes a field value and dispatches the
+// input/change events a real keystroke would. Repeating the value a field
+// already holds therefore repaints nothing: the value, the focused element and
+// the caret all stay where they were (probe, /tmp/probe-type-r14.mjs: the same
+// type followed by a screenshot paid the full repaint window and missed, the
+// same value with a moved caret or focus did paint). `typePage` reports what it
+// changed, so a value that really changed — or a caret/focus move, or a
+// `submit` that can navigate later — vetoes the shortcut from the action's own
+// result. The precheck only rules out the surfaces whose paints the tracker
+// cannot see at all (canvas pixels, media surfaces, same-origin subframes), a
+// tab that is still loading, and a fullscreen document; every page-side change
+// a handler makes is a tracker counter.
+function typeProbeEligible(before) {
+  if (!before) return false
+  if (before.readyState !== 'complete') return false
+  if (before.broken || before.canvas || before.media || before.frames) return false
+  if (before.fullscreen) return false
+  return true
+}
+
 // Every request that can change what the page renders bumps the owning tab's
 // change marker. `tab.screenshot` only reuses a streamed frame (or waits for a
 // new one) whose composition timestamp is at least this marker.
@@ -952,11 +972,29 @@ function clickPage(ref, selector, clickCount, button) {
   }
 }
 
-function typePage(ref, selector, text, replace, submit) {
+function typePage(ref, selector, text, replace, submit, probe) {
   const el = selector
     ? document.querySelector(selector)
     : document.querySelector(`[data-dsh-ref="${Number(ref)}"]`)
   if (!el) return { ok: false, code: 'REF_NOT_FOUND', message: `no element for ${selector || `ref ${ref}`}` }
+  // The pre-action tracker snapshot travels inside this same evaluate when the
+  // caller asks for it (docs/HEADLESS.md §4.1.16): the type always has to make
+  // one page round trip anyway, so the probe costs the page-side snapshot work
+  // but not a second round trip — a type that really changes the value (the
+  // common case, which the result then vetoes) pays ~0.1ms instead of ~0.5ms.
+  // It is taken before the field is focused or written, exactly where the
+  // separate snapshot used by the other actions sits.
+  const probeBefore = probe === true && window.__dshVisual ? window.__dshVisual.snapshot() : null
+  // What the type actually changed (docs/HEADLESS.md §4.1.16): the field's
+  // value, which element holds focus, and the text caret inside the field. A
+  // type that leaves all three exactly as they were cannot repaint the field,
+  // which is the only thing the driver needs to skip the repaint window. The
+  // synthetic `change` event is counted so the probe can tell its own event
+  // apart from a control whose UA state another action flipped.
+  const activeBefore = document.activeElement
+  const valueBefore = String(el.value ?? el.textContent ?? '')
+  const caretBefore = [el.selectionStart, el.selectionEnd]
+  let changeEvents = 0
   el.focus()
   const tag = el.tagName.toLowerCase()
   if (tag === 'input' || tag === 'textarea') {
@@ -967,6 +1005,7 @@ function typePage(ref, selector, text, replace, submit) {
     else el.value = next
     el.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
     el.dispatchEvent(new Event('change', { bubbles: true }))
+    changeEvents = 1
   } else if (el.isContentEditable) {
     el.textContent = replace ? String(text) : `${el.textContent || ''}${text}`
     el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, data: String(text) }))
@@ -985,7 +1024,14 @@ function typePage(ref, selector, text, replace, submit) {
       submitted = true
     }
   }
-  return { ok: true, value: String(el.value ?? el.textContent ?? '').slice(0, 200), submitted }
+  const valueAfter = String(el.value ?? el.textContent ?? '')
+  const caretAfter = [el.selectionStart, el.selectionEnd]
+  const changed =
+    document.activeElement !== activeBefore ||
+    valueAfter !== valueBefore ||
+    caretAfter[0] !== caretBefore[0] ||
+    caretAfter[1] !== caretBefore[1]
+  return { ok: true, value: valueAfter.slice(0, 200), submitted, changed, changeEvents, probeBefore }
 }
 
 function currentSelection(maxChars) {
@@ -1748,15 +1794,18 @@ export class HeadlessDriver {
 
   // A snapshot pair only proves "painted nothing" when every surface the
   // tracker cannot observe is absent, the document did not change, and no
-  // counter moved.
-  visualProbeVerdict(before, after) {
+  // counter moved. `expected` lets an action compare against the counter events
+  // it dispatched itself (a `tab.type` fires exactly one synthetic `change` and
+  // reports it): anything beyond that count is still a veto.
+  visualProbeVerdict(before, after, expected = null) {
     if (!this.visualSnapshotShape(before) || !this.visualSnapshotShape(after)) return 'unknown'
     if (before.broken || before.canvas || before.media || before.frames) return 'unknown'
     if (before.doc !== after.doc || before.url !== after.url || before.readyState !== after.readyState) return 'unknown'
     if (before.mutations !== after.mutations) return 'unknown'
     if (before.scrolls !== after.scrolls) return 'unknown'
     if (before.focus !== after.focus) return 'unknown'
-    if (before.changes !== after.changes) return 'unknown'
+    const expectedChanges = Number.isFinite(expected?.changes) ? expected.changes : 0
+    if (before.changes + expectedChanges !== after.changes) return 'unknown'
     if (before.toggles !== after.toggles) return 'unknown'
     // -1 means the page has no Web Animations API: an animation could have
     // started unseen, so keep the conservative wait.
@@ -1782,15 +1831,28 @@ export class HeadlessDriver {
   // veto it from the pre-action state (a key press over an editable field). A
   // veto skips the second snapshot entirely, so ineligible actions pay one
   // round trip, not two. `point` makes both snapshots answer the hit-test /
-  // hover question for a pointer action at that screen point.
-  async visualProbeAction(tab, action, accept = null, precheck = null, point = null) {
-    const before = await this.visualSnapshot(tab, point)
+  // hover question for a pointer action at that screen point. `expect(value)`
+  // returns the counter deltas the action caused itself (a type's synthetic
+  // `change` event), so the verdict does not read them as a paint.
+  // `actionSnapshot(value)` lets an action that already makes a page round trip
+  // carry its own pre-action snapshot back (`tab.type`): the caller promises it
+  // was taken at the top of that evaluate, before the action ran. That form
+  // spends no extra round trip on actions the accept then vetoes.
+  async visualProbeAction(tab, action, accept = null, precheck = null, point = null, expect = null, actionSnapshot = null) {
+    let before = actionSnapshot ? null : await this.visualSnapshot(tab, point)
     let value
     let failure = null
     try {
       value = await action()
     } catch (error) {
       failure = error
+    }
+    if (actionSnapshot && !failure) {
+      try {
+        before = actionSnapshot(value)
+      } catch {
+        before = null
+      }
     }
     if (!before) {
       if (failure) throw failure
@@ -1817,8 +1879,16 @@ export class HeadlessDriver {
     const after = await this.visualSnapshot(tab, point)
     if (!failure) {
       let verdict = 'unknown'
+      let expected = null
+      if (expect) {
+        try {
+          expected = expect(value)
+        } catch {
+          expected = null
+        }
+      }
       try {
-        verdict = this.visualProbeVerdict(before, after)
+        verdict = this.visualProbeVerdict(before, after, expected)
       } catch {
         verdict = 'unknown'
       }
@@ -2596,7 +2666,35 @@ export class HeadlessDriver {
       }
       case 'tab.type': {
         const tab = await this.ensureTab(owner, params.tabId)
-        const result = await this.pageAction(tab, 'typePage', [params.ref ?? null, params.selector ?? null, String(params.text ?? ''), Boolean(params.replace), Boolean(params.submit)])
+        // A type that leaves the field value, the focused element and the caret
+        // exactly as they were (repeating the value a field already holds)
+        // cannot repaint, so the next screenshot is a frame cache hit instead of
+        // a ~40ms repaint-window wait (docs/HEADLESS.md §4.1.16). The page-side
+        // result is the proof: a changed value, a moved caret or a focus move is
+        // a real paint, and a `submit` can navigate after the snapshot. Those
+        // veto after the action, so a type that does change something never pays
+        // the second snapshot. The single synthetic `change` event is declared
+        // to the verdict as the action's own counter, not a paint. `typePage`
+        // carries its own pre-action tracker snapshot back (the type is one page
+        // round trip either way), so even the common value-changing type pays
+        // only the page-side snapshot work, not an extra round trip.
+        const result = await this.visualProbeAction(
+          tab,
+          () =>
+            this.pageAction(tab, 'typePage', [
+              params.ref ?? null,
+              params.selector ?? null,
+              String(params.text ?? ''),
+              Boolean(params.replace),
+              Boolean(params.submit),
+              VISUAL_PROBE_ENABLED,
+            ]),
+          (value) => value?.ok === true && value.changed === false && value.submitted === false,
+          (before) => typeProbeEligible(before),
+          null,
+          (value) => ({ changes: Number(value?.changeEvents) === 1 ? 1 : 0 }),
+          (value) => (value?.ok === true && value.probeBefore ? value.probeBefore : null),
+        )
         if (!result?.ok) throw error(result?.code || 'REF_NOT_FOUND', result?.message || 'type failed')
         return { ok: true, value: result.value, submitted: result.submitted, tabId: tab.tabId }
       }
