@@ -1240,6 +1240,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           description: 'Resource types to record (default: xhr, fetch, document).',
         },
         maxEntries: { type: 'number', description: 'Max requests kept in the buffer (default 300, max 1000).' },
+        storeBodies: { type: 'boolean', description: 'Fetch and cache truncated, redacted text bodies while attached (default true).' },
       },
       additionalProperties: false,
     },
@@ -1276,6 +1277,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           tabId: args?.tabId,
           resourceTypes: args?.resourceTypes,
           maxEntries: args?.maxEntries,
+          storeBodies: args?.storeBodies,
           owner: ownerOf(exec),
         },
         30000,
@@ -1330,6 +1332,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         limit: { type: 'number', description: 'Max entries returned (default 50, max 200).' },
         filter: { type: 'string', description: 'Case-insensitive filter over method + URL.' },
         resourceTypes: { type: 'array', items: { type: 'string' }, description: 'Only these resource types.' },
+        includeBodies: { type: 'boolean', description: 'Include truncated request/response bodies (default true).' },
+        maxBodyChars: { type: 'number', description: 'Body display cap, 64-65536 (default 4096).' },
       },
       additionalProperties: false,
     },
@@ -1351,7 +1355,11 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         const lines = (value.entries || []).map((entry) => {
           const status = entry.status != null ? entry.status : (entry.failed ? 'ERR' : '—')
           const duration = entry.durationMs != null ? `${entry.durationMs}ms` : '—'
-          return `- ${entry.method || '?'} ${entry.url || ''} → ${status} ${entry.mimeType || ''} (${entry.resourceType || '?'}, ${duration})`
+          const lines = [`- ${entry.method || '?'} ${entry.url || ''} → ${status} ${entry.mimeType || ''} (${entry.resourceType || '?'}, ${duration})`]
+          if (entry.requestBody) lines.push(`  request: ${String(entry.requestBody).slice(0, 400)}`)
+          if (entry.responseBody) lines.push(`  response: ${String(entry.responseBody).slice(0, 400)}`)
+          if (entry.bodyUnavailable) lines.push(`  body: unavailable (${entry.bodyUnavailable})`)
+          return lines.join('\n')
         })
         const header = `Capture ${value.captureId || ''}${value.active ? ' (active)' : ' (stopped)'}: ${value.entries?.length ?? 0}/${value.total ?? 0} entries${value.truncated ? ' (truncated)' : ''}, dropped ${value.dropped ?? 0}`
         return renderText([header, ...lines].join('\n'))
@@ -1366,6 +1374,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           limit: args?.limit,
           filter: args?.filter,
           resourceTypes: args?.resourceTypes,
+          includeBodies: args?.includeBodies,
+          maxBodyChars: args?.maxBodyChars,
           owner: ownerOf(exec),
         },
         30000,

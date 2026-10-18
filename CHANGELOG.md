@@ -11,6 +11,17 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.73] - 2026-10-17
+
+### Added（批次 C2b：抓包 body + 脱敏）
+
+- `loadingFinished` 时在 attach 期间主动拉 `Network.getResponseBody`（base64 解码、文本 MIME 判定、二进制 `<binary N chars>`、淘汰 `bodyUnavailable:'evicted'`）
+- 请求体优先 `requestWillBeSent.request.postData`，缺失时 `Network.getRequestPostData`；响应 4 KiB / 请求 2 KiB 截断（读取时最多放大到 64 KiB）
+- 脱敏：URL secret 参数、JSON 递归 key、form key、Bearer/sk-/JWT/AKIA 字符串；每条带 `redacted:true`；capture 总 body 预算 8 MiB，超了 `bodiesDropped++`
+- `chrome_capture_start {storeBodies}`、`chrome_capture_requests {includeBodies, maxBodyChars}`；stop 前等待 in-flight body（≤2s）再 `Network.disable`
+- 真机 api2.html：POST 请求体 token → `«redacted»`、响应体 token → `«redacted»`、302 跳转 + document/fetch 3 条；headers 未采集
+- extension-logic：body 拉取、JSON 脱敏、上限/冻结、`Network.getResponseBody` 调用断言
+
 ## [0.1.72] - 2026-10-17
 
 ### Added（批次 C2a：HTTP 抓包 metadata）

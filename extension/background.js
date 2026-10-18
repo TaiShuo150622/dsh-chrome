@@ -835,6 +835,142 @@ function redactUrl(rawUrl) {
   return url.length > 2048 ? `${url.slice(0, 2048)}…` : url
 }
 
+const CAPTURE_BODY_TOTAL_LIMIT = 8 * 1024 * 1024
+const CAPTURE_RESPONSE_BODY_CHARS = 4096
+const CAPTURE_REQUEST_BODY_CHARS = 2048
+const CAPTURE_BODY_MAX_INFLIGHT = 4
+const CAPTURE_TEXT_MIME = /^text\/|json|xml|javascript|x-www-form-urlencoded|graphql/i
+
+function maskSecretsInText(text) {
+  return String(text)
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._\-]{6,}/gi, '$1«redacted»')
+    .replace(/\bsk-[A-Za-z0-9]{10,}\b/g, '«redacted»')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b/g, '«redacted»')
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, '«redacted»')
+}
+
+function redactJsonValue(value) {
+  if (Array.isArray(value)) return value.map((item) => redactJsonValue(item))
+  if (value && typeof value === 'object') {
+    const out = {}
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = CAPTURE_SECRET_PARAM.test(key) ? '«redacted»' : redactJsonValue(item)
+    }
+    return out
+  }
+  if (typeof value === 'string') return maskSecretsInText(value)
+  return value
+}
+
+function redactBodyText(text, mimeType, maxChars) {
+  let out = String(text ?? '')
+  const trimmed = out.trim()
+  const isJson = /json/i.test(String(mimeType || '')) || trimmed.startsWith('{') || trimmed.startsWith('[')
+  if (isJson) {
+    try {
+      out = JSON.stringify(redactJsonValue(JSON.parse(trimmed)))
+    } catch {
+      out = maskSecretsInText(out)
+    }
+  } else if (/x-www-form-urlencoded/i.test(String(mimeType || ''))) {
+    out = out
+      .split('&')
+      .map((pair) => {
+        const [name, ...rest] = pair.split('=')
+        if (CAPTURE_SECRET_PARAM.test(decodeURIComponent(name || ''))) return `${name}="«redacted»"`
+        return `${name}${rest.length ? `=${rest.join('=')}` : ''}`
+      })
+      .join('&')
+  } else {
+    out = maskSecretsInText(out)
+  }
+  const truncated = out.length > maxChars
+  return {
+    text: truncated ? `${out.slice(0, maxChars)}… <truncated>` : out,
+    truncated,
+  }
+}
+
+function decodeBase64Body(data) {
+  try {
+    const binary = atob(String(data || ''))
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+  } catch {
+    return ''
+  }
+}
+
+function materializeCaptureBody(capture, raw, mimeType, maxChars) {
+  if (raw == null) return null
+  const textual = CAPTURE_TEXT_MIME.test(String(mimeType || ''))
+  let text
+  if (!textual) {
+    text = `<binary ${String(raw).length} chars>`
+  } else {
+    const result = redactBodyText(raw, mimeType, maxChars)
+    text = result.text
+  }
+  const bytes = text.length
+  if (capture.bodyBytes + bytes > CAPTURE_BODY_TOTAL_LIMIT) {
+    capture.bodiesDropped += 1
+    return { text: '<body not captured: capture body budget exceeded>', truncated: false }
+  }
+  capture.bodyBytes += bytes
+  return { text, truncated: text.length >= maxChars }
+}
+
+function scheduleCaptureBodies(capture, session, entry, requestId) {
+  if (!capture.storeBodies) return
+  if (!['xhr', 'fetch', 'document'].includes(entry.resourceType)) return
+  if (entry.bodyScheduled) return
+  entry.bodyScheduled = true
+  if (capture.bodyTasks.size >= CAPTURE_BODY_MAX_INFLIGHT) {
+    entry.bodyUnavailable = 'burst'
+    return
+  }
+  const task = (async () => {
+    try {
+      const response = await chrome.debugger.sendCommand(session.target, 'Network.getResponseBody', {
+        requestId,
+      })
+      const raw = response?.base64Encoded ? decodeBase64Body(response.body) : String(response?.body ?? '')
+      const materialized = materializeCaptureBody(capture, raw, entry.mimeType, CAPTURE_RESPONSE_BODY_CHARS)
+      if (materialized) {
+        entry.responseBody = materialized.text
+        entry.bodyTruncated = materialized.truncated
+        entry.redacted = true
+      }
+    } catch {
+      entry.bodyUnavailable = 'evicted'
+    }
+    if (entry.postDataRaw == null && entry.hasPostData) {
+      try {
+        const request = await chrome.debugger.sendCommand(session.target, 'Network.getRequestPostData', {
+          requestId,
+        })
+        if (request?.postData) entry.postDataRaw = String(request.postData)
+      } catch {
+        // request body unavailable
+      }
+    }
+    if (entry.postDataRaw != null) {
+      const requestMime = /^{|^\[/.test(String(entry.postDataRaw).trim())
+        ? 'application/json'
+        : 'application/x-www-form-urlencoded'
+      const materialized = materializeCaptureBody(capture, entry.postDataRaw, requestMime, CAPTURE_REQUEST_BODY_CHARS)
+      if (materialized) {
+        entry.requestBody = materialized.text
+        entry.redacted = true
+      }
+      delete entry.postDataRaw
+    }
+  })()
+  capture.bodyTasks.add(task)
+  task.finally(() => capture.bodyTasks.delete(task))
+}
+
 function captureForSession(session) {
   const capture = session?.capture
   return capture && capture.active ? capture : null
@@ -885,6 +1021,8 @@ function routeNetworkEvent(session, method, params) {
     entry.startMono = Number(params.timestamp) || null
     entry.documentURL = params.documentURL ? redactUrl(params.documentURL) : entry.documentURL
     entry.wallTime = Number(params.wallTime) || null
+    entry.hasPostData = Boolean(request.hasPostData)
+    if (typeof request.postData === 'string') entry.postDataRaw = request.postData
     while (capture.order.length > capture.maxEntries) {
       const droppedId = capture.order.shift()
       capture.requests.delete(droppedId)
@@ -913,6 +1051,7 @@ function routeNetworkEvent(session, method, params) {
     } else {
       entry.durationMs = entry.startTime ? Math.max(0, entry.finishedAt - entry.startTime) : null
     }
+    scheduleCaptureBodies(capture, session, entry, requestId)
     return
   }
   if (method === 'Network.loadingFailed') {
@@ -947,7 +1086,11 @@ async function startCapture(owner, params) {
         requests: session.capture.order.length,
       }
     }
-    await chrome.debugger.sendCommand(session.target, 'Network.enable', { maxPostDataSize: 65536 })
+    await chrome.debugger.sendCommand(session.target, 'Network.enable', {
+      maxPostDataSize: 65536,
+      maxTotalBufferSize: 8388608,
+      maxResourceBufferSize: 2097152,
+    })
     const capture = {
       captureId: `cap-${Date.now().toString(36)}-${nextCaptureSeq++}`,
       owner,
@@ -962,6 +1105,9 @@ async function startCapture(owner, params) {
       order: [],
       dropped: 0,
       bodiesDropped: 0,
+      bodyBytes: 0,
+      bodyTasks: new Set(),
+      storeBodies: params.storeBodies !== false,
       timer: null,
     }
     capture.timer = setTimeout(() => endCapture(capture, 'timeout'), CAPTURE_MAX_DURATION_MS)
@@ -980,6 +1126,7 @@ async function startCapture(owner, params) {
       startedAt: new Date(capture.startedAt).toISOString(),
       resourceTypes: [...capture.resourceTypes],
       maxEntries,
+      storeBodies: capture.storeBodies,
       active: true,
     }
   })
@@ -1008,6 +1155,12 @@ async function stopCapture(owner, params) {
   if (!capture.active) return captureSummary(capture, false)
   const tabId = capture.tabId
   return withDebugger(tabId, async (session) => {
+    if (capture.bodyTasks.size > 0) {
+      await Promise.race([
+        Promise.allSettled([...capture.bodyTasks]),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ])
+    }
     await chrome.debugger.sendCommand(session.target, 'Network.disable').catch(() => {})
     endCapture(capture, 'stopped')
     return captureSummary(capture, false)
@@ -1031,6 +1184,10 @@ function captureSummary(capture, active) {
 
 function captureRequests(owner, params) {
   const capture = findCapture(owner, params)
+  const includeBodies = params.includeBodies !== false
+  const maxBodyChars = Number.isFinite(params.maxBodyChars)
+    ? Math.max(64, Math.min(65536, Number(params.maxBodyChars)))
+    : 4096
   const limit = Number.isFinite(params.limit) ? Math.max(1, Math.min(200, Number(params.limit))) : 50
   const filter = String(params.filter || '').toLowerCase()
   const types = Array.isArray(params.resourceTypes) && params.resourceTypes.length > 0
@@ -1042,7 +1199,20 @@ function captureRequests(owner, params) {
     if (!entry) continue
     if (types && !types.has(entry.resourceType)) continue
     if (filter && !`${entry.method} ${entry.url}`.toLowerCase().includes(filter)) continue
-    entries.push({ ...entry })
+    const copy = { ...entry }
+    delete copy.postDataRaw
+    if (!includeBodies) {
+      delete copy.requestBody
+      delete copy.responseBody
+    } else {
+      for (const key of ['requestBody', 'responseBody']) {
+        if (typeof copy[key] === 'string' && copy[key].length > maxBodyChars) {
+          copy[key] = `${copy[key].slice(0, maxBodyChars)}… <truncated>`
+          copy.bodyTruncated = true
+        }
+      }
+    }
+    entries.push(copy)
   }
   return {
     available: true,

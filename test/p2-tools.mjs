@@ -74,7 +74,7 @@ host.stdout.on(
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
       'tab.capture_start': { captureId: 'cap-1', tabId: 7, startedAt: '2026-10-17T10:00:00.000Z', active: true, maxEntries: 300, resourceTypes: ['xhr', 'fetch', 'document'] },
       'tab.capture_stop': { captureId: 'cap-1', tabId: 7, startedAt: '2026-10-17T10:00:00.000Z', endedAt: '2026-10-17T10:00:12.000Z', durationMs: 12000, requests: 1, dropped: 0, bodiesDropped: 0, active: false, endedReason: 'stopped' },
-      'tab.capture_requests': { available: true, lost: false, active: true, captureId: 'cap-1', tabId: 7, entries: [{ id: 'r1', method: 'POST', url: 'https://api.test/x?access_token=«redacted»', status: 200, mimeType: 'application/json', resourceType: 'Fetch', durationMs: 5 }], total: 1, truncated: false, dropped: 0, bodiesDropped: 0 },
+      'tab.capture_requests': { available: true, lost: false, active: true, captureId: 'cap-1', tabId: 7, entries: [{ id: 'r1', method: 'POST', url: 'https://api.test/x?access_token=«redacted»', status: 200, mimeType: 'application/json', resourceType: 'Fetch', durationMs: 5, requestBody: '{"token":"«redacted»"}', responseBody: '{"token":"«redacted»"}', redacted: true }], total: 1, truncated: false, dropped: 0, bodiesDropped: 0 },
       'tab.evaluate': { ok: true, value: 2, type: 'number' },
       'tab.frames': { tabId: 7, frames: [{ frameId: 'main', parentFrameId: null, url: 'http://127.0.0.1:8765/iframe.html' }] },
       'tab.selection': { found: true, text: 'selected paragraph', url: 'http://127.0.0.1:8765/selection.html', title: 'DSH Selection Test Page', truncated: false, source: 'page' },
@@ -253,9 +253,16 @@ const captureStop = await captureByName.chrome_capture_stop.execute({}, exec())
 check('capture stop freezes the buffer', captureStop?.active === false && captureStop?.requests === 1)
 check('capture stop reaches the extension', requests.at(-1)?.method === 'tab.capture_stop')
 
-const captureRequests = await captureByName.chrome_capture_requests.execute({ limit: 5, filter: 'api' }, exec())
+const captureRequests = await captureByName.chrome_capture_requests.execute({ limit: 5, filter: 'api', includeBodies: false, maxBodyChars: 256 }, exec())
 check('capture requests returns metadata entries', captureRequests?.entries?.[0]?.method === 'POST' && captureRequests?.entries?.[0]?.status === 200)
-check('capture filter/limit reach the extension', requests.at(-1)?.method === 'tab.capture_requests' && requests.at(-1)?.params?.limit === 5 && requests.at(-1)?.params?.filter === 'api')
+check(
+  'capture filter/limit/body params reach the extension',
+  requests.at(-1)?.method === 'tab.capture_requests' &&
+    requests.at(-1)?.params?.limit === 5 &&
+    requests.at(-1)?.params?.filter === 'api' &&
+    requests.at(-1)?.params?.includeBodies === false &&
+    requests.at(-1)?.params?.maxBodyChars === 256,
+)
 
 // C1: chrome_evaluate is gated by config and hard-confirmed every call
 const evalTools = (config, questions) =>

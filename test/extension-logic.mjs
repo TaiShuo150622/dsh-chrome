@@ -164,6 +164,12 @@ const chrome = {
       if (method === 'Page.enable') return {}
       if (method === 'Network.enable') return {}
       if (method === 'Network.disable') return {}
+      if (method === 'Network.getResponseBody') {
+        return { body: JSON.stringify({ ok: true, user: 'u1', token: 'T0K3N', nested: { apiKey: 'NESTED' } }), base64Encoded: false }
+      }
+      if (method === 'Network.getRequestPostData') {
+        return { postData: JSON.stringify({ user: 'u1', token: 'T0K3N' }) }
+      }
       if (method === 'Page.getFrameTree') {
         return {
           frameTree: {
@@ -512,7 +518,12 @@ const captureAttachAfterStart = debuggerCalls.filter((call) => call.method === '
 
 emitNetwork('Network.requestWillBeSent', {
   requestId: 'r1',
-  request: { url: 'https://api.test/data?access_token=SECRET', method: 'POST' },
+  request: {
+    url: 'https://api.test/data?access_token=SECRET',
+    method: 'POST',
+    hasPostData: true,
+    postData: JSON.stringify({ user: 'u1', token: 'T0K3N' }),
+  },
   type: 'Fetch',
   timestamp: 100,
   documentURL: 'http://127.0.0.1:8765/api.html',
@@ -524,12 +535,14 @@ emitNetwork('Network.responseReceived', {
   timestamp: 101,
 })
 emitNetwork('Network.loadingFinished', { requestId: 'r1', timestamp: 100.25 })
+await new Promise((resolve) => setTimeout(resolve, 30))
 
 const capturedRequests = await sandbox.handleRequest({
   method: 'tab.capture_requests',
   params: { owner: 's1', limit: 10 },
   id: 'capture-requests-1',
 })
+check('capture fetches response body while attached', debuggerCalls.some((call) => call.method === 'Network.getResponseBody'))
 check(
   'capture records method/status and redacts secret query values',
   capturedRequests?.entries?.[0]?.method === 'POST' &&
@@ -537,6 +550,20 @@ check(
     capturedRequests?.entries?.[0]?.url.includes('«redacted»') &&
     !capturedRequests?.entries?.[0]?.url.includes('SECRET'),
   JSON.stringify(capturedRequests?.entries?.[0]),
+)
+check(
+  'capture bodies are redacted before returning',
+  typeof capturedRequests?.entries?.[0]?.responseBody === 'string' &&
+    capturedRequests.entries[0].responseBody.includes('«redacted»') &&
+    !JSON.stringify(capturedRequests).includes('T0K3N') &&
+    !JSON.stringify(capturedRequests).includes('NESTED'),
+  JSON.stringify(capturedRequests?.entries?.[0]?.responseBody),
+)
+check(
+  'capture request body is redacted',
+  typeof capturedRequests?.entries?.[0]?.requestBody === 'string' &&
+    capturedRequests.entries[0].requestBody.includes('«redacted»'),
+  JSON.stringify(capturedRequests?.entries?.[0]?.requestBody),
 )
 check('capture never includes headers in entries', !JSON.stringify(capturedRequests).match(/cookie|authorization|set-cookie/i))
 
