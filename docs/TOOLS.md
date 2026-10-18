@@ -225,12 +225,12 @@ Read the recent site-policy audit log (~/.dsh/cache/dsh-chrome/audit.jsonl): tim
 
 ### `chrome_headless_login`
 
-Open a visible, dedicated Chrome window so the user can log in once; its cookies persist in the headless profile and are reused by backend:"headless" sessions. op="start" requires hard confirmation and closes the running headless browser first; op="finish" closes the login window; op="status" reports it.
+Open a visible, dedicated Chrome window at a human-interaction step (login, CAPTCHA, payment, OTP) using the headless profile: op="start" opens about:blank, op="show" pauses the current headless session and reopens its current page in a visible window, op="finish" closes the visible window, op="status" reports it. The next backend:"headless" call resumes the page after show/finish. Requires hard confirmation.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `op` | enum(start | status | finish) | yes |  |
-| `url` | string | no | start: URL to open in the login window (default about:blank). |
+| `op` | enum(start | show | status | finish) | yes |  |
+| `url` | string | no | start/show: http(s) URL (show defaults to the current headless page). |
 
 ### `chrome_screencast`
 
