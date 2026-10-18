@@ -595,12 +595,72 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 - shadow DOM 里的 canvas、跨源 iframe 的绘制仍是既有边界（不可见）。
 - `Input.*`（press / clickAt / drag）仍走满窗口：它们走 CDP Input，页面侧探针不覆盖，留给下一轮。
 
+### 4.1.9 2026-10-17 第十轮：JPEG `clip`/`ref` 用页面编解码器裁剪（Ralph 循环第 5 轮）
+
+背景：§4.1.4/§5 留的最后一个截图方向——`clip`/`ref` 的 **JPEG** 请求一直回退到 `Page.captureScreenshot`（本轮实测 45.9–47.9ms/次），而同一区域的 PNG 已经能从帧缓存裁剪（14.6–15.2ms）。缺的是「能裁 JPEG 的路径」：driver 里没有 JPEG 编解码器（不加依赖）。本轮不写编解码器，而是**把裁剪交给页面自己的 codec**：`createImageBitmap` 解码 + `canvas.toDataURL('image/jpeg', q)` 编码，都在一个**专用 isolated world** 里跑。
+
+**实现**（`src/headless.js`）：
+
+1. `jpegFrameSize()`：只走 SOF 头（几百字节）拿帧的像素尺寸，用来把 CSS px 的 `clip` 换算成帧像素；从不整帧解码（与 PNG 的 `pngFrameSize` 同一分工）。
+2. 帧字节缓存在 isolated world 的 `window.__dshShotFrame`，token = `composedAt:字节数`：同一帧再裁不重传，只有新帧才付 base64 传输。裁剪请求仍走一次 `Runtime.evaluate`（`awaitPromise`），返回 base64 JPEG。
+3. **isolated world**（`Page.createIsolatedWorld`，world `dsh-shot-crop`，每个文档一个，随导航失效后重建一次）：页面脚本碰不到它的 globals/DOM 原型，所以页面既不能把裁剪弄坏、也不能伪造自己截图的像素——测试里把主世界 `HTMLCanvasElement.prototype.toDataURL` 覆盖成常量，裁剪仍然返回正确的 600×300 图像。
+4. **帧几何过滤**：Chrome 会吐出几何不对的帧——实测在请求 1440×813 的 stream 上收到过 600×300、1440×720、531×300 的帧（`metadata.deviceWidth/Height` 也跟着错）。这种帧按它换算会「内容对、分辨率错」，所以 `Page.screencastFrame` 里按**帧实际像素尺寸**（±2px 容差）过滤，不符的帧不当缓存帧、也算「没收到帧」，让 clip 路径立刻走 capture 而不是白等 40ms 重绘窗。`tab.debug_diag.screenshotStream` 新增 `jpegCropped`。
+5. **clip capture 会污染 screencast（本轮的坑）**：在 stream 运行时做带 `clip` 的 `Page.captureScreenshot`，Chrome 之后会一直吐 **clip 尺寸**的 screencast 帧（600×300），后续裁剪全部失效（实测一次污染能让 10s 的 bench 一次裁剪都做不成）。而在 stream 启动**之前**做 clip capture 不会污染（对照探针 3/3）。因此：
+   - 冷路径（tab 上没有活跃 stream）**先**做带 clip 的 capture（Chrome 只编码该区域，最便宜），**再**启动 stream 给后续截图预热；
+   - stream 在跑但拿不到可用帧 → 做**全视口 capture + 同一个页面裁剪**（全视口 capture 顺带重画整个 surface，下一帧恢复可用），不再用带 clip 的 capture；
+   - repaint-miss（40ms 内没有新帧）不拿旧帧去裁，直接走全视口 capture——宁可多花一次 capture，也不返回动作前的像素。
+6. `DSH_HEADLESS_JPEG_CROP=0` 一键回退到 capture；单帧超过 2MB（4K 级全细节页）也回退 capture。
+
+**前后数字**（同机交替 A/B：`git archive 8ef018b` 导出原树 vs 本轮；每侧每对交替跑；1-min load 3.7–7.6）：
+
+`node scripts/headless-bench.mjs --seconds 10 --shot-clip 600x300 --shot-format jpeg --shot-quality 70`（页面每轮 type/scroll，截图紧跟其后）：
+
+| 指标 | 改前（8ef018b） | 改后 |
+|---|---|---|
+| 动作/10s | 201 / 200 / 201 | **435 / 490 / 487** |
+| 轮/s | 20.1–20.2 | 43.5–49.0 |
+| `tab.screenshot` | 46.23 / 45.92 / 46.35 ms | **21.19 / 18.20 / 18.35 ms**（中位 −60%） |
+| 每轮合计 | 49.80–50.12 ms | **20.41–23.01 ms** |
+| 每动作 CPU | 25.37 / 25.80 / 25.75 ms | 23.63 / 25.14 / 23.90 ms |
+| RSS | 1063–1120 MB | 1165–1190 MB |
+| 流计数 | —（从不建 stream） | `cropped` 399/483/482、`fallbacks` 36/5/3（全是 repaint-miss） |
+
+`--shot-ref --shot-format jpeg`（ref 解析 + 裁剪端到端）：改前 200/201 动作、`screenshot` 47.91/46.78 ms、每动作 CPU 26.95/25.12 ms → 改后 **388/584 动作、23.47/15.51 ms、24.36/20.80 ms**（`cropped` 347/580）。
+
+**单张与间隔调用**（`/tmp` 探针，同一页面：静态页连拍 / 每次动作后隔 3s 再截图；单位 ms）：
+
+| 场景 | 改前 | 改后 |
+|---|---|---|
+| 冷第一张（tab 上还没有 stream） | 30.43 | **18.78** |
+| 第 2 张（stream 预热后第一张，仍走一次全视口 capture） | 31.49 | 42.98 |
+| 第 3 / 4 张（同一静态页） | 49.53 / 51.65 | **10.92 / 7.00** |
+| 闲置 3s 后第 1 张（stream 已被 idle 停掉） | 14.26 | 12.05 |
+| 闲置 3s 后第 2 张（同页） | 48.49 | **12.07** |
+| 改 DOM 后截图 | 48.64 | **22.12** |
+| 动作 + 截图间隔 3s（5 次中位） | 28.70 | 28.86（持平） |
+
+静态页连拍是收益最大的常见形态（第 3 张起 7–11ms vs 47–52ms）；隔 3s 的「动作 → 截图」保持持平（冷路径先做 clip capture），爆发式连拍（bench）才是 −60% 的主场。
+
+**不回退**：PNG `--shot-clip` 改前 474–598 动作、15.1–18.8ms → 改后 474–588、17.7–18.6ms（同一代码路径，`cropped == served`、`fallbacks 0`，差异在机器噪声内）；标准 PNG 视口 599–601 → 575–598、14.4–15.4ms；JPEG 视口（无 clip）601 → 589、14.91 → 15.35ms——都不在改动路径上。
+
+**代价与边界**：
+
+- RSS +50–80MB（多一条 JPEG screencast + 帧缓冲），每动作 CPU 略降（更多轮次走裁剪而不是 capture）。
+- 两次 JPEG 代：stream 帧（请求的 quality）→ 页面按请求 quality 再编码一次；截图是给人/模型看的，不是像素级存档。
+- 裁剪成本随内容复杂度上升：617KB 的噪声页帧（1440×813）页面侧解码+编码 22ms、每次重传 32ms，而 capture 只要 ~50ms；所以单帧 >2MB 直接回退 capture（2MB 已是 4K 级全细节页）。
+- 静态页上「第二张」仍要一次全视口 capture 来建立可用帧（42.98ms），之后才 7–11ms。
+- 页面拿不到 JS（崩溃/导航中）、isolated world 建不出来、页面 canvas 编码失败、输出不是合法 JPEG（SOI/EOI、≥128B）→ 全部回退，行为与改前一致。
+- 输出是**设备像素**（与 PNG 裁剪一致），`width`/`height` 仍报 CSS px；`dpr=1` 时两者相同。
+- 已走满窗口/保留 capture 的仍保留：`fullPage`、`frameRef`、`highlight`、`optimizeForSpeed:false`。
+
+**回归**：`node test/headless.mjs` 新增 12 组断言（JPEG clip 的 SOI/EOI、SOF 像素尺寸 = 600×300×dpr、同一页字节相同、改页后必须变、`ref` 尺寸 = 元素框、主世界覆盖 `toDataURL` 后裁剪仍正确且不是页面给的字节、页面状态复原），清理探针残留的 141 个 headless Chrome 后连跑 7 次 PASS（机器被占满时，既有断言「两张截图都要由 stream 提供」会偶发假失败——那是旧竞态、与本次改动无关，负载正常后稳定）；`npm test` exit 0（含 `HEADLESS TEST: PASS`、`EXTENSION LOGIC TEST: PASS`、`13 checks passed, 0 failed`）。
+
 ## 5. 下一步（H1）
 
 1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
 2. capture 引擎与扩展共享（两套行为一致性）；
-3. 截图性能：PNG/JPEG 帧流（§4.1.1、§4.1.2）、静态页空闲保活（§4.1.3）、`clip`/`ref` 从帧缓存裁剪（§4.1.4）都已落地；整视口「页面变了」的下限仍是合成器帧间隔 ~15–16ms。本轮之后剩余的方向：
-   - `clip` 的 JPEG 请求仍走 capture（driver 里没有 JPEG 解码），~45ms；如要补，需要 JPEG 帧流 + 一个能裁剪 JPEG 的路径（或让调用方接受 PNG）。
+3. 截图性能：PNG/JPEG 帧流（§4.1.1、§4.1.2）、静态页空闲保活（§4.1.3）、`clip`/`ref` 从帧缓存裁剪（§4.1.4）、JPEG `clip`/`ref` 的页面侧裁剪（§4.1.9）都已落地；整视口「页面变了」的下限仍是合成器帧间隔 ~15–16ms。剩余的方向：
+   - ~~`clip` 的 JPEG 请求仍走 capture~~ ✅ **已落地（§4.1.9）**：isolated world 里用页面自己的 JPEG codec 裁剪，`--shot-clip --shot-format jpeg` 46.2 → 18.4 ms/截图（动作/10s 201 → 435–490），`--shot-ref` jpeg 47.9 → 15.5–23.5 ms。边界：双 JPEG 代、单帧 >2MB 回退 capture、静态页第二张要一次全视口 capture 解锁。**别再做**：在 stream 运行时用带 clip 的 capture（会让 Chrome 之后一直吐 clip 尺寸的帧）。
    - ~~只读 evaluate 后的 40ms 重绘窗~~ ✅ **已落地（§4.1.7）**：页面侧视觉变更追踪器证明「没重绘」时不再推进 change marker，只读 evaluate → 截图 43.2 → 0.26 ms、边界 scroll 42.2 → 0.22 ms；有 canvas / 同源 subframe / 异步重绘时保持保守。剩余同类项：`Input.*` 动作（press / clickAt / drag）仍走满窗口。
    - ~~合成 click / hover 后的 40ms 重绘窗~~ ✅ **已落地（§4.1.8）**：普通 click → 截图 43.2 → 0.23 ms、hover 43.4 → 0.21 ms；目标可能导航 / 提交表单 / 激活控件 / 操作媒体 / 开关 popover 时保持保守（hazard），无 mutation 的 UA 状态变化由 change/toggle 计数器兜底。剩余同类项：`Input.*`（press / clickAt / drag）。
    - viewer 分支每帧的 base64+磁盘写已节流（§4.1.6）：headless 落盘 15.0→10.0 帧/s、fs 同步耗时中位 −31%、node CPU −13%；桌面 host 落盘 29.7→10.4 帧/s、fs 同步耗时 −55%。
@@ -611,11 +671,11 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 
 | 文件 | 内容 |
 |---|---|
-| `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7）、合成 click/hover 的 hazard 判定与 change/toggle 计数（§4.1.8） |
+| `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7）、合成 click/hover 的 hazard 判定与 change/toggle 计数（§4.1.8）、JPEG `clip`/`ref` 的 isolated-world 页面裁剪与 screencast 帧几何过滤（§4.1.9） |
 | `host/host.mjs` | Chrome native messaging host：扩展 ↔ provider 的 JSON 帧中继、discovery 文件重连、viewer 帧落盘（节流，§4.1.6）与扩展热更新监听 |
 | `src/backend.js` | BackendRouter + AsyncLocalStorage + `wrapToolsForBackend`（给 39 个工具加 `backend` 参数） |
 | `index.js` | 创建 HeadlessDriver/Router，包装工具，卸载时关闭 |
-| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）、`--noop-click` 普通 click + 截图场景（§4.1.8）；动作上限 `ACTIONS*50`（短路场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
+| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4，PNG 驱动裁剪 / JPEG 页面裁剪 §4.1.9）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）、`--noop-click` 普通 click + 截图场景（§4.1.8）；输出里带 `screenshotStream` 计数器（served/cropped/jpegCropped/fallbacks）；动作上限 `ACTIONS*50`（短路场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
 | `test/backend-router.mjs` | 路由/参数剥离/默认桌面回归 |
-| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、viewer 帧落盘产物断言、只读 evaluate/边界 scroll/合成 click/hover 的视觉探针短路与陈旧帧断言） |
+| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、JPEG clip/ref 的 SOI/EOI 与像素尺寸、同页字节复用与改页新鲜性、主世界覆盖 `toDataURL` 后 isolated-world 裁剪仍正确、viewer 帧落盘产物断言、只读 evaluate/边界 scroll/合成 click/hover 的视觉探针短路与陈旧帧断言） |
 | `test/host-reconnect.mjs` | native host 持久化（provider 重启后重连）+ viewer 帧落盘/节流 trailing flush 断言（§4.1.6） |
