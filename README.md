@@ -67,6 +67,7 @@
 - [能力差距与参考项目分析：需求、验收与公开项目借鉴](docs/GAP-ANALYSIS.md)
 - [安装指南（macOS 本地/开发者）](docs/INSTALL.md) · [工具参考（自动生成）](docs/TOOLS.md)
 - [用法示例：典型任务的工具序列](docs/EXAMPLES.md) · [FAQ](docs/FAQ.md)
+- [发布说明 0.1.78（批次 A–D）](docs/RELEASE-NOTES-0.1.78.md)
 - [自动更新说明](docs/AUTO-UPDATE.md)
 - [配置（allowEvaluate / captureConfirm 等）](docs/CONFIG.md)
 - [安全模型](docs/SECURITY.md) · [贡献指南](CONTRIBUTING.md) · [发布检查清单](docs/RELEASE.md) · [变更日志](CHANGELOG.md) · [第三方说明](NOTICE.md)
