@@ -112,19 +112,20 @@ const SHOT_STREAM_KEEPALIVE = process.env.DSH_HEADLESS_SHOT_STREAM_KEEPALIVE !==
 const SHOT_STREAM_FAILURES_BEFORE_BACKOFF = 2
 const SHOT_STREAM_BACKOFF_MS = 5000
 
-// Page-side visual-change probe (docs/HEADLESS.md §4.1.7). The repaint window
-// above is a blind wait for a composited frame, so an action that cannot have
-// painted anything (a read-only evaluate, a scroll that does not move the
-// viewport) still pays it in full. The driver installs this tracker in every
-// document and snapshots it around such an action; only a clean verdict keeps
-// the previous change marker, which turns the next screenshot into a frame
-// cache hit instead of a ~40ms wait. Anything the tracker cannot see (canvas
-// pixels, same-origin subframe documents, asynchronous effects) keeps the
-// conservative wait, and `DSH_HEADLESS_VISUAL_PROBE=0` disables the shortcut.
+// Page-side visual-change probe (docs/HEADLESS.md §4.1.7/§4.1.8). The repaint
+// window above is a blind wait for a composited frame, so an action that cannot
+// have painted anything (a read-only evaluate, a scroll that does not move the
+// viewport, a click on a plain element) still pays it in full. The driver
+// installs this tracker in every document and snapshots it around such an
+// action; only a clean verdict keeps the previous change marker, which turns
+// the next screenshot into a frame cache hit instead of a ~40ms wait. Anything
+// the tracker cannot see (canvas pixels, media surfaces, same-origin subframe
+// documents, asynchronous effects) keeps the conservative wait, and
+// `DSH_HEADLESS_VISUAL_PROBE=0` disables the shortcut.
 const VISUAL_PROBE_ENABLED = process.env.DSH_HEADLESS_VISUAL_PROBE !== '0'
 const VISUAL_TRACKER_SCRIPT = `(() => {
   if (window.__dshVisual) return true
-  const state = { mutations: 0, scrolls: 0, focus: 0, broken: false }
+  const state = { mutations: 0, scrolls: 0, focus: 0, changes: 0, toggles: 0, broken: false }
   const docId = Math.random().toString(36).slice(2)
   try {
     new MutationObserver((records) => { state.mutations += records.length })
@@ -134,6 +135,13 @@ const VISUAL_TRACKER_SCRIPT = `(() => {
     addEventListener('scroll', () => { state.scrolls += 1 }, true)
     addEventListener('focusin', () => { state.focus += 1 }, true)
     addEventListener('focusout', () => { state.focus += 1 }, true)
+    // UA-level state that repaints without a DOM mutation: checkbox/radio/
+    // select/file activation fires change, while popovers and command targets
+    // fire beforetoggle/toggle. A clean click snapshot requires both counters
+    // to stay put.
+    addEventListener('change', () => { state.changes += 1 }, true)
+    addEventListener('beforetoggle', () => { state.toggles += 1 }, true)
+    addEventListener('toggle', () => { state.toggles += 1 }, true)
   } catch { state.broken = true }
   // A same-origin subframe document can be mutated by an evaluate but is not
   // covered by the observer above (different node tree), so its presence keeps
@@ -149,6 +157,9 @@ const VISUAL_TRACKER_SCRIPT = `(() => {
   }
   window.__dshVisual = {
     snapshot() {
+      // Canvas pixels and media surfaces repaint with no DOM mutation at all,
+      // so their presence disables the shortcut (one scan covers both).
+      const heavy = document.querySelector('canvas, video, audio')
       return {
         doc: docId,
         url: location.href,
@@ -156,9 +167,12 @@ const VISUAL_TRACKER_SCRIPT = `(() => {
         mutations: state.mutations,
         scrolls: state.scrolls,
         focus: state.focus,
+        changes: state.changes,
+        toggles: state.toggles,
         animations: typeof document.getAnimations === 'function' ? document.getAnimations().length : -1,
         scroll: [window.scrollX, window.scrollY],
-        canvas: Boolean(document.querySelector('canvas')),
+        canvas: Boolean(heavy && heavy.tagName === 'CANVAS'),
+        media: Boolean(heavy && (heavy.tagName === 'VIDEO' || heavy.tagName === 'AUDIO')),
         frames: sameOriginFrame(),
         broken: Boolean(state.broken),
       }
@@ -645,6 +659,33 @@ function clickPage(ref, selector, clickCount, button) {
     ? document.querySelector(selector)
     : document.querySelector(`[data-dsh-ref="${Number(ref)}"]`)
   if (!el) return { ok: false, code: 'REF_NOT_FOUND', message: `no element for ${selector || `ref ${ref}`}` }
+  // `hazard` marks targets where this synthetic click can change what the page
+  // renders through a UA default action the visual tracker cannot see (no DOM
+  // mutation, no scroll/focus event): navigation, form submission, label
+  // forwarding, checkbox/radio/select/file activation, media controls, popover
+  // or command toggles. `null` means the driver may keep the previous change
+  // marker when both snapshots agree (docs/HEADLESS.md §4.1.8).
+  const hazard = (() => {
+    try {
+      if (el.closest?.('a[href], area[href]')) return 'navigation'
+      if (el.closest?.('label')) return 'label-activation'
+      if (el.closest?.('video, audio')) return 'media-control'
+      if (el.closest?.('[popovertarget], [commandfor]')) return 'ua-toggle'
+      // Any form control: checkbox/radio/select/file activation repaints without
+      // a mutation, and typable controls can move a caret/selection.
+      if (el.closest?.('input, select, textarea')) return 'form-control'
+      const button = el.closest?.('button')
+      if (button) {
+        // A button's own default action is form submission; only a submitter
+        // (implicit type=submit) associated with a form can navigate.
+        const type = String(button.getAttribute('type') || 'submit').toLowerCase()
+        if ((button.form || button.closest?.('form')) && type !== 'button' && type !== 'reset') return 'form-submit'
+      }
+    } catch {
+      return 'unknown'
+    }
+    return null
+  })()
   el.scrollIntoView({ block: 'center', inline: 'center' })
   const rect = el.getBoundingClientRect()
   const options = {
@@ -673,6 +714,7 @@ function clickPage(ref, selector, clickCount, button) {
     // Runtime.evaluate round trip after every click.
     url: location.href,
     title: document.title || '',
+    hazard,
   }
 }
 
@@ -1408,6 +1450,8 @@ export class HeadlessDriver {
       Number.isFinite(value.mutations) &&
       Number.isFinite(value.scrolls) &&
       Number.isFinite(value.focus) &&
+      Number.isFinite(value.changes) &&
+      Number.isFinite(value.toggles) &&
       Number.isFinite(value.animations) &&
       Array.isArray(value.scroll) &&
       Number.isFinite(value.scroll[0]) &&
@@ -1420,11 +1464,13 @@ export class HeadlessDriver {
   // counter moved.
   visualProbeVerdict(before, after) {
     if (!this.visualSnapshotShape(before) || !this.visualSnapshotShape(after)) return 'unknown'
-    if (before.broken || before.canvas || before.frames) return 'unknown'
+    if (before.broken || before.canvas || before.media || before.frames) return 'unknown'
     if (before.doc !== after.doc || before.url !== after.url || before.readyState !== after.readyState) return 'unknown'
     if (before.mutations !== after.mutations) return 'unknown'
     if (before.scrolls !== after.scrolls) return 'unknown'
     if (before.focus !== after.focus) return 'unknown'
+    if (before.changes !== after.changes) return 'unknown'
+    if (before.toggles !== after.toggles) return 'unknown'
     // -1 means the page has no Web Animations API: an animation could have
     // started unseen, so keep the conservative wait.
     if (before.animations < 0) return 'unknown'
@@ -1436,7 +1482,10 @@ export class HeadlessDriver {
   // Runs `action` between two tracker snapshots. A clean verdict keeps the
   // previous change marker (`tab.skipRenderChange`), so the next screenshot
   // reuses the cached frame instead of waiting for a frame that cannot come.
-  async visualProbeAction(tab, action) {
+  // `accept(value)` can veto the shortcut from the action's own result (a click
+  // whose target may navigate or flip a form control): a veto skips the second
+  // snapshot entirely, so ineligible actions pay one round trip, not two.
+  async visualProbeAction(tab, action, accept = null) {
     const before = await this.visualSnapshot(tab)
     let value
     let failure = null
@@ -1449,6 +1498,15 @@ export class HeadlessDriver {
       if (failure) throw failure
       return value
     }
+    let eligible = true
+    if (!failure && accept) {
+      try {
+        eligible = Boolean(accept(value))
+      } catch {
+        eligible = false
+      }
+    }
+    if (!failure && !eligible) return value
     const after = await this.visualSnapshot(tab)
     if (!failure) {
       let verdict = 'unknown'
@@ -1963,7 +2021,17 @@ export class HeadlessDriver {
       }
       case 'tab.click': {
         const tab = await this.ensureTab(owner, params.tabId)
-        const result = await this.pageAction(tab, 'clickPage', [params.ref ?? null, params.selector ?? null, params.clickCount || 1, params.button === 'right' ? 2 : params.button === 'middle' ? 1 : 0])
+        // A click on a plain element (no navigation, no form control, no media
+        // control) that leaves every page-side counter untouched cannot have
+        // painted, so the next screenshot is a frame cache hit instead of a
+        // ~40ms repaint-window wait (docs/HEADLESS.md §4.1.8). `hazard` vetoes
+        // the shortcut for targets whose UA default action paints invisibly to
+        // the tracker; the veto also skips the second snapshot.
+        const result = await this.visualProbeAction(
+          tab,
+          () => this.pageAction(tab, 'clickPage', [params.ref ?? null, params.selector ?? null, params.clickCount || 1, params.button === 'right' ? 2 : params.button === 'middle' ? 1 : 0]),
+          (value) => value?.ok === true && value.hazard === null,
+        )
         if (!result?.ok) throw error(result?.code || 'REF_NOT_FOUND', result?.message || 'click failed')
         if (result.url) tab.url = result.url
         if (result.title != null) tab.title = result.title
@@ -1986,7 +2054,13 @@ export class HeadlessDriver {
       }
       case 'tab.hover': {
         const tab = await this.ensureTab(owner, params.tabId)
-        const result = await this.pageAction(tab, 'clickPage', [params.ref ?? null, params.selector ?? null, 1, 0])
+        // Hover shares clickPage (it dispatches the same synthetic events), so it
+        // shares the click probe and its target hazards (docs/HEADLESS.md §4.1.8).
+        const result = await this.visualProbeAction(
+          tab,
+          () => this.pageAction(tab, 'clickPage', [params.ref ?? null, params.selector ?? null, 1, 0]),
+          (value) => value?.ok === true && value.hazard === null,
+        )
         return result?.ok ? { ok: true, tag: result.tag, label: result.label, tabId: tab.tabId } : { ok: false, message: result?.message }
       }
       case 'tab.scroll': {

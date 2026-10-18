@@ -22,6 +22,8 @@ const page = `<!doctype html><html><head><title>Headless Test</title></head><bod
 <div id="drag-src" role="button" tabindex="0" draggable="true">drag-src</div>
 <div id="drop-target" role="button" tabindex="0">drop-target</div>
 <a id="download" href="/download" download="headless-report.txt">download</a>
+<div id="noop" style="padding:6px;border:1px solid #999;width:120px">noop</div>
+<form onsubmit="return false"><button id="form-submit" type="submit">form submit</button></form>
 <script>
   console.log('headless-log-1', 42)
   fetch('/data/resource.json').catch(() => {})
@@ -309,6 +311,95 @@ try {
   const restoredAfter = await tabDiag()
   assert.equal(restoredAfter.visualSkips, restoredBefore.visualSkips + 1, 'shortcut did not come back after removing the canvas')
   assert.deepEqual(fs.readFileSync(restoredShot.path), fs.readFileSync(restoredBase.path), 'read-only evaluate after canvas removal must reuse the cached frame')
+  // Synthetic click / hover (docs/HEADLESS.md §4.1.8): a click on a plain element
+  // with no handler cannot paint, so it keeps the previous change marker and the
+  // next screenshot reuses the cached frame. Clicks whose target can change UA
+  // state without a DOM mutation (checkbox activation) or navigate (form submit,
+  // anchor) must keep the conservative repaint window.
+  await driver.request('tab.scroll', { owner: 's1', direction: 'top' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const clickBaselineShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const clickBaselineBytes = fs.readFileSync(clickBaselineShot.path)
+  const clickBaselineDiag = await tabDiag()
+  const noopClick = await driver.request('tab.click', { owner: 's1', selector: '#noop' })
+  assert.equal(noopClick.ok, true, `plain click failed: ${JSON.stringify(noopClick)}`)
+  const noopClickShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const noopClickDiag = await tabDiag()
+  assert.equal(
+    noopClickDiag.visualSkips,
+    clickBaselineDiag.visualSkips + 1,
+    `plain click did not skip the repaint window: ${JSON.stringify({ before: clickBaselineDiag.visualSkips, after: noopClickDiag.visualSkips })}`,
+  )
+  assert.equal(
+    noopClickDiag.screenshotStream.frames,
+    clickBaselineDiag.screenshotStream.frames,
+    'plain click waited for a frame that cannot come',
+  )
+  assert.equal(
+    noopClickDiag.screenshotStream.repaintMisses,
+    clickBaselineDiag.screenshotStream.repaintMisses,
+    'plain click ran into the repaint window',
+  )
+  assert.deepEqual(fs.readFileSync(noopClickShot.path), clickBaselineBytes, 'plain click must reuse the cached frame')
+  // `tab.hover` shares clickPage, so it shares the probe.
+  const hoverBaseDiag = await tabDiag()
+  const hovered = await driver.request('tab.hover', { owner: 's1', selector: '#noop' })
+  assert.equal(hovered.ok, true, `plain hover failed: ${JSON.stringify(hovered)}`)
+  const hoverShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const hoverDiag = await tabDiag()
+  assert.equal(
+    hoverDiag.visualSkips,
+    hoverBaseDiag.visualSkips + 1,
+    `plain hover did not skip the repaint window: ${JSON.stringify({ before: hoverBaseDiag.visualSkips, after: hoverDiag.visualSkips })}`,
+  )
+  assert.equal(hoverDiag.screenshotStream.frames, hoverBaseDiag.screenshotStream.frames, 'plain hover waited for a frame that cannot come')
+  assert.deepEqual(fs.readFileSync(hoverShot.path), clickBaselineBytes, 'plain hover must reuse the cached frame')
+  // A click whose handler mutates the DOM is a paint source: the next screenshot
+  // must be fresh and the handler result must be visible.
+  await driver.request('tab.type', { owner: 's1', ref: input.ref, text: 'click-probe', replace: true })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  const beforeMutationShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const beforeMutationBytes = fs.readFileSync(beforeMutationShot.path)
+  const mutationBaseDiag = await tabDiag()
+  await driver.request('tab.click', { owner: 's1', ref: button.ref })
+  const mutationShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const mutationDiag = await tabDiag()
+  assert.equal(mutationDiag.visualSkips, mutationBaseDiag.visualSkips, 'a DOM-mutating click must keep the conservative wait')
+  assert.notDeepEqual(fs.readFileSync(mutationShot.path), beforeMutationBytes, 'DOM-mutating click must not be stale')
+  const mutationText = await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("out").textContent' })
+  assert.equal(mutationText.value, 'hello click-probe')
+  // Checkbox activation toggles pixels without a DOM mutation: the change-event
+  // counter plus the target hazard must keep the screenshot honest.
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const checkboxBaseline = await driver.request('tab.screenshot', { owner: 's1' })
+  const checkboxBytes = fs.readFileSync(checkboxBaseline.path)
+  const checkboxBaseDiag = await tabDiag()
+  const checkboxClick = await driver.request('tab.click', { owner: 's1', selector: '#check' })
+  assert.equal(checkboxClick.ok, true, `checkbox click failed: ${JSON.stringify(checkboxClick)}`)
+  const checkboxShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const checkboxDiag = await tabDiag()
+  assert.equal(checkboxDiag.visualSkips, checkboxBaseDiag.visualSkips, 'checkbox activation must keep the conservative wait')
+  assert.notDeepEqual(fs.readFileSync(checkboxShot.path), checkboxBytes, 'checkbox activation must not be stale')
+  // Activating a checkbox from page JS fires change, not a mutation; that counter
+  // is what keeps this honest.
+  const jsToggleBaseDiag = await tabDiag()
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("check").click()' })
+  const jsToggleDiag = await tabDiag()
+  assert.equal(jsToggleDiag.visualSkips, jsToggleBaseDiag.visualSkips, 'checkbox activation from evaluate must keep the conservative wait')
+  // A submit button is a navigation hazard even when the form cancels submit.
+  const formBaseDiag = await tabDiag()
+  const formClick = await driver.request('tab.click', { owner: 's1', selector: '#form-submit' })
+  assert.equal(formClick.ok, true, `form submit click failed: ${JSON.stringify(formClick)}`)
+  const formDiag = await tabDiag()
+  assert.equal(formDiag.visualSkips, formBaseDiag.visualSkips, 'form submit click must keep the conservative wait (navigation hazard)')
+  // Input.* actions are not probe-covered yet: press keeps the full window.
+  const pressBaseDiag = await tabDiag()
+  await driver.request('tab.press', { owner: 's1', key: 'Shift' })
+  const pressDiag = await tabDiag()
+  assert.equal(pressDiag.visualSkips, pressBaseDiag.visualSkips, 'Input.* press still keeps the conservative wait (not probe-covered)')
 
   const tabs = await driver.request('tab.tabs', { owner: 's1', op: 'list' })
   assert.equal(tabs.tabs.length, 1)
@@ -342,7 +433,16 @@ try {
 
   const downloadLink = snap2.controls.find((control) => control.tag === 'a' && control.label === 'download')
   assert.ok(downloadLink, `download link not found: ${JSON.stringify(snap2.controls)}`)
+  // An anchor can navigate, so the click hazard keeps the conservative wait even
+  // though this particular download link does not repaint the page.
+  const downloadClickBase = await tabDiag()
   await driver.request('tab.click', { owner: 's1', ref: downloadLink.ref })
+  const downloadClickDiag = await tabDiag()
+  assert.equal(
+    downloadClickDiag.visualSkips,
+    downloadClickBase.visualSkips,
+    'anchor click must keep the conservative wait (navigation hazard)',
+  )
   let items = []
   for (let i = 0; i < 50; i += 1) {
     items = (await driver.request('browser.downloads', { limit: 10 })).items
