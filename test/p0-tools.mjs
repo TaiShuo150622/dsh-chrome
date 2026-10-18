@@ -122,6 +122,9 @@ const tools = chromeTools({
     nativeManifestPath: '/tmp/native.json',
     instructionsPath: '/tmp/INSTALL.md',
   }),
+  // Normal production profile: ordinary writes follow the session preset and
+  // the approval service is present. Reads do not go through guard.
+  approval: () => ({ request: async () => 'allowed-once' }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
 check('forty tools registered', tools.length === 40, tools.map((t) => t.name).join(', '))
@@ -140,7 +143,8 @@ check(
     statusRender[0].text.includes('reconnect alarms: dsh-chrome-reconnect (every 1 min)'),
 )
 
-const goto = await byName.chrome_goto.execute({ url: 'https://example.com/' })
+const exec = () => ({ agent: { id: 'p0-session' }, callId: 'p0-call', signal: new AbortController().signal })
+const goto = await byName.chrome_goto.execute({ url: 'https://example.com/' }, exec())
 check('chrome_goto executes', goto.title === 'Example Domain' && goto.tabId === 7)
 const gotoRender = byName.chrome_goto.output.render({}, goto)
 check('chrome_goto render mentions title', gotoRender[0]?.text?.includes('Example Domain'))

@@ -69,6 +69,7 @@ host.stdout.on(
     requests.push({ method, params })
     const replies = {
       'browser.status': { extensionVersion: 'p1-fake', connected: true },
+      'browser.site': { tabId: 7, url: 'https://example.com/', title: 'Example Domain', origin: 'https://example.com' },
       'tab.goto': { tabId: 7, url: params?.url || '', title: 'Example Domain', loadState: 'complete' },
       'tab.snapshot': {
         title: 'Example Domain',
