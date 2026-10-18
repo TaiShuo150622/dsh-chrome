@@ -17,6 +17,11 @@ import { createScreencastGuard } from './screencast-guard.js'
 
 const MUTATION_TIMEOUT_MS = 45000
 
+// Next-step hint shared by the pick capability gate and the runtime fallback
+// (a backend that declares pick but fails at request time).
+const PICK_UNSUPPORTED_MESSAGE =
+  'chrome_pick needs a real user click on the visible desktop browser. Use backend:"desktop" for pick, or use chrome_snapshot + chrome_click/chrome_type with a selector/ref on backend:"headless".'
+
 function outputSchema(properties) {
   return { type: 'object', properties, additionalProperties: true }
 }
@@ -122,6 +127,15 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     } catch (error) {
       throw normalize(error)
     }
+  }
+
+  // Backend capability contract (src/capabilities.js). The provider passes a
+  // BackendRouter as `bridge`, so supports() answers for the backend carried by
+  // AsyncLocalStorage. Test doubles and any older bridge without supports() keep
+  // the historical behavior: assume the capability is available.
+  function supports(capability) {
+    if (typeof bridge?.supports === 'function') return Boolean(bridge.supports(capability))
+    return true
   }
 
   function sessionSandboxMode(exec) {
@@ -1475,6 +1489,12 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       },
     },
     async execute(args, exec) {
+      if (!supports('screencast')) {
+        throw new BridgeError(
+          'UNSUPPORTED_BACKEND',
+          'chrome_screencast needs a backend that declares the screencast capability. Use backend:"desktop" for the live viewer, or use chrome_screenshot for a still image.',
+        )
+      }
       const op = String(args?.op || 'status')
       const owner = ownerOf(exec)
       if (op === 'start') {
@@ -1739,16 +1759,16 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       },
     },
     async execute(args, exec) {
+      if (!supports('pick')) {
+        throw new BridgeError('UNSUPPORTED_BACKEND', PICK_UNSUPPORTED_MESSAGE)
+      }
       const owner = ownerOf(exec)
       try {
         return await runPick(args, owner)
       } catch (error) {
         const code = error?.code || error?.name
         if (code === 'UNSUPPORTED_BACKEND' || /not implemented by the headless backend/i.test(String(error?.message || ''))) {
-          throw new BridgeError(
-            'UNSUPPORTED_BACKEND',
-            'chrome_pick needs a real user click on the visible desktop browser. Use backend:"desktop" for pick, or use chrome_snapshot + chrome_click/chrome_type with a selector/ref on backend:"headless".',
-          )
+          throw new BridgeError('UNSUPPORTED_BACKEND', PICK_UNSUPPORTED_MESSAGE)
         }
         throw error
       }

@@ -1,5 +1,6 @@
 /**
- * P2 tool test — chrome_find + clip screenshots. No Chrome required.
+ * P2 tool test — chrome_find, clip screenshots and backend capability gating.
+ * No Chrome required.
  */
 import { spawn } from 'node:child_process'
 import os from 'node:os'
@@ -14,6 +15,27 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-chrome-p2-'))
 process.env.DSH_HOME = home
 const bridge = new BridgeServer({ home })
+
+// The provider passes a BackendRouter as `bridge`; its supports() answers for the
+// backend carried by AsyncLocalStorage. This fake starts with the full
+// desktop-equivalent set and individual checks narrow it.
+const supportedCapabilities = new Set([
+  'frames',
+  'shadow',
+  'capture',
+  'upload',
+  'download',
+  'pick',
+  'screencast',
+  'tabs',
+  'pause',
+  'evaluate',
+])
+const supportChecks = []
+bridge.supports = (capability) => {
+  supportChecks.push(capability)
+  return supportedCapabilities.has(capability)
+}
 
 let failures = 0
 function check(name, condition, detail = '') {
@@ -268,10 +290,51 @@ check('resume reaches the extension', requests.at(-1)?.method === 'tab.resume')
 const pickValue = await byName.chrome_pick.execute({ timeoutMs: 3000 }, exec())
 check('chrome_pick returns ref/selector/text', pickValue?.ref === 3 && pickValue?.selector === '#greet' && pickValue?.text === 'Greet')
 check('chrome_pick starts pick mode in the extension', requests.some((request) => request.method === 'tab.pick_start'))
+check('chrome_pick consults the capability contract', supportChecks.includes('pick'))
 
 const cancelValue = await byName.chrome_pick.execute({ cancel: true }, exec())
 check('chrome_pick cancel returns canceled', cancelValue?.canceled === true)
 check('chrome_pick cancel reaches the extension', requests.at(-1)?.method === 'tab.pick_cancel')
+
+// Capability gate: a backend without `pick` is rejected before any backend call.
+const pickRequestsBeforeUnsupported = requests.length
+supportedCapabilities.delete('pick')
+let unsupportedPickError = null
+try {
+  await byName.chrome_pick.execute({ poll: true }, exec())
+} catch (error) {
+  unsupportedPickError = error
+} finally {
+  supportedCapabilities.add('pick')
+}
+check('chrome_pick rejects a backend without pick', unsupportedPickError?.code === 'UNSUPPORTED_BACKEND')
+check(
+  'unsupported pick suggests desktop or snapshot+selector',
+  /backend:"desktop"/.test(String(unsupportedPickError?.message || '')) && /chrome_snapshot/.test(String(unsupportedPickError?.message || '')),
+)
+check('unsupported pick never reaches the extension', requests.length === pickRequestsBeforeUnsupported)
+
+// Compatibility: a bridge without supports() (older provider / test double)
+// keeps the historical behavior instead of failing closed.
+const legacyBridge = {
+  connected: true,
+  async call(method) {
+    if (method === 'tab.pick_status') {
+      return {
+        available: true,
+        done: true,
+        canceled: false,
+        result: { ref: 11, selector: '#legacy', text: 'Legacy', tag: 'a', box: [0, 0, 1, 1] },
+      }
+    }
+    return {}
+  },
+}
+const legacyByName = Object.fromEntries(
+  chromeTools({ bridge: legacyBridge, attachments: () => null, assets: () => ({}) }).map((definition) => [definition.name, definition]),
+)
+const legacyPick = await legacyByName.chrome_pick.execute({ poll: true }, exec())
+check('bridge without supports() keeps pick available', legacyPick?.ref === 11 && legacyPick?.selector === '#legacy')
 
 // F1: chrome_screencast start/status/stop
 const screencastStart = await byName.chrome_screencast.execute({ op: 'start', quality: 50, everyNthFrame: 3 }, exec())
@@ -281,6 +344,22 @@ const screencastStatus = await byName.chrome_screencast.execute({ op: 'status' }
 check('chrome_screencast status reports frames', screencastStatus?.frames === 12 && screencastStatus?.active === true)
 const screencastStop = await byName.chrome_screencast.execute({ op: 'stop' }, exec())
 check('chrome_screencast stop returns frame count', screencastStop?.active === false && screencastStop?.frames === 12)
+check('chrome_screencast consults the capability contract', supportChecks.includes('screencast'))
+
+// Capability gate: screencast is declared by desktop and headless today, but a
+// backend without it must fail before touching the driver.
+const screencastRequestsBeforeUnsupported = requests.length
+supportedCapabilities.delete('screencast')
+let unsupportedScreencastError = null
+try {
+  await byName.chrome_screencast.execute({ op: 'status' }, exec())
+} catch (error) {
+  unsupportedScreencastError = error
+} finally {
+  supportedCapabilities.add('screencast')
+}
+check('chrome_screencast rejects a backend without screencast', unsupportedScreencastError?.code === 'UNSUPPORTED_BACKEND')
+check('unsupported screencast never reaches the extension', requests.length === screencastRequestsBeforeUnsupported)
 
 // F4: capture start has no config escape hatch
 const bypassTools = chromeTools({

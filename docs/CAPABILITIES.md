@@ -5,9 +5,9 @@
 
 ## 0. 一句话
 
-`src/capabilities.js` 是 **backend 能力清单的唯一事实源**；`src/backend.js` 的 `BackendRouter` 按 AsyncLocalStorage 里的当前 backend 暴露 `capabilities` / `supports(capability)`。工具层将来在调用前查能力，缺能力统一返回 `UNSUPPORTED_BACKEND`，而不是每个工具各写一个 `if (backend === 'headless')`。
+`src/capabilities.js` 是 **backend 能力清单的唯一事实源**；`src/backend.js` 的 `BackendRouter` 按 AsyncLocalStorage 里的当前 backend 暴露 `capabilities` / `supports(capability)`。工具层在调用后端之前查能力，缺能力统一返回 `UNSUPPORTED_BACKEND`，而不是每个工具各写一个 `if (backend === 'headless')`。
 
-**本卡只加契约与只读接口，不改任何现有工具行为**：目前没有工具读取 `supports()`；`src/headless.js` 的方法白名单与 `UNSUPPORTED_BACKEND` 仍然是运行时兜底，路由 / 调用路径一行未改（`call`、`connected`、`hostVersion`、`extensionVersion`、`runWithBackend` 语义不变）。
+**接入状态（E11 已接）**：`src/tools.js` 增加内部 helper `supports(capability)`，读取 `bridge.supports()`（provider 注入的 `bridge` 就是 `BackendRouter`，见 `index.js`）；`chrome_pick`（`pick`）与 `chrome_screencast`（`screencast`）已在 `execute` 开头门控。**desktop 默认路径行为完全不变**；没有 `supports()` 的 fake / 旧 bridge 回退为「支持」，现有测试与旧调用方无感。`src/headless.js` 的方法白名单与 `UNSUPPORTED_BACKEND` 仍是运行时兜底（路由语义 `call`、`connected`、`hostVersion`、`extensionVersion`、`runWithBackend` 未改）。
 
 ## 1. 能力清单与矩阵
 
@@ -30,7 +30,7 @@
 
 - **desktop 10/10**：可见 Chrome + MV3 扩展 + native host，全部能力有落点；
 - **headless 8/10**：只缺 `pick` 与 `pause`。两者都需要「可见浏览器 + 真人」：
-  - `pick` 要真人点页面，headless 没有鼠标交互语义（`src/tools.js:1740` 已把它映射成带下一步提示的 `UNSUPPORTED_BACKEND`）；
+  - `pick` 要真人点页面，headless 没有鼠标交互语义（工具层 E11 已把 `pick` 门控成带下一步提示的 `UNSUPPORTED_BACKEND`，见 §3.1）；
   - `pause` 是「用户切走前台 tab」的语义，headless 没有前台 tab 可切走（`chrome_resume` 在 headless 下是 no-op）。
 
 > `pause` 不是工具名：当前没有 `chrome_pause` 工具，它描述的是扩展 `/resume` 的前台暂停状态机。列进契约是为了让将来加「后台 tab 保护」类工具时有一个可查询的语义位。
@@ -99,20 +99,46 @@ const router = new BackendRouter({
 
 ## 3. 与 `UNSUPPORTED_BACKEND` 的关系
 
-统一码，两种来源，工具层不新增错误码：
+统一码，三种来源，工具层不新增错误码：
 
 | 来源 | 现在在哪 | 语义 |
 |---|---|---|
 | 运行时：没有 driver | `src/backend.js:131-133`（no headless driver）、`src/headless.js:628` / `:1966`（找不到 Chrome 可执行文件） | 「这台机器现在用不了这个 backend」 |
 | 运行时：方法未实现 | `src/headless.js:1345` / `:1903`（`<method> is not implemented by the headless backend yet`） | 「这个 backend 还没实现这个方法」 |
-| 契约：能力缺失 | `assertBackendSupports()`（本卡新增） | 「这个 backend 类型不承诺这个能力」 |
+| 契约：能力缺失 | `assertBackendSupports()`（纯函数）；工具层 `chrome_pick` / `chrome_screencast` 用 `BridgeError('UNSUPPORTED_BACKEND')`（E11） | 「这个 backend 类型不承诺这个能力」 |
 
-工具层接入能力门控时的约定（后续卡落地）：
+### 3.1 工具层门控规则（**E11 已接**）
 
-1. 在 `execute` 开头查 `bridge.supports(capability)`（`index.js` 里 `chromeTools({ bridge: router })`，所以工具拿到的 `bridge` 就是 router）；
-2. 缺能力时**抛 `BridgeError('UNSUPPORTED_BACKEND', ...)`**（来自 `src/bridge.js`），不要抛裸 `Error`：`src/tools.js` 的 `normalize()`（`:87`）会把非 `BridgeError` 包成 `code = 'INTERNAL'`，错误码会丢；
-3. `message` 必须给出下一步（换 `backend:"desktop"`，或改用 snapshot + selector/ref）。这是 `chrome_pick` 已经验证过的模式（`src/tools.js:1740`），模型看到可执行提示才不会卡住一次；
-4. 运行时兜底保留：即使没门控到，`src/headless.js` 的方法白名单仍会拒绝未实现的方法。
+`chromeTools()` 内部有一个 helper `supports(capability)`：provider 注入的 `bridge` 就是 `BackendRouter`，所以它回答的是 AsyncLocalStorage 当前 backend 的能力；没有 `supports` 的 fake / 旧 bridge 回退为 `true`（兼容，不改变既有行为）。
+
+```js
+// src/tools.js（chromeTools 内部）
+function supports(capability) {
+  if (typeof bridge?.supports === 'function') return Boolean(bridge.supports(capability))
+  return true
+}
+
+if (!supports('pick')) {
+  throw new BridgeError('UNSUPPORTED_BACKEND', PICK_UNSUPPORTED_MESSAGE)
+}
+```
+
+已在 `execute` 开头门控的工具：
+
+| 工具 | capability | desktop | headless | 缺能力时 |
+|---|---|---|---|---|
+| `chrome_pick` | `pick` | 通过 | **拒绝** | `BridgeError('UNSUPPORTED_BACKEND')`，提示 `backend:"desktop"` 或 `chrome_snapshot` + selector/ref |
+| `chrome_screencast` | `screencast` | 通过 | 通过（headless 已声明） | `BridgeError('UNSUPPORTED_BACKEND')`，提示 `backend:"desktop"` 或 `chrome_screenshot` |
+
+错误合同（复用既有 `UNSUPPORTED_BACKEND`，不新增错误码）：
+
+1. **抛 `BridgeError`，不抛裸 `Error`**：`src/tools.js` 的 `normalize()` 会把非 `BridgeError` 包成 `code = 'INTERNAL'`，错误码会丢；
+2. `code` 固定为 `'UNSUPPORTED_BACKEND'`；`message` 必须写明缺哪个能力，并给出可执行的下一步（换 `backend:"desktop"`，或改用 snapshot + selector/ref 等替代路径）；
+3. **先门控、后调用**：检查在 `execute` 开头、任何 `bridge.call()` / driver 请求之前；缺能力时不产生后端副作用；
+4. **运行时兜底保留**：即使某个 backend 声明了能力但实际没实现，`src/headless.js` 的方法白名单仍会在请求时抛 `UNSUPPORTED_BACKEND`；`chrome_pick` 原有的 catch 继续把这类运行时错误映射成同一句带提示的消息；
+5. **默认 desktop 行为不变**：desktop 声明全部 10 项能力，门控对默认路径是 no-op。
+
+**尚未逐工具门控的能力**（E11 范围只到 `pick` / `screencast`）：`frames`、`shadow`、`capture`、`upload`、`download`、`tabs`、`pause`、`evaluate` 仍由各工具自身的参数校验 + `src/headless.js` 方法白名单兜底；后续按同一 helper 逐工具接入即可，不需要新错误码。
 
 ## 4. 如何给新 backend 声明能力
 
@@ -156,11 +182,24 @@ node test/backend-contract.mjs
 - 能力 ≠ 可用性（无 driver 仍声明能力，但 `call` 抛 `UNSUPPORTED_BACKEND`）；
 - **不改变现有行为**：`call` 仍走 desktop→`desktop.call` / headless→`headless.request`、`connected` / 版本字段语义不变、`wrapToolsForBackend` 的 backend 参数注入与剥离不变、`runWithBackend` 对未知 mode 的桌面回落不变。
 
-> 按本卡约束没有改 `package.json`，所以 `node test/backend-contract.mjs` 暂不在 `npm test` 链里；合并后由 Lead 决定是否加入（加不加都不影响现有套件）。
+> `backend-contract` 与 `p2-tools` 都已在 `npm test` 链里（`package.json` 的 `test` 脚本），无需单独登记。
+
+工具层门控（E11）由 `test/p2-tools.mjs` 覆盖（该测试本来就需要 fake host，不新增依赖）：
+
+```bash
+node test/p2-tools.mjs
+# P2 TOOLS TEST: PASS
+```
+
+- fake bridge 显式提供 `supports()`；默认全量能力，**不改变原有 40 工具计数与其余断言**；
+- `chrome_pick` 支持路径照旧执行（成功返回 ref/selector/text），并断言确实查询了 `supports('pick')`；
+- `chrome_pick` 不支持路径：`error.code === 'UNSUPPORTED_BACKEND'`、消息含 `backend:"desktop"` 与 `chrome_snapshot`、且**没有**发往后端的请求；
+- 无 `supports()` 的 bridge 回退为支持，`chrome_pick` 仍可用；
+- `chrome_screencast` 不支持路径同样在调用前抛 `UNSUPPORTED_BACKEND`；desktop / headless 都声明支持，正常路径行为不变。
 
 ## 6. 边界与已知差异
 
 - **capability 是契约，不是实现验收**：`supports()` 不逐工具验证；每个工具真正的落点仍看 `src/tools.js` / `src/headless.js`。
-- **headless 的 `shadow`**：桌面扩展有 `__dshDeep` 深查询（open shadow root），headless 的快照/查找目前仍走 `document.querySelectorAll`，不进入 shadow root（见 `docs/GAP-ANALYSIS.md` GAP-02）。契约按「headless 除 pick/pause 外大部分」声明为支持；接入能力门控之前，要么 headless 补 deep query，要么把 `shadow` 从 headless 集合移除——两者都只在 `src/capabilities.js` 改一行。
+- **headless 的 `shadow`**：桌面扩展有 `__dshDeep` 深查询（open shadow root），headless 的快照/查找目前仍走 `document.querySelectorAll`，不进入 shadow root（见 `docs/GAP-ANALYSIS.md` GAP-02）。契约按「headless 除 pick/pause 外大部分」声明为支持；在把 `shadow` 接进工具层门控之前，要么 headless 补 deep query，要么把 `shadow` 从 headless 集合移除——两者都只在 `src/capabilities.js` 改一行。
 - **provider 本地工具不受 backend 影响**：`chrome_status` / `chrome_config` / `chrome_policy` / `chrome_audit` / `chrome_shots` / `chrome_headless_login` 不走路由，不在能力矩阵里。
 - **未声明的 backend**：`remote-cloud` / `firefox-extension` 等将来 backend 在声明前，任何 `backendSupports` 查询都安全返回 false（不会误报支持）。
