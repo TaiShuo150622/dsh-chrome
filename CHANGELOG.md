@@ -13,6 +13,13 @@
 
 ## [Unreleased]
 
+### Added（后台浏览器 H1.2：capture + CPU 基线）
+
+- headless 支持 `chrome_capture_start/requests/stop`：Network 域抓包（XHR/fetch/document）、URL/body 脱敏、8MiB body 预算、10 分钟自动停
+- 空闲基线实测：7 进程、**1.34% CPU / 672MB RSS**（60s）；据此确认 5 分钟空闲自动关必要
+- `chrome_pick` 在 headless 明确 `UNSUPPORTED_BACKEND`；`chrome_pause` 无前台语义（`chrome_resume` no-op）
+- provider 0.1.83；测试覆盖 capture
+
 ### Added（后台浏览器 H1.1：console/network/upload/download）
 
 - headless 支持 `chrome_console`（Runtime 事件缓冲）、`chrome_network`（resource timing）、

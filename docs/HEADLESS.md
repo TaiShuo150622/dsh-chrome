@@ -57,6 +57,7 @@ Profile 持久保存（`~/.dsh/cache/dsh-chrome/headless/profile`），但**默�
 | `chrome_frames` `chrome_a11y` | ✅ CDP frame tree / AX tree |
 | `chrome_history` `chrome_wait` `chrome_pdf` | ✅ |
 | `chrome_console` | ✅ Runtime.consoleAPICalled / exceptionThrown 缓冲（按 tab，最多 200 条） |
+| `chrome_capture_start/requests/stop` | ✅ Network 域抓包：XHR/fetch/document、URL 脱敏、secret 参数/JSON/form 字段脱敏、body 预算 8MiB、10 分钟自动停、按 owner 隔离 |
 | `chrome_network` | ✅ performance resource timing（URL/type/duration/transferSize） |
 | `chrome_upload` | ✅ `DOM.setFileInputFiles`（ref 或 selector；文件在 provider 端先校验存在） |
 | `chrome_download` | ✅ `Browser.setDownloadBehavior` + download 事件；文件落 `~/.dsh/cache/dsh-chrome/headless/downloads/` |
@@ -83,9 +84,8 @@ chrome_status                              → desktop 仍 CONNECTED；headless 
 
 | 工具/方法 | 原因 | H1 计划 |
 |---|---|---|
-| `chrome_capture_start/requests/stop` | 抓包引擎还绑在扩展侧 | 把 capture 引擎抽成共享模块，headless 复用 |
-| `chrome_pick` | 无"鼠标点页面"的用户交互语义 | 可做 `pick` 返回 ERROR 或改用 selector 流程 |
-| `chrome_screencast` / `chrome_pause` | 前者可 provider 侧写帧；后者是前台概念 | 可做；not critical |
+| `chrome_pick` | 无"鼠标点页面"的用户交互语义（headless 没有真人点击） | 明确返回 `UNSUPPORTED_BACKEND`；可选用 selector 流程 |
+| `chrome_screencast` / `chrome_pause` | 前者可 provider 侧写帧；后者是前台概念（no-op） | 可做；not critical |
 | `chrome_shots` / `chrome_audit` / `chrome_policy` / `chrome_config` | provider 本地工具，与 backend 无关，照常工作 | — |
 
 ## 4. 安全与资源
@@ -95,14 +95,26 @@ chrome_status                              → desktop 仍 CONNECTED；headless 
 - 页面内容仍按不可信处理；`chrome_evaluate` 的 `allowEvaluate` 硬确认照旧；
 - 同一 owner 的 headless tabs 隔离；不同 DSH session 的 owner 互见不到；
 - **空闲回收**：没有 tab 且 5 分钟无请求时自动关闭 headless Chrome（`DSH_HEADLESS_IDLE_MINUTES` 可调）；
-- **并发限制**：最多 12 个 headless tabs（`DSH_HEADLESS_MAX_TABS` 可调），超出返回 `RESOURCE_LIMIT`。
+- **并发限制**：最多 12 个 headless tabs（`DSH_HEADLESS_MAX_TABS` 可调），超出返回 `RESOURCE_LIMIT`；
+- **CPU/内存基线**（本机 Chrome 155，headless 无 tab 空闲 60s 采样）：见下方 §4.1。
+
+### 4.1 空闲基线（本机，Chrome 155）
+
+headless 无 tab、无请求，60s `ps` 时间差：
+
+| 指标 | 值 |
+|---|---|
+| CPU（全部 7 个 headless 进程合计） | **1.34%**（0.84s / 62.5s） |
+| 内存 RSS | **672 MB** |
+| 进程数 | 7 |
+
+对比：桌面 Chrome 空闲在用户标签很多时是 5%+；headless 单进程组空闲约 1.3%，内存主要是一次性 Chrome 运行时开销。长期保留会占 ~0.7GB，所以空闲 5 分钟自动关是必要的。
 
 ## 5. 下一步（H1）
 
-1. capture 引擎共享化，让 headless 支持 `chrome_capture_*`；
-2. 「一次性登录」：headless 持久 profile，可选有头模式打开登录页（登录后关窗口继续 headless，需要用户拍安全边界）；
-3. `chrome_pick` / `chrome_screencast` 的 headless 语义（pick 可返回 selector 流程；screencast 可 provider 侧写帧）；
-4. CPU/内存基线 + 空闲回收实测。
+1. 「一次性登录」：headless 持久 profile，可选有头模式打开登录页（登录后关窗口继续 headless，需要用户拍安全边界）；
+2. `chrome_pick` / `chrome_screencast` 的 headless 语义（pick 可返回 selector 流程；screencast 可 provider 侧写帧）；
+3. CPU/内存基线 + 空闲回收实测（见 §4）。
 
 ## 6. 代码
 

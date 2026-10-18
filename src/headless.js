@@ -44,6 +44,9 @@ const SUPPORTED = new Set([
   'tab.selection',
   'tab.console',
   'tab.network',
+  'tab.capture_start',
+  'tab.capture_stop',
+  'tab.capture_requests',
   'tab.upload',
   'tab.resume',
   'browser.downloads',
@@ -53,6 +56,96 @@ const SUPPORTED = new Set([
 
 const DEFAULT_IDLE_MINUTES = Number(process.env.DSH_HEADLESS_IDLE_MINUTES) || 5
 const MAX_TABS = Number(process.env.DSH_HEADLESS_MAX_TABS) || 12
+
+const CAPTURE_MAX_DURATION_MS = 10 * 60 * 1000
+const CAPTURE_DEFAULT_MAX_ENTRIES = 300
+const CAPTURE_HARD_MAX_ENTRIES = 1000
+const CAPTURE_BODY_TOTAL_LIMIT = 8 * 1024 * 1024
+const CAPTURE_RESPONSE_BODY_CHARS = 4096
+const CAPTURE_REQUEST_BODY_CHARS = 2048
+const CAPTURE_TEXT_MIME = /^text\/|json|xml|javascript|x-www-form-urlencoded|graphql/i
+const CAPTURE_SECRET_PARAM =
+  /(pass(word|wd)?|secret|token|api[-_]?key|access[-_]?token|refresh[-_]?token|authorization|cookie|session[-_]?id|csrf|xsrf|signature|sig|credential|private[-_]?key)/i
+
+function maskSecretsInText(text) {
+  return String(text)
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._\-]{6,}/gi, '$1«redacted»')
+    .replace(/\bsk-[A-Za-z0-9]{10,}\b/g, '«redacted»')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b/g, '«redacted»')
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, '«redacted»')
+}
+
+function redactUrl(rawUrl) {
+  let url = String(rawUrl || '')
+  try {
+    const parsed = new URL(url)
+    if (parsed.username) parsed.username = '«redacted»'
+    if (parsed.password) parsed.password = '«redacted»'
+    for (const name of [...parsed.searchParams.keys()]) {
+      if (CAPTURE_SECRET_PARAM.test(name)) parsed.searchParams.set(name, '«redacted»')
+    }
+    url = parsed.toString().replace(/%C2%ABredacted%C2%BB/gi, '«redacted»')
+  } catch {
+    // keep non-URL strings
+  }
+  return url.length > 2048 ? `${url.slice(0, 2048)}…` : url
+}
+
+function redactJsonValue(value) {
+  if (Array.isArray(value)) return value.map((item) => redactJsonValue(item))
+  if (value && typeof value === 'object') {
+    const out = {}
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = CAPTURE_SECRET_PARAM.test(key) ? '«redacted»' : redactJsonValue(item)
+    }
+    return out
+  }
+  if (typeof value === 'string') return maskSecretsInText(value)
+  return value
+}
+
+function redactBodyText(text, mimeType, maxChars) {
+  let out = String(text ?? '')
+  const trimmed = out.trim()
+  const isJson = /json/i.test(String(mimeType || '')) || trimmed.startsWith('{') || trimmed.startsWith('[')
+  if (isJson) {
+    try {
+      out = JSON.stringify(redactJsonValue(JSON.parse(trimmed)))
+    } catch {
+      out = maskSecretsInText(out)
+    }
+  } else if (/x-www-form-urlencoded/i.test(String(mimeType || ''))) {
+    out = out
+      .split('&')
+      .map((pair) => {
+        const [name, ...rest] = pair.split('=')
+        if (CAPTURE_SECRET_PARAM.test(decodeURIComponent(name || ''))) return `${name}="«redacted»"`
+        return `${name}${rest.length ? `=${rest.join('=')}` : ''}`
+      })
+      .join('&')
+  } else {
+    out = maskSecretsInText(out)
+  }
+  const truncated = out.length > maxChars
+  return { text: truncated ? `${out.slice(0, maxChars)}… <truncated>` : out, truncated }
+}
+
+function materializeCaptureBody(capture, raw, mimeType, maxChars) {
+  if (raw == null) return null
+  let text
+  if (!CAPTURE_TEXT_MIME.test(String(mimeType || ''))) {
+    text = `<binary ${String(raw).length} chars>`
+  } else {
+    text = redactBodyText(raw, mimeType, maxChars).text
+  }
+  const bytes = text.length
+  if (capture.bodyBytes + bytes > CAPTURE_BODY_TOTAL_LIMIT) {
+    capture.bodiesDropped += 1
+    return { text: '<body not captured: capture body budget exceeded>', truncated: false }
+  }
+  capture.bodyBytes += bytes
+  return { text, truncated: text.length >= maxChars }
+}
 
 function error(code, message) {
   const err = new Error(message)
@@ -324,6 +417,9 @@ export class HeadlessDriver {
     this.downloadByGuid = new Map()
     this.idleTimer = null
     this.lastActivity = Date.now()
+    this.captures = new Map()
+    this.captureByTab = new Map()
+    this.nextCaptureSeq = 1
   }
 
   get connected() {
@@ -445,6 +541,91 @@ export class HeadlessDriver {
     this.lastActivity = Date.now()
   }
 
+  onNetworkEvent(tab, method, params) {
+    if (!tab) return
+    const capture = this.captureByTab.get(tab.tabId)
+    if (!capture || !capture.active) return
+    const requestId = params.requestId
+    if (method === 'Network.requestWillBeSent') {
+      if (capture.entries.length >= capture.maxEntries) {
+        capture.dropped += 1
+        return
+      }
+      const entry = {
+        id: String(requestId),
+        method: String(params.request?.method || 'GET'),
+        url: redactUrl(params.request?.url),
+        resourceType: String(params.type || 'other').toLowerCase(),
+        startTimestamp: params.timestamp,
+        hasPostData: Boolean(params.request?.hasPostData || params.request?.postData),
+      }
+      capture.byId.set(String(requestId), entry)
+      capture.entries.push(entry)
+      if (params.request?.postData) entry._postDataRaw = String(params.request.postData)
+      return
+    }
+    const entry = capture.byId.get(String(requestId))
+    if (!entry) return
+    if (method === 'Network.responseReceived') {
+      entry.status = params.response?.status
+      entry.mimeType = String(params.response?.mimeType || '')
+      if (params.response?.fromDiskCache || params.response?.fromMemoryCache || params.response?.fromServiceWorker) {
+        entry.fromCache = true
+      }
+      return
+    }
+    if (method === 'Network.requestServedFromCache') {
+      entry.fromCache = true
+      return
+    }
+    if (method === 'Network.loadingFailed') {
+      entry.failed = true
+      entry.errorText = String(params.errorText || '')
+      entry.durationMs = entry.startTimestamp != null ? Math.round((params.timestamp - entry.startTimestamp) * 1000) : null
+      return
+    }
+    if (method === 'Network.loadingFinished') {
+      entry.durationMs = entry.startTimestamp != null ? Math.round((params.timestamp - entry.startTimestamp) * 1000) : null
+      if (!capture.storeBodies) return
+      if (!['xhr', 'fetch', 'document'].includes(entry.resourceType)) return
+      if (capture.bodyTasks >= 4) {
+        entry.bodyUnavailable = 'burst'
+        return
+      }
+      capture.bodyTasks += 1
+      this.cdp
+        .send('Network.getResponseBody', { requestId: String(requestId) }, tab.sessionId)
+        .then((response) => {
+          const raw = response?.base64Encoded
+            ? Buffer.from(response.body || '', 'base64').toString('utf8')
+            : String(response?.body ?? '')
+          const materialized = materializeCaptureBody(capture, raw, entry.mimeType, CAPTURE_RESPONSE_BODY_CHARS)
+          if (materialized) {
+            entry.responseBody = materialized.text
+            entry.bodyTruncated = materialized.truncated
+            entry.redacted = true
+          }
+        })
+        .catch(() => {
+          entry.bodyUnavailable = 'evicted'
+        })
+        .finally(() => {
+          capture.bodyTasks -= 1
+        })
+      if (entry._postDataRaw != null) {
+        const requestMime = /^{|^\[/.test(String(entry._postDataRaw).trim())
+          ? 'application/json'
+          : 'application/x-www-form-urlencoded'
+        const materialized = materializeCaptureBody(capture, entry._postDataRaw, requestMime, CAPTURE_REQUEST_BODY_CHARS)
+        if (materialized) {
+          entry.requestBody = materialized.text
+          entry.redacted = true
+        }
+        delete entry._postDataRaw
+      }
+    }
+  }
+
   recordConsole(tab, entry) {
     if (!tab) return
     const list = this.consoleBuffers.get(tab.tabId) || []
@@ -467,6 +648,10 @@ export class HeadlessDriver {
       const details = message.params?.exceptionDetails || {}
       const text = details.exception?.description || details.text || 'uncaught exception'
       this.recordConsole(sessionTab, { level: 'error', text: String(text).slice(0, 2000) })
+      return
+    }
+    if (String(message.method || '').startsWith('Network.')) {
+      this.onNetworkEvent(sessionTab, message.method, message.params || {})
       return
     }
     if (message.method === 'Browser.downloadWillBegin') {
@@ -580,6 +765,21 @@ export class HeadlessDriver {
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
     return false
+  }
+
+  findCapture(owner, captureId) {
+    if (captureId) {
+      const capture = this.captures.get(String(captureId))
+      if (!capture || capture.owner !== owner) throw error('CAPTURE_NOT_FOUND', `no capture ${captureId} for this session`)
+      return capture
+    }
+    let latest = null
+    for (const capture of this.captures.values()) {
+      if (capture.owner !== owner) continue
+      if (!latest || capture.startedAt > latest.startedAt) latest = capture
+    }
+    if (!latest) throw error('NO_ACTIVE_CAPTURE', 'no capture for this session; call chrome_capture_start first')
+    return latest
   }
 
   async request(method, params = {}) {
@@ -800,6 +1000,112 @@ export class HeadlessDriver {
             ...record,
             path: path.join(this.downloadDir, record.filename || ''),
           })),
+        }
+      }
+      case 'tab.capture_start': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        if (this.captureByTab.get(tab.tabId)?.active) {
+          const existing = this.captureByTab.get(tab.tabId)
+          return { captureId: existing.captureId, active: true, alreadyActive: true, tabId: tab.tabId }
+        }
+        const resourceTypes = Array.isArray(params.resourceTypes) && params.resourceTypes.length > 0
+          ? params.resourceTypes.map(String)
+          : ['xhr', 'fetch', 'document']
+        const maxEntries = Number.isFinite(params.maxEntries)
+          ? Math.max(1, Math.min(CAPTURE_HARD_MAX_ENTRIES, params.maxEntries))
+          : CAPTURE_DEFAULT_MAX_ENTRIES
+        const capture = {
+          captureId: `hl-${this.nextCaptureSeq++}`,
+          owner,
+          tabId: tab.tabId,
+          active: true,
+          startedAt: Date.now(),
+          endedReason: null,
+          entries: [],
+          byId: new Map(),
+          dropped: 0,
+          maxEntries,
+          storeBodies: true,
+          bodyBytes: 0,
+          bodiesDropped: 0,
+          bodyTasks: 0,
+          resourceTypes,
+        }
+        capture.timer = setTimeout(() => {
+          try {
+            this.cdp?.send('Network.disable', {}, tab.sessionId)
+          } catch {
+            // ignore
+          }
+          if (capture.active) {
+            capture.active = false
+            capture.endedReason = 'max-duration'
+          }
+        }, CAPTURE_MAX_DURATION_MS)
+        capture.timer.unref?.()
+        this.captures.set(capture.captureId, capture)
+        this.captureByTab.set(tab.tabId, capture)
+        await this.cdp.send('Network.enable', {}, tab.sessionId)
+        return { captureId: capture.captureId, active: true, tabId: tab.tabId, maxEntries, storeBodies: true }
+      }
+      case 'tab.capture_stop': {
+        const capture = this.findCapture(owner, params.captureId)
+        if (capture.active) {
+          capture.active = false
+          capture.endedReason = capture.endedReason || 'stopped'
+          clearTimeout(capture.timer)
+          try {
+            await this.cdp.send('Network.disable', {}, this.tabs.get(capture.tabId)?.sessionId)
+          } catch {
+            // tab gone
+          }
+        }
+        return {
+          captureId: capture.captureId,
+          active: false,
+          requests: capture.entries.length,
+          dropped: capture.dropped,
+          endedReason: capture.endedReason,
+          durationMs: Date.now() - capture.startedAt,
+        }
+      }
+      case 'tab.capture_requests': {
+        const capture = this.findCapture(owner, params.captureId)
+        const limit = Number(params.limit) > 0 ? Math.min(Number(params.limit), 200) : 50
+        let entries = capture.entries
+        if (params.filter) {
+          const needle = String(params.filter).toLowerCase()
+          entries = entries.filter((entry) => `${entry.method} ${entry.url}`.toLowerCase().includes(needle))
+        }
+        if (Array.isArray(params.resourceTypes) && params.resourceTypes.length > 0) {
+          const allowed = new Set(params.resourceTypes.map((type) => String(type).toLowerCase()))
+          entries = entries.filter((entry) => allowed.has(entry.resourceType))
+        }
+        const includeBodies = params.includeBodies !== false
+        const maxBodyChars = Number(params.maxBodyChars) > 0 ? Math.min(Number(params.maxBodyChars), 65536) : 4096
+        const rendered = entries.slice(0, limit).map((entry) => {
+          const copy = { ...entry, _postDataRaw: undefined }
+          delete copy._postDataRaw
+          if (!includeBodies) {
+            delete copy.requestBody
+            delete copy.responseBody
+          } else {
+            if (copy.requestBody) copy.requestBody = String(copy.requestBody).slice(0, maxBodyChars)
+            if (copy.responseBody) copy.responseBody = String(copy.responseBody).slice(0, maxBodyChars)
+          }
+          return copy
+        })
+        return {
+          available: true,
+          lost: false,
+          active: capture.active,
+          captureId: capture.captureId,
+          tabId: capture.tabId,
+          entries: rendered,
+          total: capture.entries.length,
+          truncated: capture.entries.length > limit,
+          dropped: capture.dropped,
+          bodiesDropped: capture.bodiesDropped,
         }
       }
       case 'tab.close_session': {

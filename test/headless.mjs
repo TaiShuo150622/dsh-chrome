@@ -47,6 +47,8 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-headless-test-'))
 const driver = new HeadlessDriver({ home })
 try {
   await driver.ensureStarted()
+  const capture = await driver.request('tab.capture_start', { owner: 's1', maxEntries: 50 })
+  assert.equal(capture.active, true)
   const gone = await driver.request('tab.goto', { owner: 's1', url: `http://127.0.0.1:${port}/` })
   assert.equal(gone.title, 'Headless Test')
   assert.equal(gone.loadState, 'complete')
@@ -115,6 +117,19 @@ try {
 
   const resumed = await driver.request('tab.resume', { owner: 's1' })
   assert.equal(resumed.ok, true)
+
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  const captured = await driver.request('tab.capture_requests', { owner: 's1', captureId: capture.captureId, limit: 50 })
+  assert.equal(captured.captureId, capture.captureId)
+  assert.ok(
+    captured.entries.some((entry) => entry.url.includes('/data/resource.json') || entry.url.endsWith('/')),
+    `capture missing requests: ${JSON.stringify(captured.entries)}`,
+  )
+  const docEntry = captured.entries.find((entry) => entry.resourceType === 'document')
+  assert.ok(docEntry?.responseBody?.includes('Headless Test'), `document body missing: ${JSON.stringify(docEntry)}`)
+  const stopped = await driver.request('tab.capture_stop', { owner: 's1', captureId: capture.captureId })
+  assert.equal(stopped.active, false)
+  assert.ok(stopped.requests >= 1)
 
   console.log('HEADLESS TEST: PASS')
 } finally {
