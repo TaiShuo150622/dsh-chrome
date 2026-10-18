@@ -180,7 +180,7 @@ check(
 
 host.kill('SIGTERM')
 await bridge.stop()
-await fsp.rm(home, { recursive: true, force: true })
+await fsp.rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => {})
 
 console.log(failures === 0 ? '\nP1 TOOLS TEST: PASS' : `\nP1 TOOLS TEST: ${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

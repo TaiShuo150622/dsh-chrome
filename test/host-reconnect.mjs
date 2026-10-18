@@ -186,7 +186,7 @@ check('requests flow after reconnecting', status?.extensionVersion === 'reconnec
 
 host.kill('SIGTERM')
 await bridge.stop()
-await fsp.rm(home, { recursive: true, force: true })
+await fsp.rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => {})
 void firstPid
 
 console.log(failures === 0 ? '\nHOST RECONNECT TEST: PASS' : `\nHOST RECONNECT TEST: ${failures} FAILURE(S)`)

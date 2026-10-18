@@ -71,7 +71,7 @@ const good = await handshake({ type: 'hello', token: bridge.token, hostVersion: 
 check('valid token gets hello-ok', good.messages.some((message) => message.type === 'hello-ok'))
 
 await bridge.stop()
-await fsp.rm(home, { recursive: true, force: true })
+await fsp.rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => {})
 
 console.log(failures === 0 ? '\nBRIDGE AUTH TEST: PASS' : `\nBRIDGE AUTH TEST: ${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

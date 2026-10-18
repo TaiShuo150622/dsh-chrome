@@ -118,7 +118,7 @@ if (shot?.path) {
 
 host.kill('SIGTERM')
 await bridge.stop()
-await fsp.rm(home, { recursive: true, force: true })
+await fsp.rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => {})
 
 console.log(failures === 0 ? '\nP0 BRIDGE TEST: PASS' : `\nP0 BRIDGE TEST: ${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

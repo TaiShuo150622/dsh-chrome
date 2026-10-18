@@ -31,6 +31,7 @@ try {
   const pointer = await overlay({ op: 'pointer', selector: 'h1', label: 'DSH', pulse: true })
   assert.equal(pointer.ok, true)
   assert.equal(pointer.visible, true)
+  await new Promise((resolve) => setTimeout(resolve, 300))
   const pointerShot = await driver.request('tab.screenshot', { owner: 's1' })
   assert.notDeepEqual(fs.readFileSync(pointerShot.path), fs.readFileSync(baseShot.path), 'pointer must be visible in screenshots')
   const hidden = await overlay({ op: 'hide-pointer' })
@@ -48,6 +49,7 @@ try {
   assert.equal(label.ok, true)
   const list = await overlay({ op: 'list' })
   assert.equal(list.count, 5)
+  await new Promise((resolve) => setTimeout(resolve, 300))
   const annotatedShot = await driver.request('tab.screenshot', { owner: 's1' })
   assert.notDeepEqual(fs.readFileSync(annotatedShot.path), fs.readFileSync(baseShot.path), 'annotations must be visible in screenshots')
 
