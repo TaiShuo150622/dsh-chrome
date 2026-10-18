@@ -152,15 +152,15 @@ native host manifest 的 `allowed_origins` 是 `chrome-extension://<id>/`——E
 reg delete "HKCU\Software\Google\Chrome\NativeMessagingHosts\com.deepseek.dsh.chrome" /f
 ```
 
-**已知限制（Windows 关键风险）**：当前 manifest 的 `path` 指向自动生成的
-`dsh-chrome-host.cmd` 脚手架。Chrome 在 Windows 上通常要求 native host `path` 是真正的 `.exe`
-（CreateProcess 不能直接执行 `.cmd`），所以**这条线大概率还起不来**，需要在正式支持前替换为：
+**Windows launcher（已实现，真机待验证）**：`.cmd` 脚手架只是回退路径；Chrome 在
+Windows 上要求 native host 的 `path` 是真正的 `.exe`（`CreateProcess` 不能直接执行 `.cmd`）。
+正式方案见 [WINDOWS-HOST.md](WINDOWS-HOST.md)：用 **Node SEA** 把 Node runtime +
+`host/host.mjs` 打成单文件 `dsh-chrome-host.exe`，由
+`.github/workflows/windows-host.yml` 在 `windows-latest` 构建；`install.js` 优先使用
+`host/bin/win32-<arch>/dsh-chrome-host.exe`，找不到才回退 `.cmd` 并告警。
 
-- 一个极小的 `.exe` wrapper（把参数转给 `host.mjs`），或
-- 让 DSH 的 Electron 二进制支持 `--native-host` 模式（Electron 可执行文件直接作为 `path`），或
-- 安装期生成一个真正的 launcher exe。
-
-在此之前，Windows 只承诺「manifest 已写 + 注册命令已打印」，不承诺连通。
+Windows 真机仍待验证（PE 注入、Chrome 拉起 exe、注册表、SmartScreen/AV、路径含空格、arm64）；
+在此之前 Windows 只承诺「manifest/exe 已写 + 注册命令已打印」，不承诺连通。
 
 ## 4. 本轮怎么选浏览器 / 平台
 

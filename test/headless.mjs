@@ -418,6 +418,9 @@ try {
     owner: 's1',
     expression: '(() => { const ctx = document.getElementById("probe-canvas").getContext("2d"); ctx.fillStyle = "#e00"; ctx.fillRect(0, 0, 300, 60); return "painted" })()',
   })
+  // Let the compositor publish the canvas paint before the conservative capture;
+  // under load the screenshot can otherwise race the frame and read stale pixels.
+  await settle(250)
   const canvasShot = await driver.request('tab.screenshot', { owner: 's1' })
   const canvasProbeAfter = await tabDiag()
   assert.equal(canvasProbeAfter.visualSkips, canvasProbeBefore.visualSkips, 'canvas draw must keep the conservative wait')
