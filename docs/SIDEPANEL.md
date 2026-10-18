@@ -19,17 +19,25 @@
 - 工具栏 popup 增加 **Sidebar** 按钮，用户点击（user gesture）调用 `chrome.sidePanel.open({windowId})`；
 - 只接受 `127.0.0.1` / `localhost` / `[::1]` 的 http(s) URL，避免把任意网站嵌进侧边栏。
 
-### 为什么不能直接 iframe `http://127.0.0.1:50863/`
+### 为什么 iframe 方案对 DSH Web 走不通（重要）
 
-实测：未带认证信息的 iframe 会显示 `dsh web authentication required; reopen the URL printed by dsh web.`
-DSH Web 需要启动时打印的带 token URL（或对应会话凭据）。因此侧边栏设置里要粘贴 **完整的 `dsh web` 地址**（通常带 `?token=...`），而不是裸 host:port。
+实测 iframe `http://127.0.0.1:50863/` 显示：
 
-## 3. 使用
+> `dsh web authentication required; reopen the URL printed by dsh web.`
+
+查 DSH 的 `dsh-client-connection` 文档后确认这是**设计上的硬边界**，不是“补个 token 就行”：
+
+- `dsh web` 启动时打印 `?token=...` 的 root URL；`GET /` 用它换一个 **HttpOnly + SameSite=Strict** 的签名 cookie，然后 302 到干净 URL；
+- 每个 RPC/WebSocket 都要求该 cookie，且 Host/Origin fence 明确拒绝 `sec-fetch-site: cross-site`；
+- Chrome 扩展侧边栏的 iframe 是 `chrome-extension://` 跨站嵌入，cookie 不会带、`sec-fetch-site` 是 cross-site → 401/403。
+
+所以 **v1 的 iframe 只能在“本地同站页面”里工作，不能直接嵌 DSH Web**。侧边栏作为 UI 壳是可行的，但真正的 DSH 内容必须走 **native bridge**（见 §4），不是 iframe。v1 保留“在标签页打开”作为可用回退。
+
+## 3. v1 怎么用（仅 UI 壳）
 
 1. 安装/重载扩展（`chrome://extensions` → Reload）；
-2. 从 DSH 启动日志/终端拿到 `dsh web: http://127.0.0.1:<port>/?token=...`；
-3. 点扩展图标 → **Sidebar**；第一次会打开设置，粘贴完整 URL → 保存并打开；
-4. 若页面仍提示 authentication required，重新复制最新的打印 URL（token 可能随重启变化）。
+2. 点扩展图标 → **Sidebar** 打开侧边栏；它会提示配置 DSH Web 地址；
+3. 目前推荐点 **↗ 在标签页打开** 使用 DSH；侧边栏内嵌 DSH Web 需要等 v2 的 bridge 实现（见 §4）。
 
 ## 4. 后续（真正的原生侧边栏 chat）
 

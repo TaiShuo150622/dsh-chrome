@@ -11,7 +11,7 @@
 
 ## 已知限制
 
-- v1 是 iframe 嵌入 DSH Web：需要粘贴 `dsh web` 打印的带 token URL；裸 host:port 会显示 authentication required；
+- v1 是扩展侧边栏 UI 壳：DSH Web 使用 SameSite=Strict cookie + 拒绝 cross-site iframe，**直接 iframe DSH Web 不可行**；侧边栏目前主要提供配置/检测/在标签页打开，真正的内嵌要到 v2 native bridge；
 - 还没有原生 chat 协议（下一步：侧边栏 ↔ native bridge ↔ provider，共享 DSH 会话与浏览器工具能力）；
 - 调研与架构说明见 `docs/SIDEPANEL.md`。
 
