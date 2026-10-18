@@ -11,6 +11,11 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.90] - 2026-10-18
+
+- 新增 `chrome_headless_login op=show` 人工接管（显示到屏幕、finish 后 headless 恢复 URL）
+- CI 硬化：私有仓库 CI 绿、windows-host artifact、CI 环境跳过时序套件/CPU 采样、临时目录清理 retry
+
 ## [0.1.89] - 2026-10-18
 
 ### Added/Fixed
