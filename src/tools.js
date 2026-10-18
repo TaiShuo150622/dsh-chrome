@@ -849,6 +849,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       properties: {
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
         ref: { type: 'number', description: 'Capture only the element with this snapshot ref.' },
+        frameRef: { type: 'string', description: 'Capture only an iframe element, e.g. "f83F9D728:1" (from chrome_snapshot frames).' },
         fullPage: { type: 'boolean', description: 'Capture the full scrollable document instead of the viewport.' },
         highlight: { type: 'boolean', description: 'Overlay labeled boxes for current snapshot refs in the capture.' },
         clip: {
@@ -890,7 +891,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     async execute(args, exec) {
       const shot = await call(
         'tab.screenshot',
-        { tabId: args?.tabId, ref: args?.ref, clip: args?.clip, fullPage: Boolean(args?.fullPage), highlight: Boolean(args?.highlight), owner: ownerOf(exec) },
+        { tabId: args?.tabId, ref: args?.ref, frameRef: args?.frameRef, clip: args?.clip, fullPage: Boolean(args?.fullPage), highlight: Boolean(args?.highlight), owner: ownerOf(exec) },
         60000,
       )
       if (!shot?.path) throw new BridgeError('INTERNAL', 'native host did not return a screenshot path')

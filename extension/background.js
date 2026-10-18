@@ -844,6 +844,81 @@ async function snapshot(owner, params) {
   return value
 }
 
+async function frameOffsetInViewport(target, frameId, tree) {
+  const byId = new Map(tree.map((frame) => [frame.frameId, frame]))
+  const chain = []
+  let current = frameId
+  while (current) {
+    const frame = byId.get(current)
+    if (!frame || !frame.parentFrameId) break
+    chain.push(current)
+    current = frame.parentFrameId
+  }
+  let offsetX = 0
+  let offsetY = 0
+  for (const id of chain) {
+    let owner = null
+    try {
+      owner = await chrome.debugger.sendCommand(target, 'DOM.getFrameOwner', { frameId: id })
+    } catch (error) {
+      throw bridgeError('FRAME_OFFSET_UNAVAILABLE', `cannot locate frame owner: ${error?.message || error}`)
+    }
+    const backendNodeId = owner?.backendNodeId
+    if (!Number.isFinite(backendNodeId)) {
+      throw bridgeError('FRAME_OFFSET_UNAVAILABLE', 'frame owner has no backendNodeId')
+    }
+    let model = null
+    try {
+      model = await chrome.debugger.sendCommand(target, 'DOM.getBoxModel', { backendNodeId })
+    } catch (error) {
+      throw bridgeError('FRAME_OFFSET_UNAVAILABLE', `cannot measure frame owner: ${error?.message || error}`)
+    }
+    const quad = model?.model?.content
+    if (!Array.isArray(quad) || quad.length < 8) {
+      throw bridgeError('FRAME_OFFSET_UNAVAILABLE', 'frame owner has no content quad')
+    }
+    offsetX += Math.min(quad[0], quad[2], quad[4], quad[6])
+    offsetY += Math.min(quad[1], quad[3], quad[5], quad[7])
+  }
+  return { x: offsetX, y: offsetY }
+}
+
+async function elementBoxInFrame(tabId, frameRef) {
+  const parsed = parseFrameRef(frameRef)
+  if (!parsed) throw bridgeError('INVALID_ARGUMENT', `invalid frameRef: ${frameRef}`)
+  const frameId = frameIdForPrefix(tabId, parsed.prefix)
+  if (!frameId) throw bridgeError('FRAME_STALE', 'frame registry is stale; take a new snapshot')
+  const target = { tabId }
+  try {
+    await chrome.debugger.attach(target, '1.3')
+  } catch (error) {
+    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
+  }
+  try {
+    await chrome.debugger.sendCommand(target, 'DOM.enable').catch(() => {})
+    const tree = await readFrameTree(target)
+    const offset = await frameOffsetInViewport(target, frameId, tree)
+    const box = await evalInFrameContext(target, frameId, elementBox, [parsed.ref, ''], 10000)
+    if (!box || box.width <= 0 || box.height <= 0) {
+      throw bridgeError('REF_STALE', `frameRef ${frameRef} has no visible box`)
+    }
+    return {
+      x: box.x + offset.x,
+      y: box.y + offset.y,
+      width: box.width,
+      height: box.height,
+      frameRef,
+      frameId,
+    }
+  } finally {
+    try {
+      await chrome.debugger.detach(target)
+    } catch {
+      // tab may have closed
+    }
+  }
+}
+
 async function screenshot(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params?.tabId)
   const target = { tabId }
@@ -863,18 +938,21 @@ async function screenshot(owner, params) {
     }
     clip = { x, y, width, height, scale: 1 }
   }
-  try {
-    await chrome.debugger.attach(target, '1.3')
-  } catch (error) {
-    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
-  }
   let effectiveClip = clip
-  if (!effectiveClip && Number.isFinite(elementRef)) {
+  if (!effectiveClip && params?.frameRef) {
+    const box = await elementBoxInFrame(tabId, String(params.frameRef))
+    effectiveClip = { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 }
+  } else if (!effectiveClip && Number.isFinite(elementRef)) {
     const box = await callInPage(tabId, 'elementBox', [elementRef, ''], 10000)
     if (!box || box.width <= 0 || box.height <= 0) {
       throw bridgeError('REF_STALE', `ref ${elementRef} has no visible box`)
     }
     effectiveClip = { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 }
+  }
+  try {
+    await chrome.debugger.attach(target, '1.3')
+  } catch (error) {
+    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
   }
   try {
     if (fullPage) {

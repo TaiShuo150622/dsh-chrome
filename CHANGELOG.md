@@ -11,6 +11,18 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.69] - 2026-10-17
+
+### Added
+
+- **批次 B5 iframe 元素截图**：`chrome_screenshot {frameRef:"f<frame>:<ref>"}`；用 CDP `DOM.getFrameOwner` + `DOM.getBoxModel` 逐层累加 frame 偏移，算不出返回 `FRAME_OFFSET_UNAVAILABLE` 而不是猜坐标
+- 真机验证：跨源 iframe 内 Child button 截图 174x44，只有按钮本身
+- 顺带修掉 screenshot 在内层 `callInPage(elementBox)` 的嵌套 attach/detach 隐患（元素框现在先算、再 attach 截图）
+
+### Tests
+
+- extension-logic 补 frameRef 回归：snapshot 建 registry → click frameRef 走 isolated world → 未知 frameRef 报 FRAME_STALE
+
 ## [0.1.68] - 2026-10-17
 
 ### Added

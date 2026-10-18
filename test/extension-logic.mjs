@@ -158,7 +158,7 @@ const chrome = {
         return {
           frameTree: {
             frame: {
-              id: 'FRAME_MAIN',
+              id: 'a1b2c3d4e5f6a7b8',
               url: 'https://example.test/',
               domainAndRegistry: 'example.test',
               mimeType: 'text/html',
@@ -394,6 +394,29 @@ const labelled = await sandbox.handleRequest({
   id: 'tabs-label',
 })
 check('new tab uses a readable group label', labelled?.tabId != null && tabGroupUpdates.some((update) => update.title === 'DSH · demo-project'))
+
+// frameRef dispatch: snapshot builds the registry, click resolves it
+await sandbox.handleRequest({ method: 'tab.snapshot', params: { owner: 's1' }, id: 'snapshot-frames' })
+nextPageValue = { ok: true, tag: 'button', label: 'Child button' }
+const frameClick = await sandbox.handleRequest({
+  method: 'tab.click',
+  params: { frameRef: 'fa1b2c3d4:1', owner: 's1' },
+  id: 'click-frame-ref',
+})
+check('tab.click accepts a frameRef handle', frameClick?.ok === true && frameClick?.frameRef === 'fa1b2c3d4:1')
+check('frameRef action uses an isolated world', debuggerCalls.some((call) => call.method === 'Page.createIsolatedWorld'))
+
+let staleFrameError = null
+try {
+  await sandbox.handleRequest({
+    method: 'tab.click',
+    params: { frameRef: 'fdeadbeef:1', owner: 's1' },
+    id: 'click-stale-frame',
+  })
+} catch (error) {
+  staleFrameError = String(error?.message || error)
+}
+check('unknown frameRef reports FRAME_STALE', /FRAME_STALE|stale/i.test(staleFrameError || ''))
 
 // drag + emulate dispatch
 nextPageValue = { ok: true, from: 1, to: 2 }
