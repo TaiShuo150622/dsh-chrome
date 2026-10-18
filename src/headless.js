@@ -73,6 +73,14 @@ const EXTRA_CHROME_ARGS = String(process.env.DSH_HEADLESS_CHROME_ARGS || '')
 const DEFAULT_IDLE_MINUTES = Number(process.env.DSH_HEADLESS_IDLE_MINUTES) || 5
 const MAX_TABS = Number(process.env.DSH_HEADLESS_MAX_TABS) || 12
 
+// waitReady polls document.readyState. Local/real navigations often finish in
+// tens of milliseconds, so a 100ms poll handed most of the load time back as
+// request latency. 25ms costs a few cheap evaluates and removes that. (The
+// DevToolsActivePort poll stays at 150ms: §4.1.5 measured no gain from a tight
+// poll because Chrome finishes the launch ~300-570ms after writing that file,
+// so the poll wait is fully overlapped.)
+const READY_POLL_MS = 25
+
 const CAPTURE_MAX_DURATION_MS = 10 * 60 * 1000
 const CAPTURE_DEFAULT_MAX_ENTRIES = 300
 const CAPTURE_HARD_MAX_ENTRIES = 1000
@@ -694,17 +702,21 @@ export class HeadlessDriver {
       cdp.onMessage((message) => this.onCdpEvent(message))
       await cdp.connect()
       this.cdp = cdp
-      const version = await cdp.send('Browser.getVersion').catch(() => null)
-      this.browserVersion = version?.product || null
       this.chrome.on('exit', (code) => {
         this.logger?.warn?.('headless Chrome exited: %s', code)
         this.cdp = null
         this.chrome = null
       })
+      // These two CDP round trips are independent of each other; on a cold
+      // browser each can take tens of milliseconds, so run them together.
       await fsp.mkdir(this.downloadDir, { recursive: true })
-      await cdp
-        .send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: this.downloadDir, eventsEnabled: true })
-        .catch((error) => this.logger?.warn?.('headless download behavior failed: %s', error?.message || String(error)))
+      const [version] = await Promise.all([
+        cdp.send('Browser.getVersion').catch(() => null),
+        cdp
+          .send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: this.downloadDir, eventsEnabled: true })
+          .catch((error) => this.logger?.warn?.('headless download behavior failed: %s', error?.message || String(error))),
+      ])
+      this.browserVersion = version?.product || null
       this.startIdleTimer()
       this.logger?.info?.('headless Chrome started: %s', this.browserVersion || 'unknown')
       return this
@@ -981,8 +993,12 @@ export class HeadlessDriver {
     this.tabs.set(tabId, tab)
     entry.tabs.set(tabId, tab)
     entry.activeTabId = tabId
-    await this.cdp.send('Page.enable', {}, sessionId).catch(() => {})
-    await this.cdp.send('Runtime.enable', {}, sessionId).catch(() => {})
+    // Both domain enables are independent; on a fresh target each cold round
+    // trip is tens of milliseconds, so don't serialise them.
+    await Promise.all([
+      this.cdp.send('Page.enable', {}, sessionId).catch(() => {}),
+      this.cdp.send('Runtime.enable', {}, sessionId).catch(() => {}),
+    ])
     return tab
   }
 
@@ -1307,7 +1323,7 @@ export class HeadlessDriver {
       } catch {
         // still navigating
       }
-      await new Promise((resolve) => setTimeout(resolve, 100))
+      await new Promise((resolve) => setTimeout(resolve, READY_POLL_MS))
     }
     return false
   }
