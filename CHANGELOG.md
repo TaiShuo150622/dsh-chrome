@@ -11,6 +11,22 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.70] - 2026-10-17
+
+### Changed（批次 C0：debugger 会话管理器）
+
+- 所有 CDP 入口（页面动作、截图、frame 动作/快照/枚举、上传、emulate、pdf、a11y）统一走 `withDebugger()` 引用计数会话；全仓只剩 1 处 attach/detach
+- 全局 `chrome.debugger.onEvent`：dialog 拦截 + Network 事件路由钩子（C2 填充）
+- 全局 `onDetach` / `tabs.onRemoved`：清理会话、预留 capture 收尾；tab 关闭清 frameRegistry
+- attach 失败不再被吞掉，明确 `DEBUGGER_FAILED`
+- 顺带修掉 screenshot 元素框嵌套 attach/detach 隐患（元素框在会话内 `evalInTarget` 计算，screenshot 只 attach 一次）
+- `evalInTarget()` 抽出一处 Runtime.evaluate 注入逻辑
+
+### Tests
+
+- extension-logic 新增 C0 回归：click/snapshot/frames/screenshot(ref) 各 attach=1 detach=1；`onDetach` 后下一次动作重新 attach；dialog 旧断言迁移后仍通过
+- `npm test` 10 条全过
+
 ## [0.1.69] - 2026-10-17
 
 ### Added

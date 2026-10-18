@@ -731,71 +731,111 @@ function dialogPolicy(dialogOptions, opening) {
   return { accept: false, promptText: '' }
 }
 
-async function evalInTab(tabId, fn, args, timeoutMs, dialogOptions) {
-  const target = { tabId }
-  let attached = false
-  const dialogs = []
-  const onEvent = (source, method, params) => {
-    if (source?.tabId !== tabId || method !== 'Page.javascriptDialogOpening') return
-    const policy = dialogPolicy(dialogOptions, params)
-    dialogs.push({
-      type: String(params?.type || 'alert'),
-      message: String(params?.message || '').slice(0, 500),
-      accepted: policy.accept,
-    })
-    chrome.debugger
-      .sendCommand(target, 'Page.handleJavaScriptDialog', {
-        accept: policy.accept,
-        promptText: policy.promptText,
-      })
-      .catch(() => {})
-  }
-  try {
-    await chrome.debugger.attach(target, '1.3')
-    attached = true
-  } catch {
-    // A previous detach may have raced; try to use the existing session.
-  }
-  try {
-    try {
-      await chrome.debugger.sendCommand(target, 'Page.enable')
-      chrome.debugger.onEvent.addListener(onEvent)
-    } catch {
-      // dialog interception unavailable; evaluation still works
+const debuggerSessions = new Map()
+
+function sessionFor(tabId) {
+  let session = debuggerSessions.get(tabId)
+  if (!session) {
+    session = {
+      target: { tabId },
+      refs: 0,
+      capture: null,
+      pageEnabled: false,
+      interceptDialogs: false,
+      dialogOptions: null,
+      dialogs: [],
     }
-    const expression = `(() => { ${CURSOR_HELPER_SRC}
+    debuggerSessions.set(tabId, session)
+  }
+  return session
+}
+
+async function withDebugger(tabId, fn, options = {}) {
+  const session = sessionFor(tabId)
+  const { interceptDialogs = false, dialogOptions = null } = options
+  if (session.refs === 0 && !session.capture) {
+    try {
+      await chrome.debugger.attach(session.target, '1.3')
+    } catch (error) {
+      debuggerSessions.delete(tabId)
+      throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
+    }
+  }
+  session.refs += 1
+  session.interceptDialogs = interceptDialogs
+  session.dialogOptions = dialogOptions
+  try {
+    if (interceptDialogs && !session.pageEnabled) {
+      await chrome.debugger.sendCommand(session.target, 'Page.enable').catch(() => {})
+      session.pageEnabled = true
+    }
+    return await fn(session)
+  } finally {
+    session.refs -= 1
+    session.interceptDialogs = false
+    session.dialogOptions = null
+    if (session.refs === 0 && !session.capture) {
+      debuggerSessions.delete(tabId)
+      await chrome.debugger.detach(session.target).catch(() => {})
+    }
+  }
+}
+
+async function evalInTarget(target, fn, args, timeoutMs = 10000) {
+  const expression = `(() => { ${CURSOR_HELPER_SRC}
+    ${DEEP_HELPERS_SRC}
+    return (${fn.toString()})(...${JSON.stringify(args)})
+  })()`
+  const response = await withTimeout(
+    chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    }),
+    timeoutMs,
+    'TIMEOUT',
+    `page action timed out after ${timeoutMs}ms`,
+  )
+  if (response?.exceptionDetails) {
+    const text = response.exceptionDetails.exception?.description || response.exceptionDetails.text || 'page action failed'
+    throw bridgeError('INTERNAL', String(text))
+  }
+  return response?.result?.value
+}
+
+// C2a fills this in; C0 keeps the hook so a later capture can pin the session.
+function routeNetworkEvent() {}
+
+// C2a fills this in; C0 keeps the hook so onDetach can close capture state.
+function endCapture() {}
+
+async function evalInTab(tabId, fn, args, timeoutMs, dialogOptions) {
+  return withDebugger(
+    tabId,
+    async (session) => {
+      const expression = `(() => { ${CURSOR_HELPER_SRC}
       ${DEEP_HELPERS_SRC}
       return (${fn.toString()})(...${JSON.stringify(args)})
     })()`
-    const response = await withTimeout(
-      chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-      }),
-      timeoutMs,
-      'TIMEOUT',
-      `page action timed out after ${timeoutMs}ms`,
-    )
-    if (response?.exceptionDetails) {
-      const text = response.exceptionDetails.exception?.description || response.exceptionDetails.text || 'page action failed'
-      throw bridgeError('INTERNAL', String(text))
-    }
-    return { value: response?.result?.value, dialogs }
-  } finally {
-    try {
-      chrome.debugger.onEvent.removeListener(onEvent)
-    } catch {
-      // listener may not have been added
-    }
-    if (attached) {
-      try {
-        await chrome.debugger.detach(target)
-      } catch {
-        // tab may have closed or detached already
+      const response = await withTimeout(
+        chrome.debugger.sendCommand(session.target, 'Runtime.evaluate', {
+          expression,
+          returnByValue: true,
+          awaitPromise: true,
+        }),
+        timeoutMs,
+        'TIMEOUT',
+        `page action timed out after ${timeoutMs}ms`,
+      )
+      if (response?.exceptionDetails) {
+        const text =
+          response.exceptionDetails.exception?.description || response.exceptionDetails.text || 'page action failed'
+        throw bridgeError('INTERNAL', String(text))
       }
-    }
-  }
+      return { value: response?.result?.value, dialogs: session.dialogs.slice() }
+    },
+    { interceptDialogs: true, dialogOptions },
+  )
 }
 
 async function callInPage(tabId, action, args = [], timeoutMs = 15000, dialogOptions = null) {
@@ -888,13 +928,8 @@ async function elementBoxInFrame(tabId, frameRef) {
   if (!parsed) throw bridgeError('INVALID_ARGUMENT', `invalid frameRef: ${frameRef}`)
   const frameId = frameIdForPrefix(tabId, parsed.prefix)
   if (!frameId) throw bridgeError('FRAME_STALE', 'frame registry is stale; take a new snapshot')
-  const target = { tabId }
-  try {
-    await chrome.debugger.attach(target, '1.3')
-  } catch (error) {
-    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
-  }
-  try {
+  return withDebugger(tabId, async (session) => {
+    const target = session.target
     await chrome.debugger.sendCommand(target, 'DOM.enable').catch(() => {})
     const tree = await readFrameTree(target)
     const offset = await frameOffsetInViewport(target, frameId, tree)
@@ -910,13 +945,7 @@ async function elementBoxInFrame(tabId, frameRef) {
       frameRef,
       frameId,
     }
-  } finally {
-    try {
-      await chrome.debugger.detach(target)
-    } catch {
-      // tab may have closed
-    }
-  }
+  })
 }
 
 async function screenshot(owner, params) {
@@ -942,42 +971,37 @@ async function screenshot(owner, params) {
   if (!effectiveClip && params?.frameRef) {
     const box = await elementBoxInFrame(tabId, String(params.frameRef))
     effectiveClip = { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 }
-  } else if (!effectiveClip && Number.isFinite(elementRef)) {
-    const box = await callInPage(tabId, 'elementBox', [elementRef, ''], 10000)
-    if (!box || box.width <= 0 || box.height <= 0) {
-      throw bridgeError('REF_STALE', `ref ${elementRef} has no visible box`)
-    }
-    effectiveClip = { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 }
   }
   try {
-    await chrome.debugger.attach(target, '1.3')
-  } catch (error) {
-    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
-  }
-  try {
-    if (fullPage) {
-      const dims = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
-        expression:
-          '({ width: Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0), height: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0) })',
-        returnByValue: true,
+    return await withDebugger(tabId, async (session) => {
+      const target = session.target
+      let finalClip = effectiveClip
+      if (!finalClip && Number.isFinite(elementRef)) {
+        const box = await evalInTarget(target, elementBox, [elementRef, ''], 10000)
+        if (!box || box.width <= 0 || box.height <= 0) {
+          throw bridgeError('REF_STALE', `ref ${elementRef} has no visible box`)
+        }
+        finalClip = { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 }
+      }
+      if (fullPage) {
+        const dims = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+          expression:
+            '({ width: Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0), height: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0) })',
+          returnByValue: true,
+        })
+        const width = Math.min(20000, Math.max(1, Math.round(Number(dims?.result?.value?.width) || 0)))
+        const height = Math.min(20000, Math.max(1, Math.round(Number(dims?.result?.value?.height) || 0)))
+        finalClip = { x: 0, y: 0, width, height, scale: 1 }
+      }
+      const response = await chrome.debugger.sendCommand(target, 'Page.captureScreenshot', {
+        format: 'png',
+        captureBeyondViewport: fullPage,
+        ...(finalClip ? { clip: finalClip } : {}),
       })
-      const width = Math.min(20000, Math.max(1, Math.round(Number(dims?.result?.value?.width) || 0)))
-      const height = Math.min(20000, Math.max(1, Math.round(Number(dims?.result?.value?.height) || 0)))
-      effectiveClip = { x: 0, y: 0, width, height, scale: 1 }
-    }
-    const response = await chrome.debugger.sendCommand(target, 'Page.captureScreenshot', {
-      format: 'png',
-      captureBeyondViewport: fullPage,
-      ...(effectiveClip ? { clip: effectiveClip } : {}),
+      if (!response?.data) throw bridgeError('INTERNAL', 'empty screenshot data')
+      return { dataBase64: response.data }
     })
-    if (!response?.data) throw bridgeError('INTERNAL', 'empty screenshot data')
-    return { dataBase64: response.data }
   } finally {
-    try {
-      await chrome.debugger.detach(target)
-    } catch {
-      // tab may have navigated or closed
-    }
     if (highlight) await callInPage(tabId, 'overlayRemove', [], 10000).catch(() => null)
   }
 }
@@ -1158,27 +1182,14 @@ function frameIdForPrefix(tabId, prefix) {
 async function callInFrame(tabId, frameId, action, args, timeoutMs = 15000) {
   const fn = PAGE_ACTIONS[action]
   if (!fn) throw bridgeError('UNSUPPORTED', `unknown page action: ${action}`)
-  const target = { tabId }
-  try {
-    await chrome.debugger.attach(target, '1.3')
-  } catch (error) {
-    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
-  }
-  try {
-    return await evalInFrameContext(target, frameId, fn, args, timeoutMs)
-  } finally {
-    try {
-      await chrome.debugger.detach(target)
-    } catch {
-      // tab may have closed
-    }
-  }
+  return withDebugger(tabId, async (session) =>
+    evalInFrameContext(session.target, frameId, fn, args, timeoutMs),
+  )
 }
 
 async function withDebuggerFrames(tabId, visitor, timeoutMs = 15000) {
-  const target = { tabId }
-  await chrome.debugger.attach(target, '1.3')
-  try {
+  return withDebugger(tabId, async (session) => {
+    const target = session.target
     const tree = await readFrameTree(target)
     const results = []
     for (const frame of tree) {
@@ -1192,13 +1203,7 @@ async function withDebuggerFrames(tabId, visitor, timeoutMs = 15000) {
       }
     }
     return results
-  } finally {
-    try {
-      await chrome.debugger.detach(target)
-    } catch {
-      // tab may have closed
-    }
-  }
+  })
 }
 
 async function probeFrames(tabId, fn, args, timeoutMs = 5000) {
@@ -1271,9 +1276,8 @@ async function snapshotAllFrames(tabId, params) {
   const limit = Number.isFinite(params.maxChars) ? Math.max(1000, Math.min(200000, params.maxChars)) : 100000
   const boxes = Boolean(params.boxes)
   const mode = String(params.mode || 'full')
-  const target = { tabId }
-  await chrome.debugger.attach(target, '1.3')
-  try {
+  return withDebugger(tabId, async (session) => {
+    const target = session.target
     const tree = await readFrameTree(target)
     const frames = []
     let mainRaw = null
@@ -1341,24 +1345,13 @@ async function snapshotAllFrames(tabId, params) {
       }))
     }
     return result
-  } finally {
-    try {
-      await chrome.debugger.detach(target)
-    } catch {
-      // tab may have closed
-    }
-  }
+  })
 }
 
 async function frames(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
-  const target = { tabId }
-  try {
-    await chrome.debugger.attach(target, '1.3')
-  } catch (error) {
-    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
-  }
-  try {
+  return withDebugger(tabId, async (session) => {
+    const target = session.target
     const out = await readFrameTree(target)
     if (params?.probe) {
       for (const frame of out) {
@@ -1380,13 +1373,7 @@ async function frames(owner, params) {
       }
     }
     return { tabId, frames: out }
-  } finally {
-    try {
-      await chrome.debugger.detach(target)
-    } catch {
-      // tab may have closed
-    }
-  }
+  })
 }
 
 async function selection(owner, params) {
@@ -1560,13 +1547,8 @@ async function uploadFiles(owner, params) {
   if (!Number.isFinite(ref) && !selector) throw bridgeError('INVALID_ARGUMENT', 'ref or selector is required')
   const files = Array.isArray(params.files) ? params.files.map(String) : []
   if (files.length === 0) throw bridgeError('INVALID_ARGUMENT', 'files must be a non-empty array of local paths')
-  const target = { tabId }
-  try {
-    await chrome.debugger.attach(target, '1.3')
-  } catch (error) {
-    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
-  }
-  try {
+  return withDebugger(tabId, async (session) => {
+    const target = session.target
     const { root } = await chrome.debugger.sendCommand(target, 'DOM.getDocument', { depth: 0 })
     const { nodeId } = await chrome.debugger.sendCommand(target, 'DOM.querySelector', {
       nodeId: root.nodeId,
@@ -1575,13 +1557,7 @@ async function uploadFiles(owner, params) {
     if (!nodeId) throw bridgeError('REF_STALE', `ref ${ref} not found; take a new snapshot`)
     await chrome.debugger.sendCommand(target, 'DOM.setFileInputFiles', { nodeId, files })
     return { ok: true, ...(Number.isFinite(ref) ? { ref } : {}), selector: selector || undefined, files: files.length }
-  } finally {
-    try {
-      await chrome.debugger.detach(target)
-    } catch {
-      // tab may have navigated
-    }
-  }
+  })
 }
 
 async function listDownloads(params) {
@@ -1619,13 +1595,8 @@ async function storage(owner, params) {
 
 async function emulate(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params?.tabId)
-  const target = { tabId }
-  try {
-    await chrome.debugger.attach(target, '1.3')
-  } catch (error) {
-    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
-  }
-  try {
+  return withDebugger(tabId, async (session) => {
+    const target = session.target
     if (params?.reset) {
       let clearError = null
       try {
@@ -1664,13 +1635,7 @@ async function emulate(owner, params) {
       returnByValue: true,
     })
     return { width, height, applied: true, viewport: viewport?.result?.value ?? null }
-  } finally {
-    try {
-      await chrome.debugger.detach(target)
-    } catch {
-      // tab may have closed
-    }
-  }
+  })
 }
 
 async function drag(owner, params) {
@@ -1689,38 +1654,21 @@ async function drag(owner, params) {
 
 async function pdf(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params?.tabId)
-  const target = { tabId }
-  try {
-    await chrome.debugger.attach(target, '1.3')
-  } catch (error) {
-    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
-  }
-  try {
-    const response = await chrome.debugger.sendCommand(target, 'Page.printToPDF', {
+  return withDebugger(tabId, async (session) => {
+    const response = await chrome.debugger.sendCommand(session.target, 'Page.printToPDF', {
       printBackground: true,
       preferCSSPageSize: true,
     })
     if (!response?.data) throw bridgeError('INTERNAL', 'empty pdf data')
     return { dataBase64: response.data }
-  } finally {
-    try {
-      await chrome.debugger.detach(target)
-    } catch {
-      // tab may have closed
-    }
-  }
+  })
 }
 
 async function a11y(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
-  const target = { tabId }
   const limit = Number.isFinite(params.limit) ? Math.min(400, Math.max(1, params.limit)) : 200
-  try {
-    await chrome.debugger.attach(target, '1.3')
-  } catch (error) {
-    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
-  }
-  try {
+  return withDebugger(tabId, async (session) => {
+    const target = session.target
     await chrome.debugger.sendCommand(target, 'Accessibility.enable')
     const response = await chrome.debugger.sendCommand(target, 'Accessibility.getFullAXTree')
     const asString = (value) => {
@@ -1745,13 +1693,7 @@ async function a11y(owner, params) {
       total: nodes.length,
       truncated: nodes.length > limit,
     }
-  } finally {
-    try {
-      await chrome.debugger.detach(target)
-    } catch {
-      // tab may have closed
-    }
-  }
+  })
 }
 
 async function getTextAgent(owner, params) {
@@ -2770,6 +2712,47 @@ function ensureReconnectAlarm() {
     // alarms are best effort; the port and popup button still work
   }
 }
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  const tabId = source?.tabId
+  if (tabId == null) return
+  const session = debuggerSessions.get(tabId)
+  if (!session) return
+  if (method === 'Page.javascriptDialogOpening') {
+    if (!session.interceptDialogs) return
+    const policy = dialogPolicy(session.dialogOptions, params)
+    session.dialogs.push({
+      type: String(params?.type || 'alert'),
+      message: String(params?.message || '').slice(0, 500),
+      accepted: policy.accept,
+    })
+    chrome.debugger
+      .sendCommand(session.target, 'Page.handleJavaScriptDialog', {
+        accept: policy.accept,
+        promptText: policy.promptText,
+      })
+      .catch(() => {})
+    return
+  }
+  if (String(method).startsWith('Network.')) {
+    routeNetworkEvent(session, method, params)
+  }
+})
+
+chrome.debugger.onDetach.addListener((source, reason) => {
+  const tabId = source?.tabId
+  if (tabId == null) return
+  const session = debuggerSessions.get(tabId)
+  if (session?.capture) endCapture(session.capture, `debugger-detached:${reason}`)
+  debuggerSessions.delete(tabId)
+})
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const session = debuggerSessions.get(tabId)
+  if (session?.capture) endCapture(session.capture, 'tab-closed')
+  debuggerSessions.delete(tabId)
+  frameRegistry.delete(tabId)
+})
 
 chrome.runtime.onInstalled.addListener(() => {
   ensureReconnectAlarm()

@@ -35,6 +35,8 @@ let nextPageValue = { ok: true, tag: 'button', label: 'OK' }
 let nextTabId = 100
 
 const runtimeMessageListeners = []
+const debuggerDetachListeners = []
+const tabRemovedListeners = []
 const tabGroupUpdates = []
 let connectNativeCalls = 0
 let runtimeReloads = 0
@@ -123,6 +125,12 @@ const chrome = {
     async goForward() {},
     async reload() {},
     onUpdated: { addListener() {}, removeListener() {} },
+    onRemoved: {
+      addListener(listener) {
+        tabRemovedListeners.push(listener)
+      },
+      removeListener() {},
+    },
   },
   tabGroups: {
     async query() {
@@ -195,6 +203,11 @@ const chrome = {
       },
       removeListener(listener) {
         eventListeners.delete(listener)
+      },
+    },
+    onDetach: {
+      addListener(listener) {
+        debuggerDetachListeners.push(listener)
       },
     },
   },
@@ -471,6 +484,47 @@ try {
 } catch (error) {
   unsupported = error?.code
 }
+// C0: one debugger session per entry (attach/detach ref counting)
+const sessionCounts = (from) => {
+  const slice = debuggerCalls.slice(from)
+  return {
+    attach: slice.filter((call) => call.method === 'attach').length,
+    detach: slice.filter((call) => call.method === 'detach').length,
+  }
+}
+
+nextPageValue = { ok: true, tag: 'button', label: 'C0 click' }
+let mark = debuggerCalls.length
+await sandbox.handleRequest({ method: 'tab.click', params: { ref: 1, owner: 's1' }, id: 'c0-click' })
+let counts = sessionCounts(mark)
+check('click uses exactly one debugger attach/detach', counts.attach === 1 && counts.detach === 1, JSON.stringify(counts))
+
+mark = debuggerCalls.length
+await sandbox.handleRequest({ method: 'tab.snapshot', params: { owner: 's1' }, id: 'c0-snapshot' })
+counts = sessionCounts(mark)
+check('frame snapshot uses exactly one debugger attach/detach', counts.attach === 1 && counts.detach === 1, JSON.stringify(counts))
+
+mark = debuggerCalls.length
+await sandbox.handleRequest({ method: 'tab.frames', params: { owner: 's1' }, id: 'c0-frames' })
+counts = sessionCounts(mark)
+check('tab.frames uses exactly one debugger attach/detach', counts.attach === 1 && counts.detach === 1, JSON.stringify(counts))
+
+mark = debuggerCalls.length
+await sandbox.handleRequest({ method: 'tab.screenshot', params: { ref: 1, owner: 's1' }, id: 'c0-screenshot-ref' })
+counts = sessionCounts(mark)
+check('screenshot with ref uses exactly one debugger attach/detach', counts.attach === 1 && counts.detach === 1, JSON.stringify(counts))
+
+// C0: after a debugger onDetach the next action re-attaches cleanly
+for (const listener of debuggerDetachListeners) listener({ tabId: 7 }, 'cancelled_by_user')
+mark = debuggerCalls.length
+const afterDetach = await sandbox.handleRequest({ method: 'tab.frames', params: { owner: 's1' }, id: 'c0-reattach' })
+counts = sessionCounts(mark)
+check(
+  'action re-attaches after debugger detach',
+  afterDetach != null && counts.attach === 1 && counts.detach === 1,
+  JSON.stringify(counts),
+)
+
 check('unknown method is rejected', unsupported === 'UNSUPPORTED')
 
 console.log(failures === 0 ? '\nEXTENSION LOGIC TEST: PASS' : `\nEXTENSION LOGIC TEST: ${failures} FAILURE(S)`)
