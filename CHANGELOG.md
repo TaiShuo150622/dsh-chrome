@@ -13,6 +13,12 @@
 
 ## [Unreleased]
 
+### Fixed（桌面 tabs 同步 + screencast 上限）
+
+- `chrome_tabs {op:"list"}` / `chrome_close_session` 现在先从实时 tab group 同步 `tabIds`（修「新建 tab 列表里看不到 / 关不掉」）
+- 桌面与 headless screencast 都加 10 分钟硬上限自动停止
+- 扩展 0.1.86
+
 ### Added（headless screencast）
 
 - headless 支持 `chrome_screencast start/status/stop`：CDP 帧 → 写 `latest.jpg`/meta，`op:"viewer"` 一样可看实时画面

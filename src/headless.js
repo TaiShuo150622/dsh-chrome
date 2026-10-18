@@ -1156,6 +1156,11 @@ export class HeadlessDriver {
           ? Math.max(1, Math.min(10, Math.trunc(params.everyNthFrame)))
           : 2
         tab.screencast = { active: true, format, frames: 0, startedAt: Date.now(), lastAt: null }
+        tab.screencast.timer = setTimeout(() => {
+          this.cdp?.send('Page.stopScreencast', {}, tab.sessionId).catch(() => {})
+          tab.screencast = null
+        }, 10 * 60 * 1000)
+        tab.screencast.timer.unref?.()
         try {
           await this.cdp.send('Page.startScreencast', { format, quality, everyNthFrame, maxWidth: 1280, maxHeight: 800 }, tab.sessionId)
         } catch (error) {
@@ -1167,6 +1172,7 @@ export class HeadlessDriver {
       case 'tab.screencast_stop': {
         const tab = await this.ensureTab(owner, params.tabId)
         const state = tab.screencast
+        if (state?.timer) clearTimeout(state.timer)
         await this.cdp.send('Page.stopScreencast', {}, tab.sessionId).catch(() => {})
         tab.screencast = null
         return {

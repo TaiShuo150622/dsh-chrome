@@ -62,7 +62,7 @@ Profile 持久保存（`~/.dsh/cache/dsh-chrome/headless/profile`），但**默�
 | `chrome_upload` | ✅ `DOM.setFileInputFiles`（ref 或 selector；文件在 provider 端先校验存在） |
 | `chrome_download` | ✅ `Browser.setDownloadBehavior` + download 事件；文件落 `~/.dsh/cache/dsh-chrome/headless/downloads/` |
 | `chrome_resume` | ✅ no-op（headless 没有前台暂停语义） |
-| `chrome_screencast` | ✅ CDP Page.startScreencast → 写 `latest.jpg`/meta；配合 `op:"viewer"` 可看 headless 实时画面 |
+| `chrome_screencast` | ✅ CDP Page.startScreencast → 写 `latest.jpg`/meta；配合 `op:"viewer"` 可看 headless 实时画面；10 分钟硬上限自动停 |
 | `chrome_close_session` | ✅ 关闭该 owner 的 headless tabs |
 
 实测（桌面 Chrome 未受任何影响）：

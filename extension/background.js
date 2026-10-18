@@ -94,6 +94,22 @@ async function tabExists(tabId) {
   }
 }
 
+async function syncTabsFromGroup(entry) {
+  if (entry?.groupId == null) return
+  try {
+    const groupTabs = await chrome.tabs.query({ groupId: entry.groupId })
+    const ids = groupTabs.map((tab) => tab.id).filter((id) => Number.isFinite(id))
+    const changed = ids.some((id) => !entry.tabIds.includes(id)) || entry.tabIds.some((id) => !ids.includes(id))
+    if (!changed) return
+    entry.tabIds = ids
+    if (entry.activeTabId != null && !ids.includes(entry.activeTabId)) entry.activeTabId = ids[0] ?? null
+    if (entry.activeTabId == null && ids.length) entry.activeTabId = ids[0]
+    await saveSessions()
+  } catch {
+    // keep stored ids
+  }
+}
+
 async function getSessionEntry(owner) {
   const sessions = await loadSessions()
   const key = ownerKey(owner)
@@ -352,6 +368,7 @@ async function closeSessionTabs(owner) {
   const key = ownerKey(owner)
   const entry = sessions[key]
   if (!entry) return { closed: 0 }
+  await syncTabsFromGroup(entry)
   let closed = 0
   for (const id of entry.tabIds) {
     try {
@@ -1001,6 +1018,16 @@ async function startScreencast(owner, params) {
     // command promise is still pending, and an unacked first frame stalls the
     // whole screencast (Chrome sends no further frames until ack).
     session.screencast = { active: true, format, frames: 0, startedAt: Date.now(), lastAt: null }
+    session.screencast.timer = setTimeout(() => {
+      try {
+        chrome.debugger.sendCommand(session.target, 'Page.stopScreencast').catch(() => {})
+      } catch {
+        // target already gone
+      }
+      session.screencast = null
+      diag('screencast-auto-stop', { owner: ownerShort(owner), tabId })
+    }, 10 * 60 * 1000)
+    session.screencast.timer.unref?.()
     try {
       await chrome.debugger.sendCommand(session.target, 'Page.startScreencast', {
         format,
@@ -1022,6 +1049,7 @@ async function stopScreencast(owner) {
   const tabId = await resolveOwnedTabId(owner)
   return withDebugger(tabId, async (session) => {
     const state = session.screencast
+    if (state?.timer) clearTimeout(state.timer)
     await chrome.debugger.sendCommand(session.target, 'Page.stopScreencast').catch(() => {})
     session.screencast = null
     diag('screencast-stop', { owner: ownerShort(owner), tabId, frames: state?.frames || 0 })
@@ -2202,6 +2230,7 @@ async function tabs(owner, params) {
   const op = String(params.op || 'list')
   const entry = await getSessionEntry(owner)
   if (op === 'list') {
+    await syncTabsFromGroup(entry)
     const list = []
     for (const id of entry.tabIds) {
       try {
