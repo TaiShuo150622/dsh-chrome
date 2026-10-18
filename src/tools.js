@@ -97,9 +97,23 @@ function validateHttpUrl(raw) {
   return url.toString()
 }
 
+// Headless driver errors are plain Error objects carrying a machine-readable
+// `code` (src/headless.js). Keep that code: collapsing every non-BridgeError into
+// INTERNAL hides REF_NOT_FOUND / TAB_NOT_FOUND / TIMEOUT / CAPTURE_LOST from the
+// model, which needs them to choose the next step. Desktop extension replies
+// already arrive as BridgeError instances, so desktop behavior is unchanged.
+// Node system errors (fs/net) carry syscall/errno and are not contract codes;
+// they keep the historical INTERNAL code.
 function normalize(error) {
   if (error instanceof BridgeError) return error
-  const wrapped = new BridgeError('INTERNAL', error?.message || String(error))
+  const code =
+    typeof error?.code === 'string' &&
+    /^[A-Z][A-Z0-9_]{1,63}$/.test(error.code) &&
+    !error?.syscall &&
+    typeof error?.errno !== 'number'
+      ? error.code
+      : 'INTERNAL'
+  const wrapped = new BridgeError(code, error?.message || String(error))
   wrapped.cause = error
   return wrapped
 }
@@ -229,9 +243,13 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     writeAudit(exec, toolName, action, site, 'allowed', 'approval')
   }
 
-  async function hardConfirmAsk(exec, toolName, { header, question, detail, timeoutMs }) {
-    const site = await currentSite(exec)
-    const auditConfirm = (decision, reason) => writeAudit(exec, toolName, header, site, decision, reason)
+  async function hardConfirmAsk(exec, toolName, { header, question, detail, timeoutMs, site }) {
+    // `site` defaults to the current page. Pass `site: null` for a confirmation
+    // that must not resolve the page first: on headless, browser.site lazily
+    // creates an about:blank tab, and chrome_headless_login start refuses to run
+    // while any tab is open.
+    const confirmedSite = site === undefined ? await currentSite(exec) : site
+    const auditConfirm = (decision, reason) => writeAudit(exec, toolName, header, confirmedSite, decision, reason)
     const service = userQuestions?.()
     if (!service || typeof service.ask !== 'function') {
       throw new BridgeError('APPROVAL_DENIED', 'hard confirmation service is unavailable; refusing sensitive action')
@@ -860,18 +878,38 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
     async execute(args, exec) {
       const value = await call('tab.pdf', { tabId: args?.tabId, owner: ownerOf(exec) }, 60000)
-      if (!value?.dataBase64) throw new BridgeError('INTERNAL', 'extension returned no pdf data')
-      const cacheDir = path.join(
-        process.env.DSH_HOME || path.join(os.homedir(), '.dsh'),
-        'cache',
-        'dsh-chrome',
-        'pdfs',
-      )
+      const cacheDir = path.join(dshHome(), 'cache', 'dsh-chrome', 'pdfs')
       const target = args?.path ? String(args.path) : path.join(cacheDir, `page-${Date.now()}.pdf`)
-      await fsp.mkdir(path.dirname(target), { recursive: true })
-      const bytes = Buffer.from(value.dataBase64, 'base64')
-      await fsp.writeFile(target, bytes, { mode: 0o600 })
-      return { path: target, bytes: bytes.length }
+      // Desktop extension: the payload comes back inline and the tool writes it.
+      if (value?.dataBase64) {
+        await fsp.mkdir(path.dirname(target), { recursive: true })
+        const bytes = Buffer.from(value.dataBase64, 'base64')
+        await fsp.writeFile(target, bytes, { mode: 0o600 })
+        return { path: target, bytes: bytes.length }
+      }
+      // Headless driver: Page.printToPDF already wrote the file and returns
+      // { path, bytes }. Move it to the requested/default target so both
+      // backends answer with one contract and no orphan copy is left behind in
+      // the headless screenshot directory.
+      const source = typeof value?.path === 'string' && value.path ? value.path : null
+      if (source) {
+        let stat = null
+        try {
+          stat = await fsp.stat(source)
+        } catch {
+          stat = null
+        }
+        if (stat?.isFile()) {
+          if (path.resolve(source) === path.resolve(target)) return { path: target, bytes: stat.size }
+          await fsp.mkdir(path.dirname(target), { recursive: true })
+          await fsp.copyFile(source, target)
+          await fsp.chmod(target, 0o600).catch(() => {})
+          const copied = await fsp.stat(target)
+          await fsp.rm(source, { force: true }).catch(() => {})
+          return { path: target, bytes: copied.size }
+        }
+      }
+      throw new BridgeError('INTERNAL', 'browser backend returned no pdf data')
     },
   },
   {
@@ -1440,6 +1478,9 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
             (driver.loginProfile || '~/.dsh/cache/dsh-chrome/headless/profile') +
             '），cookie/登录态会落在这个 profile 里，之后 backend:"headless" 会复用它；不影响你日常 Chrome。完成登录后务必调用 op:"finish" 关掉窗口。',
           timeoutMs: evaluateConfirmTimeoutMs,
+          // Do not resolve browser.site here: a headless lookup would create an
+          // about:blank tab and loginStart refuses while any tab is open.
+          site: null,
         })
         return driver.loginStart({ url: args?.url })
       }
@@ -1615,10 +1656,21 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   }
 
   // ---------------------------------------------------------- 4i. shots
+  // Screenshot history lives in two places: the desktop host writes to
+  // cache/dsh-chrome/screenshots, the headless driver to
+  // cache/dsh-chrome/headless/screenshots. chrome_shots reads both so the
+  // history is backend-independent.
+  function screenshotDirectories() {
+    return [
+      path.join(dshHome(), 'cache', 'dsh-chrome', 'screenshots'),
+      path.join(dshHome(), 'cache', 'dsh-chrome', 'headless', 'screenshots'),
+    ]
+  }
+
   list.push({
     name: 'chrome_shots',
     description:
-      'List or read screenshot history saved by this provider (~/.dsh/cache/dsh-chrome/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under that directory) as an image attachment.',
+      'List or read screenshot history saved by this provider (desktop ~/.dsh/cache/dsh-chrome/screenshots and headless ~/.dsh/cache/dsh-chrome/headless/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under either directory) as an image attachment.',
     parameters: {
       type: 'object',
       properties: {
@@ -1632,6 +1684,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     output: {
       schema: outputSchema({
         directory: { type: 'string' },
+        directories: { type: 'array', items: { type: 'string' } },
         entries: { type: 'array', items: { type: 'object', additionalProperties: true } },
         path: { type: 'string' },
         width: {},
@@ -1653,58 +1706,66 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       },
     },
     async execute(args) {
-      const directory = path.join(dshHome(), 'cache', 'dsh-chrome', 'screenshots')
+      const directories = screenshotDirectories()
+      const directory = directories[0]
       const op = String(args?.op || 'list')
       if (op === 'list') {
         const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.min(100, Number(args.limit))) : 20
-        let names = []
-        try {
-          names = await fsp.readdir(directory)
-        } catch {
-          names = []
-        }
         const entries = []
-        for (const name of names) {
-          if (!/\.(png|jpe?g)$/i.test(name)) continue
-          const file = path.join(directory, name)
+        const seen = new Set()
+        for (const root of directories) {
+          let names = []
           try {
-            const stat = await fsp.stat(file)
-            const entry = {
-              name,
-              path: file,
-              bytes: stat.size,
-              mtime: stat.mtime.toISOString(),
-              mtimeMs: stat.mtimeMs,
-            }
-            if (/\.png$/i.test(name)) {
-              try {
-                const head = Buffer.alloc(24)
-                const handle = await fsp.open(file, 'r')
-                try {
-                  await handle.read(head, 0, 24, 0)
-                } finally {
-                  await handle.close()
-                }
-                if (head.readUInt32BE(0) === 0x89504e47) {
-                  entry.width = head.readUInt32BE(16)
-                  entry.height = head.readUInt32BE(20)
-                }
-              } catch {
-                // dimensions optional
-              }
-            }
-            entries.push(entry)
+            names = await fsp.readdir(root)
           } catch {
-            // skip unreadable file
+            continue
+          }
+          for (const name of names) {
+            if (!/\.(png|jpe?g)$/i.test(name)) continue
+            const file = path.join(root, name)
+            if (seen.has(file)) continue
+            seen.add(file)
+            try {
+              const stat = await fsp.stat(file)
+              const entry = {
+                name,
+                path: file,
+                bytes: stat.size,
+                mtime: stat.mtime.toISOString(),
+                mtimeMs: stat.mtimeMs,
+              }
+              if (/\.png$/i.test(name)) {
+                try {
+                  const head = Buffer.alloc(24)
+                  const handle = await fsp.open(file, 'r')
+                  try {
+                    await handle.read(head, 0, 24, 0)
+                  } finally {
+                    await handle.close()
+                  }
+                  if (head.readUInt32BE(0) === 0x89504e47) {
+                    entry.width = head.readUInt32BE(16)
+                    entry.height = head.readUInt32BE(20)
+                  }
+                } catch {
+                  // dimensions optional
+                }
+              }
+              entries.push(entry)
+            } catch {
+              // skip unreadable file
+            }
           }
         }
         entries.sort((a, b) => b.mtimeMs - a.mtimeMs)
-        return { directory, entries: entries.slice(0, limit) }
+        return { directory, directories, entries: entries.slice(0, limit) }
       }
       if (op === 'read') {
         const target = path.resolve(String(args?.path || ''))
-        const root = path.resolve(directory)
-        if (!target.startsWith(`${root}${path.sep}`)) {
+        const root = directories
+          .map((candidate) => path.resolve(candidate))
+          .find((candidate) => target.startsWith(`${candidate}${path.sep}`))
+        if (!root) {
           throw new BridgeError('INVALID_ARGUMENT', 'path must be inside the screenshots directory')
         }
         const data = await fsp.readFile(target)
@@ -1727,7 +1788,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         } catch {
           image = null
         }
-        return { directory, path: target, bytes: data.byteLength, width, height, image }
+        return { directory: root, path: target, bytes: data.byteLength, width, height, image }
       }
       throw new BridgeError('INVALID_ARGUMENT', `unknown shots op: ${op}`)
     },

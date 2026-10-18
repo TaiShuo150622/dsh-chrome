@@ -513,12 +513,12 @@ try {
     assert.equal(out.text.trim(), 'hello smoke')
   })
 
-  await expectError('chrome_click with an unknown ref fails', () => run('chrome_click', { ref: 999999 }), {
-    code: 'INTERNAL',
+  await expectError('chrome_click with an unknown ref fails with REF_NOT_FOUND', () => run('chrome_click', { ref: 999999 }), {
+    code: 'REF_NOT_FOUND',
     match: /no element for ref 999999/,
   })
 
-  await expectError('headless driver keeps the REF_NOT_FOUND code the tool layer drops', () => raw('tab.click', { ref: 999999 }), {
+  await expectError('headless driver keeps REF_NOT_FOUND and the tool layer now preserves it', () => raw('tab.click', { ref: 999999 }), {
     code: 'REF_NOT_FOUND',
   })
 
@@ -576,7 +576,7 @@ try {
   await expectError('chrome_select rejects an option that does not exist', () => {
     const select = snapshot.controls.find((control) => control.tag === 'select')
     return run('chrome_select', { ref: select.ref, value: 'three' })
-  }, { code: 'INTERNAL', match: /option not found: three/ })
+  }, { code: 'INVALID_ARGUMENT', match: /option not found: three/ })
 
   await check('chrome_drag drags between refs and the drop handler runs', async () => {
     const from = snapshot.controls.find((control) => control.label === 'drag-src')
@@ -665,7 +665,7 @@ try {
   })
 
   await expectError('chrome_wait times out with a bounded timeout', () => run('chrome_wait', { until: 'selector', selector: '#missing', timeoutMs: 300 }), {
-    code: 'INTERNAL',
+    code: 'TIMEOUT',
     match: /wait timed out/,
   })
 
@@ -731,36 +731,35 @@ try {
     assert.ok(fs.readFileSync(value.path).subarray(0, 5).toString('latin1') === '%PDF-')
   })
 
-  // The chrome_pdf tool expects { dataBase64 } from the desktop extension; the
-  // headless driver writes the file itself and returns { path, bytes }. This is
-  // a known headless bug (see docs/SANDBOX-QA.md). The check is written so a
-  // fixed tool passes cleanly instead of failing the matrix.
-  let pdfTool = null
-  let pdfToolError = null
-  try {
-    pdfTool = await run('chrome_pdf')
-  } catch (error) {
-    pdfToolError = error
-  }
-  if (pdfTool) {
-    assert.ok(pdfTool.path && fs.existsSync(pdfTool.path), `fixed chrome_pdf returned no file: ${JSON.stringify(pdfTool)}`)
-    assert.equal(fs.readFileSync(pdfTool.path).subarray(0, 5).toString('latin1'), '%PDF-')
-    checks += 1
-  } else {
-    assert.equal(pdfToolError.code, 'INTERNAL')
-    assert.match(String(pdfToolError.message), /no pdf data/)
-    gap(
-      'chrome_pdf (headless) always fails',
-      `tool requires value.dataBase64 but the headless driver returns { path, bytes }; observed ${pdfToolError.code}: ${pdfToolError.message}`,
+  // P1-1 fixed: the tool accepts both contracts — desktop { dataBase64 } and
+  // headless { path, bytes } (the driver already wrote the file).
+  await check('chrome_pdf returns the headless driver-written PDF as a usable path', async () => {
+    const value = await run('chrome_pdf')
+    assert.ok(value.path && fs.existsSync(value.path), `chrome_pdf returned no file: ${JSON.stringify(value)}`)
+    assert.ok(
+      value.path.includes(path.join('cache', 'dsh-chrome', 'pdfs')),
+      `default PDF path is not in the pdfs cache: ${value.path}`,
     )
-  }
+    assert.equal(fs.readFileSync(value.path).subarray(0, 5).toString('latin1'), '%PDF-')
+    assert.equal(fs.statSync(value.path).size, value.bytes)
+  })
+
+  await check('chrome_pdf honors an explicit output path on headless', async () => {
+    const target = path.join(home, 'requested-pdfs', 'smoke.pdf')
+    const value = await run('chrome_pdf', { path: target })
+    assert.equal(value.path, target)
+    assert.equal(fs.readFileSync(target).subarray(0, 5).toString('latin1'), '%PDF-')
+    assert.equal(fs.statSync(target).size, value.bytes)
+  })
 
   // ------------------------------------------------------------------ shots
+  let desktopShotPath = null
   await check('chrome_shots lists and reads a desktop-style screenshot', async () => {
     const directory = path.join(home, 'cache', 'dsh-chrome', 'screenshots')
     fs.mkdirSync(directory, { recursive: true })
     const copied = path.join(directory, `desktop-fixture-${Date.now()}.png`)
     fs.copyFileSync(screenshot.path, copied)
+    desktopShotPath = copied
     const listed = await run('chrome_shots', { op: 'list' })
     const entry = listed.entries.find((item) => item.name === path.basename(copied))
     assert.ok(entry, `copied screenshot not listed: ${JSON.stringify(listed.entries)}`)
@@ -776,20 +775,28 @@ try {
     match: /inside the screenshots directory/,
   })
 
-  // Headless screenshots are written under .../headless/screenshots, which the
-  // provider-side chrome_shots tool never scans. Prove the artifact exists and
-  // is simply invisible to the tool.
-  const headlessShots = await run('chrome_shots', { op: 'list', limit: 100 })
-  const headlessVisible = headlessShots.entries.some((entry) => entry.path === screenshot.path)
-  assert.ok(fs.existsSync(screenshot.path))
-  if (!headlessVisible) {
-    gap(
-      'chrome_shots does not see headless screenshots',
-      `chrome_shots scans ${path.join(home, 'cache', 'dsh-chrome', 'screenshots')} but the headless driver writes to ${path.join(home, 'cache', 'dsh-chrome', 'headless', 'screenshots')}`,
+  // P1-4 fixed: the headless driver writes to .../headless/screenshots, and
+  // chrome_shots now scans both roots for list and read.
+  await check('chrome_shots lists and reads headless screenshots too', async () => {
+    assert.ok(fs.existsSync(screenshot.path), `headless screenshot is missing: ${screenshot.path}`)
+    const listed = await run('chrome_shots', { op: 'list', limit: 100 })
+    assert.ok(
+      listed.entries.some((entry) => entry.path === desktopShotPath),
+      `desktop screenshot disappeared from the merged list: ${JSON.stringify(listed.entries)}`,
     )
-  } else {
-    checks += 1
-  }
+    const entry = listed.entries.find((item) => item.path === screenshot.path)
+    assert.ok(entry, `headless screenshot not listed: ${JSON.stringify(listed.entries)}`)
+    assert.equal(entry.width, screenshot.width)
+    assert.equal(entry.height, screenshot.height)
+    assert.ok(
+      listed.directories.includes(path.join(home, 'cache', 'dsh-chrome', 'headless', 'screenshots')),
+      `headless directory missing from chrome_shots list: ${JSON.stringify(listed.directories)}`,
+    )
+    const read = await run('chrome_shots', { op: 'read', path: screenshot.path })
+    assert.equal(read.bytes, fs.statSync(screenshot.path).size)
+    assert.equal(read.width, screenshot.width)
+    assert.ok(read.image?.attachmentId)
+  })
 
   // --------------------------------------------------------------- selection
   await check('chrome_selection reads a document selection', async () => {
@@ -920,7 +927,7 @@ try {
   })
 
   await expectError('chrome_capture_requests reports a lost capture id', () => run('chrome_capture_requests', { captureId: 'hl-does-not-exist' }), {
-    code: 'INTERNAL',
+    code: 'CAPTURE_LOST',
     match: /is gone/,
   })
 
@@ -986,7 +993,7 @@ try {
   })
 
   await expectError('chrome_tabs close rejects a tab this session does not own', () => run('chrome_tabs', { op: 'close', tabId: 999999 }), {
-    code: 'INTERNAL',
+    code: 'TAB_NOT_FOUND',
     match: /not owned by this session/,
   })
 
@@ -995,7 +1002,7 @@ try {
   })
 
   await expectError('chrome_snapshot rejects an unknown tab id', () => run('chrome_snapshot', { tabId: 999999 }), {
-    code: 'INTERNAL',
+    code: 'TAB_NOT_FOUND',
     match: /tab 999999 is not owned/,
   })
 
@@ -1052,9 +1059,9 @@ try {
     },
   })
   const loginRouter = new BackendRouter({ desktop: fakeDesktop, headless: loginDriver, headlessSupported: true })
-  // hardConfirmAsk resolves the current site before asking. A real driver would
-  // auto-create a tab for that, and loginStart refuses while any tab is open, so
-  // this stand-in answers browser.site without touching the driver.
+  // start's hard confirmation now passes site:null, so this stub's browser.site
+  // branch is not used. It stays as a safety net: if a regression resolves the
+  // site again, the real-driver assertion further down catches the extra tab.
   const loginBridge = {
     connected: false,
     headless: loginDriver,
@@ -1119,11 +1126,10 @@ try {
     assert.equal(after.tabs.length, 0)
   })
 
-  // ...and it still cannot work with zero tabs: hardConfirmAsk resolves
-  // browser.site first, the headless driver auto-creates a tab for that lookup,
-  // and loginStart would then refuse because tabs.size > 0. Spy on loginStart
-  // so this check can never launch a visible window (even if the bug is fixed
-  // later): it records the tab count and refuses before spawning.
+  // P1-3 fixed: start's hard confirmation passes site:null, so browser.site is
+  // never resolved and no about:blank tab is created before loginStart. Spy on
+  // loginStart so this check can never launch a visible window: it records the
+  // tab count at the exact call site and refuses before spawning.
   const realLoginStart = driver.loginStart
   let loginStartTabs = null
   driver.loginStart = async function loginStartSpy() {
@@ -1134,19 +1140,18 @@ try {
   }
   try {
     await expectError(
-      'chrome_headless_login start reaches loginStart with the tab created by its own confirmation',
+      'chrome_headless_login start reaches loginStart after close_session',
       () => run('chrome_headless_login', { op: 'start' }),
       { code: 'SANDBOX_LOGIN_SPY', match: /refusing before spawn/ },
     )
   } finally {
     driver.loginStart = realLoginStart
   }
-  assert.equal(loginStartTabs, 1, `loginStart was reached with tabs=${loginStartTabs}, expected the confirmation-created tab`)
+  await check('login start confirmation no longer creates a tab before loginStart', () => {
+    assert.equal(loginStartTabs, 0, `loginStart was reached with tabs=${loginStartTabs}, expected 0`)
+    assert.equal(driver.tabs.size, 0)
+  })
   assert.equal(driver.loginStatus().running, false)
-  gap(
-    'chrome_headless_login start on backend:headless',
-    'the hard confirmation resolves currentSite via browser.site first; the headless driver auto-creates an about:blank tab for that lookup, so loginStart always sees tabs.size > 0 and would throw HEADLESS_BUSY — even after chrome_close_session. The lifecycle test above only passes because its bridge stubs browser.site.',
-  )
   await run('chrome_close_session')
 
   // --------------------------------------------------------------- coverage

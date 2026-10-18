@@ -5,6 +5,7 @@
 import { spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
+import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
@@ -280,6 +281,116 @@ try {
   outsideCode = error?.code
 }
 check('chrome_shots rejects paths outside the screenshots dir', outsideCode === 'INVALID_ARGUMENT')
+
+// P1-4: headless screenshots live under cache/dsh-chrome/headless/screenshots;
+// chrome_shots scans both roots for list and read.
+const headlessShotsDir = path.join(home, 'cache', 'dsh-chrome', 'headless', 'screenshots')
+await fsp.mkdir(headlessShotsDir, { recursive: true })
+const headlessShotFile = path.join(headlessShotsDir, 'headless-shot.png')
+await fsp.writeFile(headlessShotFile, tinyPng)
+const mergedShots = await byName.chrome_shots.execute({ op: 'list', limit: 10 }, exec())
+check(
+  'chrome_shots lists desktop and headless screenshots',
+  mergedShots?.entries?.some((entry) => entry.path === shotFile) &&
+    mergedShots?.entries?.some((entry) => entry.path === headlessShotFile),
+)
+const headlessShotRead = await byName.chrome_shots.execute({ op: 'read', path: headlessShotFile }, exec())
+check('chrome_shots reads a headless screenshot', headlessShotRead?.bytes === tinyPng.length && headlessShotRead?.width === 1)
+
+// P1-1: the headless driver returns { path, bytes } for an already-written PDF.
+let pdfSeq = 0
+const pdfSources = []
+const pdfBridge = {
+  async call(method) {
+    if (method === 'tab.pdf') {
+      pdfSeq += 1
+      const file = path.join(home, `driver-pdf-${pdfSeq}.pdf`)
+      await fsp.writeFile(file, Buffer.from(`%PDF-1.4\n%%EOF\n${pdfSeq}\n`))
+      pdfSources.push(file)
+      return { path: file, bytes: (await fsp.stat(file)).size }
+    }
+    throw new Error(`pdf fake does not implement ${method}`)
+  },
+}
+const pdfTools = chromeTools({ bridge: pdfBridge, attachments: () => null, assets: () => ({}), approval: () => null })
+const pdfTool = pdfTools.find((definition) => definition.name === 'chrome_pdf')
+const requestedPdf = path.join(home, 'pdfs', 'requested.pdf')
+const pdfMoved = await pdfTool.execute({ path: requestedPdf }, exec())
+check('chrome_pdf accepts the headless { path, bytes } envelope', pdfMoved?.path === requestedPdf && fs.existsSync(requestedPdf))
+check('chrome_pdf moves the driver PDF to the requested path', !fs.existsSync(pdfSources[0]))
+check('chrome_pdf reports the copied byte count', pdfMoved?.bytes === fs.statSync(requestedPdf).size)
+const defaultPdf = await pdfTool.execute({}, exec())
+check(
+  'chrome_pdf default path lives in the pdfs cache',
+  defaultPdf?.path?.includes(path.join('cache', 'dsh-chrome', 'pdfs')) && fs.existsSync(defaultPdf.path),
+)
+
+// P1-2: a non-BridgeError driver code is preserved; Node system errors stay INTERNAL.
+const codedBridge = {
+  async call(method) {
+    if (method === 'browser.site') return { origin: 'http://127.0.0.1:8765', url: 'http://127.0.0.1:8765/', title: 'P2', tabId: 7 }
+    const error = new Error('no element for ref 999999')
+    error.code = 'REF_NOT_FOUND'
+    throw error
+  },
+}
+const codedTools = chromeTools({ bridge: codedBridge, attachments: () => null, assets: () => ({}), approval: () => null })
+let codedClickCode = null
+try {
+  await codedTools.find((definition) => definition.name === 'chrome_click').execute({ ref: 999999 }, exec())
+} catch (error) {
+  codedClickCode = error?.code
+}
+check('driver error code survives the tool layer', codedClickCode === 'REF_NOT_FOUND')
+
+const systemErrorBridge = {
+  async call(method) {
+    if (method === 'browser.site') return { origin: 'http://127.0.0.1:8765', url: 'http://127.0.0.1:8765/', title: 'P2', tabId: 7 }
+    const error = new Error('ENOENT: no such file or directory')
+    error.code = 'ENOENT'
+    error.errno = -2
+    error.syscall = 'open'
+    throw error
+  },
+}
+const systemErrorTools = chromeTools({ bridge: systemErrorBridge, attachments: () => null, assets: () => ({}), approval: () => null })
+let systemErrorCode = null
+try {
+  await systemErrorTools.find((definition) => definition.name === 'chrome_click').execute({ ref: 1 }, exec())
+} catch (error) {
+  systemErrorCode = error?.code
+}
+check('node system errors still map to INTERNAL', systemErrorCode === 'INTERNAL')
+
+// P1-3: start's hard confirmation must not resolve browser.site, because that
+// lookup lazily creates an about:blank tab on the headless driver and loginStart
+// refuses while any tab is open.
+let loginSiteCalls = 0
+const loginDriverStub = {
+  loginProfile: '/tmp/p2-login-profile',
+  loginStart: async () => ({ running: true, alreadyRunning: false, pid: 4242, profile: '/tmp/p2-login-profile' }),
+  loginFinish: async () => ({ stopped: true, running: false }),
+  loginStatus: () => ({ running: false, profile: '/tmp/p2-login-profile' }),
+}
+const loginBridgeStub = {
+  headless: loginDriverStub,
+  async call(method) {
+    loginSiteCalls += 1
+    throw new Error(`login fake does not implement ${method}`)
+  },
+}
+const loginTools = chromeTools({
+  bridge: loginBridgeStub,
+  attachments: () => null,
+  assets: () => ({}),
+  approval: () => null,
+  userQuestions: () => ({ ask: async () => ({ answers: [{ id: 'confirm', selected: ['允许一次'] }] }) }),
+  config: () => ({ evaluateConfirmTimeoutMs: 5000 }),
+})
+const loginStarted = await loginTools
+  .find((definition) => definition.name === 'chrome_headless_login')
+  .execute({ op: 'start' }, exec())
+check('headless login start skips browser.site', loginSiteCalls === 0 && loginStarted?.running === true)
 
 // D3: chrome_resume dispatches to the extension
 const resumeValue = await byName.chrome_resume.execute({}, exec())
