@@ -11,6 +11,15 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.79] - 2026-10-17
+
+### Fixed（P0 可靠性 R1：自动重载竞态自愈）
+
+- **worker 每次启动都重建 reconnect/watchdog alarm**：`chrome.runtime.reload()` 会清掉 alarm，而旧代码只在 onInstalled/onStartup 建——reload 后 SW 可能永远不再被唤醒（两次断连事故的直接原因）
+- **自愈计数在连接成功后归零**：之前 `dshSelfHeal.count` 只增不减，累计 5 次失败后自动重载永久失效；现在首条 native 消息即重置，并在内存里清空失败窗口
+- onInstalled 里补 `initActiveWindows`（缩进修正）；startup 也初始化 active window
+- extension-logic 新增回归：worker 启动后存在 `dsh-chrome-reconnect` alarm；首条 native 消息写入 `dshSelfHeal.count=0`
+
 ## [0.1.78] - 2026-10-17
 
 ### Added / Fixed（D2/D3 真机验证补充）

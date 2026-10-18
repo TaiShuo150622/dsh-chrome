@@ -420,6 +420,22 @@ async function maybeSelfHeal() {
   }, 1200)
 }
 
+let selfHealResetAt = 0
+
+function notePortAlive() {
+  nativeFailureTimes = []
+  const now = Date.now()
+  if (now - selfHealResetAt < 5000) return
+  selfHealResetAt = now
+  try {
+    chrome.storage.local
+      .set({ dshSelfHeal: { count: 0, at: now } })
+      .catch(() => {})
+  } catch {
+    // storage unavailable; in-memory reset is still useful
+  }
+}
+
 // ------------------------------------------------------------ native messaging
 function ensurePort() {
   diag('ensure-port-enter', { hasPort: Boolean(port), connecting: Boolean(connecting) })
@@ -455,6 +471,7 @@ function ensurePort() {
   }
   nativePort.onMessage.addListener((message) => {
     lastNativeSignalAt = Date.now()
+    notePortAlive()
     if (message?.id == null) {
       if (message?.event === 'ext.changed') {
         log('extension files changed; reloading', message.params?.file || '')
@@ -3554,7 +3571,11 @@ chrome.runtime.onConnect.addListener((keepalivePort) => {
   })
 })
 // Every service-worker start (install/startup/event wake) should try to
-// re-open the native port; this is the last line of the reconnect defense.
+// re-open the native port and (re)create the periodic alarms. Runtime reloads
+// clear alarms, so this cannot live only in onInstalled/onStartup: after a
+// reload race a dead worker with no alarm would never wake again.
+ensureReconnectAlarm()
+initActiveWindows().catch(() => {})
 if (!port) forceReconnect().catch(() => {})
 
 chrome.alarms.onAlarm.addListener((alarm) => {

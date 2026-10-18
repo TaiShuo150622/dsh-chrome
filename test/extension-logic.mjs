@@ -36,6 +36,8 @@ let nextTabId = 100
 
 const runtimeMessageListeners = []
 const debuggerDetachListeners = []
+const alarmCreates = []
+const storageSets = []
 const tabRemovedListeners = []
 const tabGroupUpdates = []
 const tabActivatedListeners = []
@@ -93,7 +95,9 @@ const chrome = {
         if (key === 'dshSessions') return { dshSessions: { s1: { tabIds: [7], groupId: 5, activeTabId: 7 } } }
         return {}
       },
-      async set() {},
+      async set(value) {
+        storageSets.push(value)
+      },
     },
   },
   tabs: {
@@ -146,7 +150,12 @@ const chrome = {
       tabGroupUpdates.push({ id, ...props })
     },
   },
-  alarms: { create() {}, onAlarm: { addListener() {} } },
+  alarms: {
+    create(name, info) {
+      alarmCreates.push({ name, info })
+    },
+    onAlarm: { addListener() {} },
+  },
   offscreen: {
     async hasDocument() {
       return false
@@ -251,6 +260,18 @@ vm.createContext(sandbox)
 vm.runInContext(source, sandbox, { filename: 'background.js' })
 
 check('background.js evaluates with mocked chrome', typeof sandbox.handleRequest === 'function')
+check(
+  'worker start recreates the reconnect alarm (runtime reload clears alarms)',
+  alarmCreates.some((call) => call.name === 'dsh-chrome-reconnect'),
+)
+
+for (const listener of nativePortListeners.message) listener({ event: 'dsh.ping' })
+check(
+  'first native message resets the self-heal attempt counter',
+  storageSets.some((value) => value?.dshSelfHeal?.count === 0),
+)
+
+
 const PAGE_ACTIONS = vm.runInContext('PAGE_ACTIONS', sandbox)
 check(
   'PAGE_ACTIONS has the expected page actions',
