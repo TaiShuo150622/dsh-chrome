@@ -42,9 +42,17 @@ const SUPPORTED = new Set([
   'tab.html',
   'tab.text',
   'tab.selection',
+  'tab.console',
+  'tab.network',
+  'tab.upload',
+  'tab.resume',
+  'browser.downloads',
   'tab.close_session',
   'tab.debug_diag',
 ])
+
+const DEFAULT_IDLE_MINUTES = Number(process.env.DSH_HEADLESS_IDLE_MINUTES) || 5
+const MAX_TABS = Number(process.env.DSH_HEADLESS_MAX_TABS) || 12
 
 function error(code, message) {
   const err = new Error(message)
@@ -309,6 +317,13 @@ export class HeadlessDriver {
     this.nextTabId = 1
     this.startPromise = null
     this.screenshotDir = path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'screenshots')
+    this.downloadDir = path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'downloads')
+    this.bySession = new Map()
+    this.consoleBuffers = new Map()
+    this.downloads = []
+    this.downloadByGuid = new Map()
+    this.idleTimer = null
+    this.lastActivity = Date.now()
   }
 
   get connected() {
@@ -325,6 +340,34 @@ export class HeadlessDriver {
       }
       const profileDir = path.join(this.home || '.', 'cache', 'dsh-chrome', 'headless', 'profile')
       await fsp.mkdir(profileDir, { recursive: true })
+      const activePortPath = path.join(profileDir, 'DevToolsActivePort')
+
+      // Reuse a headless Chrome left over from a previous provider instance
+      // (e.g. provider reload) instead of racing a second process on the same
+      // profile. A stale DevToolsActivePort is removed before a fresh launch.
+      try {
+        const existing = fs.readFileSync(activePortPath, 'utf8').trim().split('\n')
+        if (existing.length >= 2) {
+          const existingCdp = new Cdp(`ws://127.0.0.1:${existing[0]}${existing[1]}`)
+          const version = await existingCdp.connect().then(() => existingCdp.send('Browser.getVersion'))
+          this.cdp = existingCdp
+          this.chrome = null
+          this.browserVersion = version?.product || null
+          existingCdp.onMessage((message) => this.onCdpEvent(message))
+          await existingCdp
+            .send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: this.downloadDir, eventsEnabled: true })
+            .catch(() => {})
+          this.startIdleTimer()
+          this.logger?.info?.('headless Chrome reused: %s', this.browserVersion || 'unknown')
+          return this
+        }
+      } catch {
+        try {
+          fs.unlinkSync(activePortPath)
+        } catch {
+          // stale file already gone
+        }
+      }
       const child = spawn(
         executable,
         [
@@ -345,7 +388,6 @@ export class HeadlessDriver {
       )
       child.stderr?.on('data', (chunk) => this.logger?.debug?.('headless chrome: %s', String(chunk).trim().slice(0, 300)))
       this.chrome = child
-      const activePortPath = path.join(profileDir, 'DevToolsActivePort')
       const deadline = Date.now() + 15000
       let lines = null
       while (Date.now() < deadline) {
@@ -369,6 +411,11 @@ export class HeadlessDriver {
         this.cdp = null
         this.chrome = null
       })
+      await fsp.mkdir(this.downloadDir, { recursive: true })
+      await cdp
+        .send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: this.downloadDir, eventsEnabled: true })
+        .catch((error) => this.logger?.warn?.('headless download behavior failed: %s', error?.message || String(error)))
+      this.startIdleTimer()
       this.logger?.info?.('headless Chrome started: %s', this.browserVersion || 'unknown')
       return this
     })()
@@ -379,9 +426,73 @@ export class HeadlessDriver {
     }
   }
 
+  startIdleTimer() {
+    if (this.idleTimer) return
+    this.idleTimer = setInterval(() => {
+      if (!this.cdp) return
+      if (this.tabs.size > 0) {
+        this.lastActivity = Date.now()
+        return
+      }
+      if (Date.now() - this.lastActivity < DEFAULT_IDLE_MINUTES * 60 * 1000) return
+      this.logger?.info?.('headless Chrome idle for %s min; closing', DEFAULT_IDLE_MINUTES)
+      this.close().catch(() => {})
+    }, 30 * 1000)
+    this.idleTimer.unref?.()
+  }
+
+  noteActivity() {
+    this.lastActivity = Date.now()
+  }
+
+  recordConsole(tab, entry) {
+    if (!tab) return
+    const list = this.consoleBuffers.get(tab.tabId) || []
+    list.push({ ...entry, time: Date.now() })
+    while (list.length > 200) list.shift()
+    this.consoleBuffers.set(tab.tabId, list)
+  }
+
   onCdpEvent(message) {
-    if (message.method === 'Target.detachedFromTarget') {
-      // tab removal handled lazily
+    const sessionTab = message.sessionId ? this.bySession.get(message.sessionId) : null
+    if (message.method === 'Runtime.consoleAPICalled') {
+      const params = message.params || {}
+      const text = (params.args || [])
+        .map((arg) => (arg.value != null ? String(arg.value) : arg.description || arg.type || 'undefined'))
+        .join(' ')
+      this.recordConsole(sessionTab, { level: String(params.type || 'log'), text: text.slice(0, 2000) })
+      return
+    }
+    if (message.method === 'Runtime.exceptionThrown') {
+      const details = message.params?.exceptionDetails || {}
+      const text = details.exception?.description || details.text || 'uncaught exception'
+      this.recordConsole(sessionTab, { level: 'error', text: String(text).slice(0, 2000) })
+      return
+    }
+    if (message.method === 'Browser.downloadWillBegin') {
+      const params = message.params || {}
+      const record = {
+        guid: params.guid,
+        filename: params.suggestedFilename,
+        url: params.url,
+        state: 'inProgress',
+        bytesReceived: 0,
+        totalBytes: 0,
+        startTime: new Date().toISOString(),
+      }
+      this.downloads.unshift(record)
+      this.downloadByGuid.set(params.guid, record)
+      while (this.downloads.length > 100) this.downloads.pop()
+      return
+    }
+    if (message.method === 'Browser.downloadProgress') {
+      const params = message.params || {}
+      const record = this.downloadByGuid.get(params.guid)
+      if (record) {
+        record.state = params.state === 'completed' ? 'complete' : params.state === 'canceled' ? 'cancelled' : 'inProgress'
+        record.bytesReceived = params.receivedBytes ?? record.bytesReceived
+        record.totalBytes = params.totalBytes ?? record.totalBytes
+      }
     }
   }
 
@@ -401,7 +512,12 @@ export class HeadlessDriver {
     const attached = await this.cdp.send('Target.attachToTarget', { targetId, flatten: true })
     const sessionId = attached.sessionId
     const tabId = this.nextTabId++
+    if (this.tabs.size >= MAX_TABS) {
+      throw error('RESOURCE_LIMIT', `headless tab limit reached (${MAX_TABS}); close a tab first`)
+    }
     const tab = { tabId, targetId, sessionId, url: url || 'about:blank', title: '' }
+    this.bySession.set(sessionId, tab)
+    this.consoleBuffers.set(tabId, [])
     this.tabs.set(tabId, tab)
     entry.tabs.set(tabId, tab)
     entry.activeTabId = tabId
@@ -468,6 +584,7 @@ export class HeadlessDriver {
 
   async request(method, params = {}) {
     await this.ensureStarted()
+    this.noteActivity()
     const owner = params.owner
     if (!SUPPORTED.has(method)) {
       throw error('UNSUPPORTED_BACKEND', `${method} is not implemented by the headless backend yet`)
@@ -636,6 +753,55 @@ export class HeadlessDriver {
         const result = await this.pageAction(tab, 'currentSelection', [params.maxChars || 4000])
         return { ...result, tabId: tab.tabId }
       }
+      case 'tab.console': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        let entries = this.consoleBuffers.get(tab.tabId) || []
+        if (params.level) entries = entries.filter((entry) => entry.level === params.level)
+        if (params.filter) entries = entries.filter((entry) => String(entry.text || '').includes(String(params.filter)))
+        const limit = Number(params.limit) > 0 ? Math.min(Number(params.limit), 120) : 50
+        const sliced = entries.slice(-limit)
+        if (params.clear) this.consoleBuffers.set(tab.tabId, [])
+        return { available: true, entries: sliced }
+      }
+      case 'tab.network': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        const raw = await this.evalOn(
+          tab,
+          `performance.getEntriesByType('resource').map((entry) => ({ url: entry.name, type: entry.initiatorType, durationMs: Math.round(entry.duration), transferSize: entry.transferSize || 0, status: entry.responseStatus || null }))`,
+        )
+        let entries = Array.isArray(raw) ? raw : []
+        if (params.filter) entries = entries.filter((entry) => String(entry.url || '').includes(String(params.filter)))
+        const limit = Number(params.limit) > 0 ? Math.min(Number(params.limit), 200) : 50
+        return { available: true, entries: entries.slice(0, limit) }
+      }
+      case 'tab.upload': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        const selector = params.selector
+          ? `document.querySelector(${JSON.stringify(String(params.selector))})`
+          : `document.querySelector('[data-dsh-ref="${Number(params.ref)}"]')`
+        const handle = await this.cdp.send(
+          'Runtime.evaluate',
+          { expression: selector, returnByValue: false },
+          tab.sessionId,
+        )
+        const objectId = handle?.result?.objectId
+        if (!objectId) throw error('REF_NOT_FOUND', `no file input for ${params.selector || `ref ${params.ref}`}`)
+        const files = Array.isArray(params.files) ? params.files.map(String) : []
+        if (files.length === 0) throw error('INVALID_ARGUMENT', 'files must be a non-empty array')
+        await this.cdp.send('DOM.setFileInputFiles', { files, objectId }, tab.sessionId)
+        return { ok: true, ref: params.ref, selector: params.selector, files: files.length }
+      }
+      case 'tab.resume':
+        return { ok: true, tabId: this.ownerEntry(owner).activeTabId ?? null }
+      case 'browser.downloads': {
+        const limit = Number(params.limit) > 0 ? Math.min(Number(params.limit), 100) : 20
+        return {
+          items: this.downloads.slice(0, limit).map((record) => ({
+            ...record,
+            path: path.join(this.downloadDir, record.filename || ''),
+          })),
+        }
+      }
       case 'tab.close_session': {
         const entry = this.ownerEntry(owner)
         let closed = 0
@@ -713,6 +879,11 @@ export class HeadlessDriver {
   }
 
   async close() {
+    try {
+      await this.cdp?.send('Browser.close')
+    } catch {
+      // browser already gone or does not support close
+    }
     try {
       this.cdp?.close()
     } catch {

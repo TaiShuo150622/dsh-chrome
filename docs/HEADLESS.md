@@ -56,6 +56,11 @@ Profile 持久保存（`~/.dsh/cache/dsh-chrome/headless/profile`），但**默�
 | `chrome_html` `chrome_text` `chrome_selection` | ✅ |
 | `chrome_frames` `chrome_a11y` | ✅ CDP frame tree / AX tree |
 | `chrome_history` `chrome_wait` `chrome_pdf` | ✅ |
+| `chrome_console` | ✅ Runtime.consoleAPICalled / exceptionThrown 缓冲（按 tab，最多 200 条） |
+| `chrome_network` | ✅ performance resource timing（URL/type/duration/transferSize） |
+| `chrome_upload` | ✅ `DOM.setFileInputFiles`（ref 或 selector；文件在 provider 端先校验存在） |
+| `chrome_download` | ✅ `Browser.setDownloadBehavior` + download 事件；文件落 `~/.dsh/cache/dsh-chrome/headless/downloads/` |
+| `chrome_resume` | ✅ no-op（headless 没有前台暂停语义） |
 | `chrome_close_session` | ✅ 关闭该 owner 的 headless tabs |
 
 实测（桌面 Chrome 未受任何影响）：
@@ -78,12 +83,9 @@ chrome_status                              → desktop 仍 CONNECTED；headless 
 
 | 工具/方法 | 原因 | H1 计划 |
 |---|---|---|
-| `chrome_console` / `chrome_network` | 尚未接 Runtime.consoleAPICalled / Network 事件 | 接 CDP 事件缓冲 |
 | `chrome_capture_start/requests/stop` | 抓包引擎还绑在扩展侧 | 把 capture 引擎抽成共享模块，headless 复用 |
-| `chrome_upload` | 未接 `DOM.setFileInputFiles` | 1 行命令，优先补 |
-| `chrome_download` | 未接 `Browser.setDownloadBehavior` | 需要下载完成判定/目录约定 |
 | `chrome_pick` | 无"鼠标点页面"的用户交互语义 | 可做 `pick` 返回 ERROR 或改用 selector 流程 |
-| `chrome_screencast` / `chrome_pause/resume` | 前者可 provider 侧写帧；后者是前台概念 | 可做；not critical |
+| `chrome_screencast` / `chrome_pause` | 前者可 provider 侧写帧；后者是前台概念 | 可做；not critical |
 | `chrome_shots` / `chrome_audit` / `chrome_policy` / `chrome_config` | provider 本地工具，与 backend 无关，照常工作 | — |
 
 ## 4. 安全与资源
@@ -92,15 +94,15 @@ chrome_status                              → desktop 仍 CONNECTED；headless 
 - 无窗口、无扩展、无用户桌面干扰；Chrome 进程随 provider 卸载关闭；
 - 页面内容仍按不可信处理；`chrome_evaluate` 的 `allowEvaluate` 硬确认照旧；
 - 同一 owner 的 headless tabs 隔离；不同 DSH session 的 owner 互见不到；
-- 空闲回收（无 tab 后自动关 Chrome）**还没做**，H1 补。
+- **空闲回收**：没有 tab 且 5 分钟无请求时自动关闭 headless Chrome（`DSH_HEADLESS_IDLE_MINUTES` 可调）；
+- **并发限制**：最多 12 个 headless tabs（`DSH_HEADLESS_MAX_TABS` 可调），超出返回 `RESOURCE_LIMIT`。
 
 ## 5. 下一步（H1）
 
-1. 补 `chrome_upload`（DOM.setFileInputFiles）、Downloads、`chrome_console`/`chrome_network`；
-2. capture 引擎共享化，让 headless 支持 `chrome_capture_*`；
-3. 「一次性登录」：`headless` 持久 profile + 可选 `chrome_headless_open` 有头模式打开登录页，登录后关掉窗口继续 headless（需要用户拍安全边界）；
-4. 空闲 5 分钟无 tab 自动退出，限制并发 owner 数；
-5. CPU/内存基线 + screencast 复用（无窗口页面的实时 viewer）。
+1. capture 引擎共享化，让 headless 支持 `chrome_capture_*`；
+2. 「一次性登录」：headless 持久 profile，可选有头模式打开登录页（登录后关窗口继续 headless，需要用户拍安全边界）；
+3. `chrome_pick` / `chrome_screencast` 的 headless 语义（pick 可返回 selector 流程；screencast 可 provider 侧写帧）；
+4. CPU/内存基线 + 空闲回收实测。
 
 ## 6. 代码
 

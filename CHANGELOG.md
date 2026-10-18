@@ -13,6 +13,14 @@
 
 ## [Unreleased]
 
+### Added（后台浏览器 H1.1：console/network/upload/download）
+
+- headless 支持 `chrome_console`（Runtime 事件缓冲）、`chrome_network`（resource timing）、
+  `chrome_upload`（DOM.setFileInputFiles）、`chrome_download`（Browser.setDownloadBehavior + 事件）、`chrome_resume`（no-op）
+- 空闲回收：无 tab 且 5 分钟无请求自动关 headless Chrome（`DSH_HEADLESS_IDLE_MINUTES`）
+- 并发限制：最多 12 个 headless tabs（`DSH_HEADLESS_MAX_TABS`），超出 `RESOURCE_LIMIT`
+- provider 0.1.81；测试覆盖 console/network/upload/download/resume
+
 ### Added（后台浏览器 H0：headless Chromium）
 
 - 每个 `chrome_*` 工具新增可选 `backend: "desktop" | "headless"`；默认桌面原样
