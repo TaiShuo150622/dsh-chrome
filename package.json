@@ -34,7 +34,7 @@
     }
   },
   "scripts": {
-    "test": "node test/p0-bridge.mjs && node test/bridge-auth.mjs && node test/host-reconnect.mjs && node test/extension-logic.mjs && node test/tool-schemas.mjs && node test/tool-render.mjs && node test/p0-tools.mjs && node test/p1-tools.mjs && node test/p2-tools.mjs && node test/extension-manifest.mjs && node test/backend-router.mjs && node test/headless.mjs && node test/liveview.mjs && node test/screencast-guard.mjs && node test/headless-login.mjs",
+    "test": "node test/p0-bridge.mjs && node test/bridge-auth.mjs && node test/host-reconnect.mjs && node test/extension-logic.mjs && node test/tool-schemas.mjs && node test/tool-render.mjs && node test/p0-tools.mjs && node test/p1-tools.mjs && node test/p2-tools.mjs && node test/extension-manifest.mjs && node test/backend-router.mjs && node test/headless.mjs && node test/liveview.mjs && node test/screencast-guard.mjs && node test/headless-login.mjs && node test/capture-parity.mjs",
     "docs:tools": "node scripts/gen-tools-doc.mjs",
     "package:extension": "node scripts/package-extension.mjs",
     "status": "node scripts/status.mjs",
