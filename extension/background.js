@@ -143,7 +143,10 @@ function groupTitle(owner) {
 
 function sessionGroupTitle(owner, entry) {
   const label = typeof entry?.label === 'string' ? entry.label.trim().slice(0, 40) : ''
-  return label ? `DSH · ${label}` : groupTitle(owner)
+  // Always keep the owner short id in a labelled title: two sessions with the
+  // same working directory used to produce the same title and share one group,
+  // which let each session close the other's tabs (R-12).
+  return label ? `DSH · ${label} · ${ownerShort(owner)}` : groupTitle(owner)
 }
 
 async function reconcileGroups(owner, entry) {
@@ -1192,7 +1195,7 @@ async function startScreencast(owner, params) {
     // Set the state BEFORE starting: the first frame can arrive while the
     // command promise is still pending, and an unacked first frame stalls the
     // whole screencast (Chrome sends no further frames until ack).
-    session.screencast = { active: true, format, frames: 0, startedAt: Date.now(), lastAt: null }
+    session.screencast = { active: true, format, frames: 0, startedAt: Date.now(), lastAt: null, owner: ownerKey(owner) }
     session.screencast.timer = setTimeout(() => {
       try {
         chrome.debugger.sendCommand(session.target, 'Page.stopScreencast').catch(() => {})
@@ -2294,16 +2297,32 @@ async function pickCancelAgent(owner, params) {
 }
 
 async function siteInfo(owner, params) {
-  const tabId = await resolveOwnedTabId(owner, params?.tabId)
-  const tab = await chrome.tabs.get(tabId)
+  let tab
+  if (params?.allowForeign === true) {
+    // chrome_tabs {op:"claim"} needs the origin of a tab that is not owned yet
+    // (the provider would otherwise judge the departure page, R-01). Only the
+    // provider can ask for this via allowForeign; ordinary lookups keep the
+    // owned-tab check.
+    if (Number.isFinite(params?.tabId)) {
+      tab = await chrome.tabs.get(params.tabId)
+    } else {
+      const active = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+      tab = active[0]
+      if (!tab?.id) throw bridgeError('NO_ACTIVE_TAB', 'no active tab to inspect')
+    }
+  } else {
+    const tabId = await resolveOwnedTabId(owner, params?.tabId)
+    tab = await chrome.tabs.get(tabId)
+  }
   const url = tab.url || ''
   let origin = null
   try {
-    origin = new URL(url).origin
+    const parsed = new URL(url)
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') origin = parsed.origin
   } catch {
     origin = null
   }
-  return { tabId, url, title: tab.title || '', origin }
+  return { tabId: tab.id, url, title: tab.title || '', origin }
 }
 
 async function evaluate(owner, params) {
@@ -2520,6 +2539,16 @@ async function claimTab(owner, params) {
   if (!tab?.id) throw bridgeError('NO_ACTIVE_TAB', 'no active tab to claim')
   if (!/^https?:/i.test(tab.url || '')) {
     throw bridgeError('PROTECTED_PAGE', 'only http(s) tabs can be claimed')
+  }
+  // A tab already tracked by another DSH session belongs to that session: claim
+  // must not transfer ownership (R-12). The tab is only accepted when no other
+  // session lists it; an untracked user tab stays claimable.
+  const sessions = await loadSessions()
+  for (const [key, other] of Object.entries(sessions || {})) {
+    if (key === ownerKey(owner)) continue
+    if (Array.isArray(other?.tabIds) && other.tabIds.includes(tab.id)) {
+      throw bridgeError('TAB_NOT_FOUND', `tab ${tab.id} belongs to another DSH session; it cannot be claimed`)
+    }
   }
   await addTabToSession(owner, tab, { activate: false, label: params.ownerLabel || null })
   const claimed = await chrome.tabs.get(tab.id)
@@ -3899,6 +3928,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
         format: session.screencast.format,
         metadata: params?.metadata || null,
         frames: session.screencast.frames,
+        owner: session.screencast.owner || null,
       })
     } catch {
       // native port unavailable; frames are dropped

@@ -81,6 +81,15 @@ function installHint(assets) {
   ].join('\n')
 }
 
+// chrome_tabs {op:"new"} may open about:blank or an http(s) URL. Everything
+// else (file:, data:, javascript:, chrome:) is refused here as well as in the
+// backend, so a headless tab can never be a local-file read primitive (R-05).
+function validateTabUrl(raw) {
+  const text = String(raw ?? '')
+  if (!text || text === 'about:blank') return 'about:blank'
+  return validateHttpUrl(text)
+}
+
 function validateHttpUrl(raw) {
   let url
   try {
@@ -177,13 +186,51 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     return String(id).slice(-8)
   }
 
-  async function currentSite(exec) {
+  function sessionCwd(exec) {
     try {
-      const site = await bridge.call('browser.site', { owner: ownerOf(exec) }, 5000)
-      return { origin: site?.origin || null, url: site?.url || '', title: site?.title || '', tabId: site?.tabId ?? null }
+      const services = sessionContext?.()
+      const session = services?.sessions?.get?.(exec?.agent?.id)
+      const cwd = session?.header?.cwd ?? session?.cwd ?? session?.meta?.cwd
+      if (typeof cwd === 'string' && cwd.trim()) return cwd
     } catch {
-      return { origin: null, url: '', title: '', tabId: null }
+      // no session directory available
     }
+    return null
+  }
+
+  // Resolve the *target* page, not whichever tab happens to be active. `tabId`
+  // comes from the tool call; `allowForeign` is only used by chrome_tabs claim,
+  // where the tab is deliberately not owned yet.
+  async function lookupSite(exec, { tabId = null, allowForeign = false } = {}) {
+    const params = { owner: ownerOf(exec) }
+    if (Number.isFinite(tabId)) {
+      params.tabId = tabId
+      if (allowForeign) params.allowForeign = true
+    }
+    try {
+      const site = await bridge.call('browser.site', params, 5000)
+      return {
+        ok: true,
+        site: {
+          origin: site?.origin || null,
+          url: site?.url || '',
+          title: site?.title || '',
+          tabId: site?.tabId ?? (Number.isFinite(tabId) ? tabId : null),
+        },
+      }
+    } catch (error) {
+      // A failed lookup is not "no site": the guard must not fall back to the
+      // default policy (R-03).
+      return {
+        ok: false,
+        error,
+        site: { origin: null, url: '', title: '', tabId: Number.isFinite(tabId) ? tabId : null },
+      }
+    }
+  }
+
+  async function currentSite(exec, tabId = null) {
+    return (await lookupSite(exec, { tabId })).site
   }
 
   function writeAudit(exec, toolName, action, site, decision, reason) {
@@ -192,32 +239,24 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       session: sessionShort(exec),
       tool: toolName,
       origin: site?.origin || null,
+      tabId: site?.tabId ?? null,
       action: String(action || '').slice(0, 300),
       decision,
       reason,
     })
   }
 
-  async function guard(exec, toolName, action) {
-    const site = await currentSite(exec)
-    const resolved = resolvePolicy(loadPolicy(dshHome()), site.origin)
-    if (resolved.mode === 'block') {
-      writeAudit(exec, toolName, action, site, 'denied', 'site-blocked')
-      throw new BridgeError('SITE_BLOCKED', `site ${site.origin || '(unknown)'} is blocked by policy.json`)
-    }
-    if (resolved.mode === 'allow') {
-      writeAudit(exec, toolName, action, site, 'allowed', 'site-allow')
-      return
-    }
-    // follow-dsh: the session's sandbox preset already grants full access.
-    if (sessionSandboxMode(exec) === 'danger-full-access') {
-      writeAudit(exec, toolName, action, site, 'allowed', 'follow-dsh')
-      return
+  async function requestApproval(exec, toolName, action, site, reason) {
+    if (!exec?.agent) {
+      writeAudit(exec, toolName, action, site, 'denied', 'no-agent')
+      throw new BridgeError('APPROVAL_DENIED', 'browser actions require a live agent session')
     }
     const service = approval?.()
-    if (!service || !exec?.agent) {
-      writeAudit(exec, toolName, action, site, 'allowed', 'no-approval-service')
-      return
+    if (!service || typeof service.request !== 'function') {
+      // Fail closed: a missing approval service must never mean "allowed"
+      // (R-03; docs/APPROVAL.md §6).
+      writeAudit(exec, toolName, action, site, 'denied', 'no-approval-service')
+      throw new BridgeError('APPROVAL_DENIED', 'approval service is unavailable; refusing the browser action')
     }
     let outcome
     try {
@@ -227,8 +266,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         callId: exec.callId,
         reason: action,
         displayReason: {
-          en: `Browser action: ${action}`,
-          zh: `浏览器操作：${action}`,
+          en: `Browser action on ${site?.origin || site?.url || '(unknown page)'}: ${action}`,
+          zh: `浏览器操作（${site?.origin || site?.url || '未知页面'}）：${action}`,
         },
         signal: exec.signal,
       })
@@ -240,7 +279,71 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       writeAudit(exec, toolName, action, site, 'denied', `approval-${outcome}`)
       throw new BridgeError('APPROVAL_DENIED', `browser action was not approved (${outcome})`)
     }
-    writeAudit(exec, toolName, action, site, 'allowed', 'approval')
+    writeAudit(exec, toolName, action, site, 'allowed', reason)
+    return site
+  }
+
+  async function guard(exec, toolName, action, { tabId = null, targetUrl = null, allowForeign = false } = {}) {
+    if (!exec?.agent) {
+      writeAudit(exec, toolName, action, null, 'denied', 'no-agent')
+      throw new BridgeError('APPROVAL_DENIED', 'browser actions require a live agent session')
+    }
+    let site
+    let lookupError = null
+    if (targetUrl != null) {
+      // goto / tabs new: judge the destination URL, not the departure page
+      // (R-02). No lookup: the target is known before anything navigates.
+      site = {
+        origin: originOf(targetUrl),
+        url: String(targetUrl || ''),
+        title: '',
+        tabId: Number.isFinite(tabId) ? tabId : null,
+      }
+    } else {
+      const looked = await lookupSite(exec, { tabId, allowForeign })
+      site = looked.site
+      if (!looked.ok) lookupError = looked.error
+    }
+    const resolved = resolvePolicy(loadPolicy(dshHome()), site.origin)
+    if (resolved.mode === 'block') {
+      writeAudit(exec, toolName, action, site, 'denied', 'site-blocked')
+      throw new BridgeError('SITE_BLOCKED', `site ${site.origin || '(unknown)'} is blocked by policy.json`)
+    }
+    if (lookupError) {
+      // Preserve "the target tab does not exist" instead of disguising it as a
+      // policy refusal: no action runs either way, and the model can recover
+      // (re-list tabs) only when it sees TAB_NOT_FOUND.
+      if (lookupError?.code === 'TAB_NOT_FOUND') {
+        writeAudit(exec, toolName, action, site, 'denied', 'target-tab-not-found')
+        throw new BridgeError('TAB_NOT_FOUND', lookupError.message || 'target tab not found')
+      }
+      // chrome_close_session has no page target of its own: with no session tab
+      // there is nothing to judge and nothing to close (closing zero tabs is
+      // the historical success path).
+      if (lookupError?.code === 'NO_SESSION_TAB' && toolName === 'chrome_close_session') {
+        writeAudit(exec, toolName, action, site, 'allowed', 'no-session-tab')
+        return site
+      }
+      writeAudit(exec, toolName, action, site, 'denied', 'site-unavailable')
+      throw new BridgeError(
+        'APPROVAL_DENIED',
+        `cannot resolve the target site (${lookupError?.message || lookupError}); refusing the browser action`,
+      )
+    }
+    if (resolved.mode === 'allow') {
+      writeAudit(exec, toolName, action, site, 'allowed', 'site-allow')
+      return site
+    }
+    if (resolved.mode === 'ask') {
+      // Explicit ask outranks danger-full-access: the human asked to be asked.
+      return requestApproval(exec, toolName, action, site, 'policy-ask')
+    }
+    // follow-dsh: the session's sandbox preset already grants full access.
+    if (sessionSandboxMode(exec) === 'danger-full-access') {
+      writeAudit(exec, toolName, action, site, 'allowed', 'follow-dsh')
+      return site
+    }
+    return requestApproval(exec, toolName, action, site, 'approval')
   }
 
   async function hardConfirmAsk(exec, toolName, { header, question, detail, timeoutMs, site }) {
@@ -303,6 +406,56 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     } finally {
       clearTimeout(timer)
       exec.signal?.removeEventListener?.('abort', forwardAbort)
+    }
+  }
+
+  // Upload path allowlist (R-04): a file may only leave the machine from the
+  // session working directory, or from directories the user explicitly opted
+  // into with DSH_CHROME_UPLOAD_ROOTS. Symlinks are resolved before the check
+  // so a link inside the workspace cannot point at ~/.ssh.
+  function uploadRoots(exec) {
+    const roots = []
+    const configured = String(process.env.DSH_CHROME_UPLOAD_ROOTS || '')
+    for (const part of configured.split(path.delimiter)) {
+      const trimmed = part.trim()
+      if (trimmed) roots.push(path.resolve(trimmed))
+    }
+    const cwd = sessionCwd(exec)
+    if (cwd) roots.push(path.resolve(cwd))
+    return [...new Set(roots)]
+  }
+
+  async function assertUploadAllowed(exec, files, site) {
+    const roots = []
+    for (const root of uploadRoots(exec)) {
+      try {
+        roots.push(await fsp.realpath(root))
+      } catch {
+        // a configured root that does not exist cannot authorize anything
+      }
+    }
+    if (roots.length === 0) {
+      writeAudit(exec, 'chrome_upload', 'upload', site, 'denied', 'upload-no-allowed-root')
+      throw new BridgeError(
+        'INVALID_ARGUMENT',
+        'uploads are restricted to the session working directory, but no allowed root is known; set DSH_CHROME_UPLOAD_ROOTS (path-delimiter separated) to opt in to other directories',
+      )
+    }
+    for (const file of files) {
+      let resolved
+      try {
+        resolved = await fsp.realpath(file)
+      } catch {
+        resolved = path.resolve(String(file))
+      }
+      const allowed = roots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`))
+      if (!allowed) {
+        writeAudit(exec, 'chrome_upload', 'upload', site, 'denied', 'upload-path-not-allowed')
+        throw new BridgeError(
+          'INVALID_ARGUMENT',
+          `file is outside the allowed upload roots: ${file} (allowed: ${roots.join(', ')})`,
+        )
+      }
     }
   }
 
@@ -448,7 +601,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
     async execute(args, exec) {
       const url = validateHttpUrl(args?.url)
-      await guard(exec, 'chrome_goto', `navigate to ${url}`)
+      await guard(exec, 'chrome_goto', `navigate to ${url}`, { targetUrl: url })
       return call('tab.goto', { url, owner: ownerOf(exec), ownerLabel: sessionLabel(exec) })
     },
   })
@@ -742,7 +895,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       render: (_args, value) => renderText(`Dragged ref ${value.from} → ref ${value.to}`),
     },
     async execute(args, exec) {
-      await guard(exec, 'chrome_drag', `drag ${args?.fromRef}->${args?.toRef}`)
+      await guard(exec, 'chrome_drag', `drag ${args?.fromRef}->${args?.toRef}`, { tabId: args?.tabId })
       return call(
         'tab.drag',
         { fromRef: args?.fromRef, toRef: args?.toRef, tabId: args?.tabId, owner: ownerOf(exec) },
@@ -792,7 +945,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           throw new BridgeError('INVALID_ARGUMENT', 'width and height are required unless reset:true')
         }
       }
-      await guard(exec, 'chrome_emulate', reset ? 'reset viewport' : `emulate ${args?.width}x${args?.height}`)
+      await guard(exec, 'chrome_emulate', reset ? 'reset viewport' : `emulate ${args?.width}x${args?.height}`, { tabId: args?.tabId })
       return call(
         'tab.emulate',
         { width: args?.width, height: args?.height, mobile: Boolean(args?.mobile), reset, tabId: args?.tabId, owner: ownerOf(exec) },
@@ -841,7 +994,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
     async execute(args, exec) {
       const op = String(args?.op ?? 'get')
-      if (op !== 'get') await guard(exec, 'chrome_storage', `storage ${op}`)
+      if (op !== 'get') await guard(exec, 'chrome_storage', `storage ${op}`, { tabId: args?.tabId })
       return call(
         'tab.storage',
         {
@@ -1111,6 +1264,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         60000,
       )
       if (!shot?.path) throw new BridgeError('INTERNAL', 'native host did not return a screenshot path')
+      await recordShotOwner(shot.path, ownerOf(exec))
       let bytes = shot.bytes
       let image = null
       try {
@@ -1168,7 +1322,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       render: (_args, value) => renderText(`Hovered ${value.tag || 'element'} ${JSON.stringify(value.label || '')}${value.page ? '\n[page snapshot attached]' : ''}`),
     },
     async execute(args, exec) {
-      await guard(exec, 'chrome_hover', `hover ref ${args?.ref}`)
+      await guard(exec, 'chrome_hover', `hover ref ${args?.ref}`, { tabId: args?.tabId })
       return call('tab.hover', { ref: args?.ref, selector: args?.selector, frameRef: args?.frameRef, snapshot: Boolean(args?.snapshot), tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
@@ -1272,7 +1426,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       render: (_args, value) => renderText(`Clicked ${value.tag || 'element'} ${JSON.stringify(value.label || '')}${value.page ? '\n[page snapshot attached]' : ''}`),
     },
     async execute(args, exec) {
-      await guard(exec, 'chrome_click', `click ref ${args?.ref}`)
+      await guard(exec, 'chrome_click', `click ref ${args?.ref}`, { tabId: args?.tabId })
       return call('tab.click', { ref: args?.ref, selector: args?.selector, frameRef: args?.frameRef, button: args?.button, clickCount: args?.clickCount, snapshot: Boolean(args?.snapshot), dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
@@ -1381,7 +1535,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     async execute(args, exec) {
       const site = args?.origin
         ? { origin: originOf(args.origin) || String(args.origin), url: '', title: '', tabId: null }
-        : await currentSite(exec)
+        : await currentSite(exec, args?.tabId)
       const policy = loadPolicy(dshHome())
       const resolved = resolvePolicy(policy, site.origin)
       return {
@@ -1427,6 +1581,10 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   })
 
   const screencastGuards = new Map()
+  // Session -> { tabId, startedAt } for screencasts this provider started.
+  // Frame files are still shared per DSH_HOME, so status must not hand the
+  // global latest.jpg to a session that never started a stream (R-06).
+  const screencastOwners = new Map()
 
   // ------------------------------------------- 4i-2. headless login profile
   list.push({
@@ -1493,7 +1651,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   list.push({
     name: 'chrome_screencast',
     description:
-      'Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image, op="stop" ends the stream; op="viewer" returns the loopback live-view URL; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.',
+      'Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image (only for the session that started an active stream), op="stop" ends the stream; op="viewer" returns the loopback live-view URL; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.',
     parameters: {
       type: 'object',
       properties: {
@@ -1518,6 +1676,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         bytes: {},
         path: { type: 'string' },
         metaPath: { type: 'string' },
+        frameOwner: {},
         image: {},
         url: { type: 'string' },
         enabled: { type: 'boolean' },
@@ -1594,6 +1753,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           guard.arm()
           screencastGuards.set(owner, guard)
         }
+        screencastOwners.set(owner, { tabId: started?.tabId ?? args?.tabId ?? null, startedAt: Date.now() })
         return { ...started, path: screencastLatestPath() }
       }
       if (op === 'stop') {
@@ -1602,6 +1762,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           guard.disarm()
           screencastGuards.delete(owner)
         }
+        screencastOwners.delete(owner)
         return call('tab.screencast_stop', { owner }, 30000)
       }
       if (op === 'diag') {
@@ -1621,22 +1782,32 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         } catch {
           meta = null
         }
+        if (status?.active !== true) screencastOwners.delete(owner)
+        const metaOwner = typeof meta?.owner === 'string' && meta.owner ? meta.owner : null
+        // Only the session that started an active stream may read the shared
+        // frame file, and only while that frame is not attributed to another
+        // session (older metadata has no owner; the active/owner check still
+        // blocks the "B reads A's frame without any stream" case).
+        const canReadFrame =
+          status?.active === true && screencastOwners.has(owner) && (metaOwner == null || metaOwner === owner)
         let image = null
         let bytes = null
         const file = screencastLatestPath()
-        try {
-          const data = await fsp.readFile(file)
-          bytes = data.byteLength
-          const service = attachments?.()
-          if (service) {
-            image = await service.saveImage({
-              data: new Uint8Array(data),
-              mediaType: /\.png$/.test(file) ? 'image/png' : 'image/jpeg',
-              name: path.basename(file),
-            })
+        if (canReadFrame) {
+          try {
+            const data = await fsp.readFile(file)
+            bytes = data.byteLength
+            const service = attachments?.()
+            if (service) {
+              image = await service.saveImage({
+                data: new Uint8Array(data),
+                mediaType: /\.png$/.test(file) ? 'image/png' : 'image/jpeg',
+                name: path.basename(file),
+              })
+            }
+          } catch {
+            image = null
           }
-        } catch {
-          image = null
         }
         return {
           ...status,
@@ -1644,6 +1815,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           bytes,
           path: file,
           metaPath,
+          frameOwner: metaOwner,
           image,
         }
       }
@@ -1667,10 +1839,46 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     ]
   }
 
+  // Screenshot ownership ledger. The files are still written by the host /
+  // headless driver into shared directories, so the provider records which
+  // session asked for each shot and hides shots recorded for other sessions
+  // (R-06). Files with no recorded owner predate the ledger and stay visible.
+  function shotOwnersPath() {
+    return path.join(dshHome(), 'cache', 'dsh-chrome', 'shot-owners.json')
+  }
+
+  async function readShotOwners() {
+    try {
+      const parsed = JSON.parse(await fsp.readFile(shotOwnersPath(), 'utf8'))
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+
+  async function recordShotOwner(file, owner) {
+    if (!file || !owner) return
+    try {
+      const owners = await readShotOwners()
+      owners[path.resolve(String(file))] = String(owner)
+      const keys = Object.keys(owners)
+      for (const key of keys.slice(0, Math.max(0, keys.length - 2000))) delete owners[key]
+      await fsp.mkdir(path.dirname(shotOwnersPath()), { recursive: true })
+      await fsp.writeFile(shotOwnersPath(), `${JSON.stringify(owners)}\n`, { mode: 0o600 })
+    } catch {
+      // The ledger is best effort; an unwritable cache must not lose the shot.
+    }
+  }
+
+  function shotVisible(owners, file, owner) {
+    const recorded = owners[path.resolve(String(file))]
+    return !recorded || recorded === String(owner)
+  }
+
   list.push({
     name: 'chrome_shots',
     description:
-      'List or read screenshot history saved by this provider (desktop ~/.dsh/cache/dsh-chrome/screenshots and headless ~/.dsh/cache/dsh-chrome/headless/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under either directory) as an image attachment.',
+      'List or read screenshot history saved by this provider (desktop ~/.dsh/cache/dsh-chrome/screenshots and headless ~/.dsh/cache/dsh-chrome/headless/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under either directory) as an image attachment. Shots recorded for another DSH session are hidden.',
     parameters: {
       type: 'object',
       properties: {
@@ -1705,10 +1913,12 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         return renderText(`Screenshot history (${value.entries?.length ?? 0}) in ${value.directory}\n${lines.join('\n')}`)
       },
     },
-    async execute(args) {
+    async execute(args, exec) {
       const directories = screenshotDirectories()
       const directory = directories[0]
       const op = String(args?.op || 'list')
+      const owner = ownerOf(exec)
+      const shotOwners = op === 'list' || op === 'read' ? await readShotOwners() : {}
       if (op === 'list') {
         const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.min(100, Number(args.limit))) : 20
         const entries = []
@@ -1725,6 +1935,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
             const file = path.join(root, name)
             if (seen.has(file)) continue
             seen.add(file)
+            // Filter before stat/open so another session's file is never read.
+            if (!shotVisible(shotOwners, file, owner)) continue
             try {
               const stat = await fsp.stat(file)
               const entry = {
@@ -1767,6 +1979,9 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           .find((candidate) => target.startsWith(`${candidate}${path.sep}`))
         if (!root) {
           throw new BridgeError('INVALID_ARGUMENT', 'path must be inside the screenshots directory')
+        }
+        if (!shotVisible(shotOwners, target, owner)) {
+          throw new BridgeError('INVALID_ARGUMENT', 'screenshot belongs to another DSH session')
         }
         const data = await fsp.readFile(target)
         let width
@@ -2186,7 +2401,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         ),
     },
     async execute(args, exec) {
-      await guard(exec, 'chrome_click_at', `click at ${args?.x},${args?.y}`)
+      await guard(exec, 'chrome_click_at', `click at ${args?.x},${args?.y}`, { tabId: args?.tabId })
       return call('tab.clickAt', {
         x: args?.x,
         y: args?.y,
@@ -2259,7 +2474,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         ),
     },
     async execute(args, exec) {
-      await guard(exec, 'chrome_type', `type into ref ${args?.ref}`)
+      await guard(exec, 'chrome_type', `type into ref ${args?.ref}`, { tabId: args?.tabId })
       return call('tab.type', {
         ref: args?.ref,
         selector: args?.selector,
@@ -2322,7 +2537,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       render: (_args, value) => renderText(`Pressed ${value.key} on <${value.target}>${value.page ? '\n[page snapshot attached]' : ''}`),
     },
     async execute(args, exec) {
-      await guard(exec, 'chrome_press', `press ${args?.key}`)
+      await guard(exec, 'chrome_press', `press ${args?.key}`, { tabId: args?.tabId })
       return call('tab.press', { key: String(args?.key ?? ''), snapshot: Boolean(args?.snapshot), dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
@@ -2394,7 +2609,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         renderText(`${value.title || '(untitled)'} — ${value.url} (${value.loadState})`),
     },
     async execute(args, exec) {
-      await guard(exec, 'chrome_history', String(args?.op ?? 'reload'))
+      await guard(exec, 'chrome_history', String(args?.op ?? 'reload'), { tabId: args?.tabId })
       return call('tab.history', {
         op: String(args?.op ?? 'reload'),
         tabId: args?.tabId,
@@ -2463,7 +2678,32 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
     async execute(args, exec) {
       const op = String(args?.op ?? 'list')
-      if (op !== 'list') await guard(exec, 'chrome_tabs', `tabs ${op}`)
+      if (op !== 'list') {
+        if (op === 'new') {
+          // Guard the destination URL, not the page the session is leaving
+          // (R-02). A blank tab has no site, so no lookup is needed either.
+          const url = validateTabUrl(args?.url)
+          await guard(exec, 'chrome_tabs', `tabs new ${url}`, { targetUrl: url })
+          return call('tab.tabs', {
+            op,
+            url,
+            tabId: args?.tabId,
+            owner: ownerOf(exec),
+            ownerLabel: sessionLabel(exec),
+          })
+        }
+        if (op === 'claim') {
+          // The tab is not owned yet, so the extension may look up its origin
+          // on request (allowForeign). Claiming a tab from a blocked site is
+          // refused before the tab becomes part of this session (R-01).
+          await guard(exec, 'chrome_tabs', `tabs claim ${args?.tabId ?? 'active'}`, {
+            tabId: args?.tabId,
+            allowForeign: true,
+          })
+        } else {
+          await guard(exec, 'chrome_tabs', `tabs ${op}`, { tabId: args?.tabId })
+        }
+      }
       return call('tab.tabs', {
         op,
         url: args?.url,
@@ -2478,7 +2718,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   list.push({
     name: 'chrome_upload',
     description:
-      'Attach local files to a file input on the session page (e.g. upload a screenshot or a document). The ref must point at an <input type=file> from the latest snapshot. Requires approval and only accepts existing local files.',
+      'Attach local files to a file input on the session page (e.g. upload a screenshot or a document). The ref must point at an <input type=file> from the latest snapshot. Files must live under the session working directory (or DSH_CHROME_UPLOAD_ROOTS), and every call asks for a hard confirmation that lists the full paths and the target origin.',
     parameters: {
       type: 'object',
       properties: {
@@ -2514,7 +2754,21 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         const stat = await fsp.stat(file).catch(() => null)
         if (!stat?.isFile()) throw new BridgeError('INVALID_ARGUMENT', `not a file: ${file}`)
       }
-      await guard(exec, 'chrome_upload', `upload ${files.length} file(s) to ref ${ref}`)
+      // Ordinary site policy first (blocked sites never prompt), then the
+      // path allowlist, then an unconditional per-call hard confirmation that
+      // names the full paths and the target origin (R-04).
+      const site = await guard(exec, 'chrome_upload', `upload ${files.length} file(s) to ref ${ref}`, {
+        tabId: args?.tabId,
+      })
+      await assertUploadAllowed(exec, files, site)
+      await hardConfirmAsk(exec, 'chrome_upload', {
+        header: '上传本机文件',
+        question: `允许把以下 ${files.length} 个本机文件交给页面 ${site?.origin || site?.url || '(unknown page)'} 吗？\n\n${files.map((file) => `• ${file}`).join('\n')}`,
+        detail:
+          '文件会通过 DOM.setFileInputFiles 附加到页面上的文件输入框；页面在 change 事件里可以立即读取并上传它们，操作不可撤销。',
+        timeoutMs: evaluateConfirmTimeoutMs,
+        site,
+      })
       const value = await call(
         'tab.upload',
         { ref: Number.isFinite(ref) ? ref : undefined, selector, files, tabId: args?.tabId, owner: ownerOf(exec) },

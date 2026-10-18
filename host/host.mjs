@@ -263,6 +263,7 @@ function flushScreencastFrame() {
         bytes: buffer.length,
         frames: message.frames ?? null,
         metadata: message.metadata ?? null,
+        owner: message.owner ?? null,
       })}\n`,
       { mode: 0o600 },
     )

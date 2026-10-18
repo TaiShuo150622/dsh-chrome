@@ -765,6 +765,30 @@ function error(code, message) {
   return err
 }
 
+// R-05: chrome_tabs {op:"new"} / attachTab / tab.goto must not become a
+// local-file read primitive. Only http(s) and the literal about:blank are
+// navigable; file:, data:, javascript:, chrome: and friends are refused before
+// any Target.createTarget / Page.navigate call.
+const SAFE_TAB_PROTOCOLS = new Set(['http:', 'https:'])
+
+function safeTabUrl(raw) {
+  const text = String(raw ?? '').trim()
+  if (!text || text === 'about:blank') return 'about:blank'
+  let parsed
+  try {
+    parsed = new URL(text)
+  } catch {
+    throw error('PROTECTED_PAGE', `not a valid URL: ${text}`)
+  }
+  if (!SAFE_TAB_PROTOCOLS.has(parsed.protocol)) {
+    throw error('PROTECTED_PAGE', `only http(s) URLs are allowed, got ${parsed.protocol}`)
+  }
+  if (parsed.username || parsed.password) {
+    throw error('PROTECTED_PAGE', 'URLs with embedded credentials are not allowed')
+  }
+  return parsed.toString()
+}
+
 function chromeExecutable() {
   for (const candidate of CHROME_CANDIDATES) {
     try {
@@ -1405,6 +1429,7 @@ export class HeadlessDriver {
           bytes: data.byteLength,
           frames: state.frames,
           metadata: params.metadata || null,
+          owner: state.owner ?? null,
           backend: 'headless',
         })}\n`,
         { mode: 0o600 },
@@ -1641,7 +1666,8 @@ export class HeadlessDriver {
   }
 
   async attachTab(entry, url) {
-    const created = await this.cdp.send('Target.createTarget', { url: url || 'about:blank' })
+    const targetUrl = safeTabUrl(url)
+    const created = await this.cdp.send('Target.createTarget', { url: targetUrl })
     const targetId = created.targetId
     const attached = await this.cdp.send('Target.attachToTarget', { targetId, flatten: true })
     const sessionId = attached.sessionId
@@ -1653,7 +1679,7 @@ export class HeadlessDriver {
       tabId,
       targetId,
       sessionId,
-      url: url || 'about:blank',
+      url: targetUrl,
       title: '',
       renderChangeAt: 0,
       shotStream: null,
@@ -2573,15 +2599,23 @@ export class HeadlessDriver {
           groups: [],
         }
       case 'browser.site': {
-        const tab = await this.ensureTab(owner)
+        const tab = await this.ensureTab(owner, params.tabId)
         await this.syncTabMeta(tab)
-        return { origin: new URL(tab.url).origin, url: tab.url, title: tab.title, tabId: tab.tabId }
+        let origin = null
+        try {
+          const parsed = new URL(tab.url)
+          if (parsed.protocol === 'http:' || parsed.protocol === 'https:') origin = parsed.origin
+        } catch {
+          origin = null
+        }
+        return { origin, url: tab.url, title: tab.title, tabId: tab.tabId }
       }
       case 'tab.tabs':
         return this.tabsRequest(owner, params)
       case 'tab.goto': {
+        const url = safeTabUrl(params.url)
         const tab = await this.ensureTab(owner, params.tabId)
-        await this.cdp.send('Page.navigate', { url: params.url }, tab.sessionId)
+        await this.cdp.send('Page.navigate', { url }, tab.sessionId)
         await this.waitReady(tab)
         await this.syncTabMeta(tab)
         return { tabId: tab.tabId, url: tab.url, title: tab.title, loadState: 'complete' }
@@ -3198,6 +3232,7 @@ export class HeadlessDriver {
           frames: 0,
           startedAt: Date.now(),
           lastAt: null,
+          owner: String(owner || 'default'),
           pending: null,
           flushTimer: null,
           lastWriteAt: 0,
@@ -3326,8 +3361,9 @@ export class HeadlessDriver {
       }
     }
     if (op === 'new') {
-      const tab = await this.attachTab(entry, params.url || 'about:blank')
-      if (params.url && params.url !== 'about:blank') await this.waitReady(tab)
+      const url = safeTabUrl(params.url)
+      const tab = await this.attachTab(entry, url)
+      if (url !== 'about:blank') await this.waitReady(tab)
       await this.syncTabMeta(tab)
       return { tabId: tab.tabId, url: tab.url, title: tab.title }
     }
