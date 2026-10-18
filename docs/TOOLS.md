@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：32
+> 工具数量：34
 
 ### `chrome_status`
 
@@ -199,6 +199,24 @@ Read the current page selection (or selected text inside a focused input/textare
 | `maxChars` | number | no | Optional cap (10-20000, default 4000). |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
+### `chrome_policy`
+
+Read the effective site policy for the current page (or an explicit origin) from ~/.dsh/cache/dsh-chrome/policy.json. Modes: allow (skip ordinary approval), ask (session approval), block (SITE_BLOCKED). Read-only: policy.json is edited by the human, never by tools.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `origin` | string | no | Optional origin, e.g. https://example.com (default: current session tab). |
+| `tabId` | number | no | Optional tab id owned by this session. |
+
+### `chrome_audit`
+
+Read the recent site-policy audit log (~/.dsh/cache/dsh-chrome/audit.jsonl): timestamp, session, tool, origin, action, decision and reason for every guarded browser write.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `limit` | number | no | Max entries returned (default 20, max 100). |
+| `origin` | string | no | Only entries for this origin. |
+
 ### `chrome_capture_start`
 
 Start capturing HTTP requests for one DSH session tab through the DevTools Network domain. Records method/URL/status/mimeType/resourceType/timing; headers (Cookie, Authorization, Set-Cookie) are never captured. Requires explicit user confirmation every time; Chrome shows a debugging banner while capture is active (max 10 minutes).
@@ -208,6 +226,7 @@ Start capturing HTTP requests for one DSH session tab through the DevTools Netwo
 | `tabId` | number | no | Optional tab id owned by this session. |
 | `resourceTypes` | array | no | Resource types to record (default: xhr, fetch, document). |
 | `maxEntries` | number | no | Max requests kept in the buffer (default 300, max 1000). |
+| `storeBodies` | boolean | no | Fetch and cache truncated, redacted text bodies while attached (default true). |
 
 ### `chrome_capture_stop`
 
@@ -229,6 +248,8 @@ Read captured HTTP metadata (method/URL/status/mimeType/resourceType/timing). He
 | `limit` | number | no | Max entries returned (default 50, max 200). |
 | `filter` | string | no | Case-insensitive filter over method + URL. |
 | `resourceTypes` | array | no | Only these resource types. |
+| `includeBodies` | boolean | no | Include truncated request/response bodies (default true). |
+| `maxBodyChars` | number | no | Body display cap, 64-65536 (default 4096). |
 
 ### `chrome_frames`
 

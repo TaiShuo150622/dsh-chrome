@@ -122,7 +122,7 @@ const tools = chromeTools({
   approval: () => approvalService,
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('thirty-two tools registered', tools.length === 32, tools.map((t) => t.name).join(', '))
+check('thirty-four tools registered', tools.length === 34, tools.map((t) => t.name).join(', '))
 
 const sessionId = 'session-test-abcdef'
 const exec = () => ({
@@ -172,7 +172,10 @@ try {
   denied = error?.code === 'APPROVAL_DENIED'
 }
 check('approval rejection fails closed', denied)
-check('rejected action never reaches the extension', requests.length === before)
+check(
+  'rejected action never reaches the extension',
+  requests.slice(before).every((request) => request.method === 'browser.site'),
+)
 
 host.kill('SIGTERM')
 await bridge.stop()

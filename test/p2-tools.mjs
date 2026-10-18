@@ -12,6 +12,7 @@ import { chromeTools } from '../src/tools.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-chrome-p2-'))
+process.env.DSH_HOME = home
 const bridge = new BridgeServer({ home })
 
 let failures = 0
@@ -64,6 +65,7 @@ host.stdout.on(
     requests.push({ method: message.method, params: message.params })
     const replies = {
       'browser.status': { extensionVersion: 'p2-fake', connected: true },
+      'browser.site': { tabId: 7, url: 'http://127.0.0.1:8765/', title: 'DSH Test', origin: 'http://127.0.0.1:8765' },
       'tab.screenshot': { dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' },
       'tab.hover': { ok: true, tag: 'button', label: 'Menu', tabId: 7 },
       'tab.click': { ok: true, tag: 'button', label: 'Submit', tabId: 7, dialogs: [{ type: 'confirm', message: 'ok?', accepted: true }] },
@@ -117,7 +119,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('thirty-two tools registered', tools.length === 32, tools.map((t) => t.name).join(', '))
+check('thirty-four tools registered', tools.length === 34, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -227,6 +229,59 @@ check('network status is returned', networkValue.entries?.[0]?.status === 200)
 check('chrome_network executes', networkValue.entries?.[0]?.url === 'https://example.com/a.js')
 check('network filter reaches the extension', requests.at(-1)?.params?.filter === 'a.js')
 
+// D1: site policy allow/block + audit
+const policyDir = path.join(home, 'cache', 'dsh-chrome')
+await fsp.mkdir(policyDir, { recursive: true })
+const policyFile = path.join(policyDir, 'policy.json')
+const auditFile = path.join(policyDir, 'audit.jsonl')
+await fsp.writeFile(
+  policyFile,
+  JSON.stringify({ origins: { 'http://127.0.0.1:8765': 'allow' } }),
+)
+const policyTools = chromeTools({
+  bridge,
+  attachments: () => null,
+  assets: () => ({ extensionId: 'test', extensionDir: '/tmp/ext', nativeManifestPath: '/tmp/nm', instructionsPath: '/tmp/i.md' }),
+  approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
+})
+const policyByName = Object.fromEntries(policyTools.map((definition) => [definition.name, definition]))
+const approvalsBeforeAllow = approvalCalls.length
+const requestsBeforeAllow = requests.length
+await policyByName.chrome_click.execute({ ref: 1 }, exec())
+check('allowed site skips session approval', approvalCalls.length === approvalsBeforeAllow)
+check(
+  'allowed site still reaches the extension',
+  requests.slice(requestsBeforeAllow).some((request) => request.method === 'tab.click'),
+)
+const auditText = await fsp.readFile(auditFile, 'utf8')
+check('allowed site writes an audit entry', auditText.includes('site-allow') && auditText.includes('127.0.0.1:8765'))
+
+const policyValue = await policyByName.chrome_policy.execute({}, exec())
+check('chrome_policy reports the effective mode', policyValue?.mode === 'allow' && policyValue?.source === 'policy.json')
+const auditValue = await policyByName.chrome_audit.execute({ limit: 5 }, exec())
+check('chrome_audit returns recent decisions', auditValue?.entries?.length >= 1 && auditValue.entries[0].decision === 'allowed')
+
+await fsp.writeFile(policyFile, JSON.stringify({ origins: { 'http://127.0.0.1:8765': 'block' } }))
+const blockedTools = chromeTools({
+  bridge,
+  attachments: () => null,
+  assets: () => ({ extensionId: 'test', extensionDir: '/tmp/ext', nativeManifestPath: '/tmp/nm', instructionsPath: '/tmp/i.md' }),
+  approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
+})
+const blockedByName = Object.fromEntries(blockedTools.map((definition) => [definition.name, definition]))
+const requestsBeforeBlocked = requests.length
+let blockedCode = null
+try {
+  await blockedByName.chrome_click.execute({ ref: 1 }, exec())
+} catch (error) {
+  blockedCode = error?.code
+}
+check('blocked site returns SITE_BLOCKED', blockedCode === 'SITE_BLOCKED')
+check(
+  'blocked site never reaches the extension',
+  requests.slice(requestsBeforeBlocked).every((request) => request.method === 'browser.site'),
+)
+
 // C2a: capture tools are always registered; start is hard-confirmed
 check('chrome_capture_start registered', Boolean(byName.chrome_capture_start))
 let captureStartCode = null
@@ -282,7 +337,7 @@ const allowTools = evalTools(
   { ask: async () => ({ answers: [{ id: 'confirm', selected: ['允许一次'] }] }) },
 )
 const allowByName = Object.fromEntries(allowTools.map((definition) => [definition.name, definition]))
-check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 33 && Boolean(allowByName.chrome_evaluate))
+check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 35 && Boolean(allowByName.chrome_evaluate))
 const evalValue = await allowByName.chrome_evaluate.execute({ expression: '1 + 1' }, exec())
 check('evaluate returns the CDP value', evalValue?.value === 2 && evalValue?.type === 'number')
 check('evaluate params reach the extension', requests.at(-1)?.method === 'tab.evaluate' && requests.at(-1)?.params?.expression === '1 + 1')

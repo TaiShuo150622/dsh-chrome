@@ -11,6 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { BridgeError } from './bridge.js'
+import { appendAudit, dshHome, loadPolicy, originOf, policyPath, readAudit, resolvePolicy } from './policy.js'
 
 const MUTATION_TIMEOUT_MS = 45000
 
@@ -135,11 +136,53 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     }
   }
 
+  const sessionShort = (exec) => {
+    const id = exec?.agent?.id || 'default'
+    return String(id).slice(-8)
+  }
+
+  async function currentSite(exec) {
+    try {
+      const site = await bridge.call('browser.site', { owner: ownerOf(exec) }, 5000)
+      return { origin: site?.origin || null, url: site?.url || '', title: site?.title || '', tabId: site?.tabId ?? null }
+    } catch {
+      return { origin: null, url: '', title: '', tabId: null }
+    }
+  }
+
+  function writeAudit(exec, toolName, action, site, decision, reason) {
+    appendAudit(dshHome(), {
+      ts: new Date().toISOString(),
+      session: sessionShort(exec),
+      tool: toolName,
+      origin: site?.origin || null,
+      action: String(action || '').slice(0, 300),
+      decision,
+      reason,
+    })
+  }
+
   async function guard(exec, toolName, action) {
+    const site = await currentSite(exec)
+    const resolved = resolvePolicy(loadPolicy(dshHome()), site.origin)
+    if (resolved.mode === 'block') {
+      writeAudit(exec, toolName, action, site, 'denied', 'site-blocked')
+      throw new BridgeError('SITE_BLOCKED', `site ${site.origin || '(unknown)'} is blocked by policy.json`)
+    }
+    if (resolved.mode === 'allow') {
+      writeAudit(exec, toolName, action, site, 'allowed', 'site-allow')
+      return
+    }
     // follow-dsh: the session's sandbox preset already grants full access.
-    if (sessionSandboxMode(exec) === 'danger-full-access') return
+    if (sessionSandboxMode(exec) === 'danger-full-access') {
+      writeAudit(exec, toolName, action, site, 'allowed', 'follow-dsh')
+      return
+    }
     const service = approval?.()
-    if (!service || !exec?.agent) return
+    if (!service || !exec?.agent) {
+      writeAudit(exec, toolName, action, site, 'allowed', 'no-approval-service')
+      return
+    }
     let outcome
     try {
       outcome = await service.request({
@@ -154,11 +197,14 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         signal: exec.signal,
       })
     } catch (error) {
+      writeAudit(exec, toolName, action, site, 'denied', 'approval-unavailable')
       throw new BridgeError('APPROVAL_DENIED', `approval unavailable: ${error?.message || error}`)
     }
     if (outcome !== 'allowed-once') {
+      writeAudit(exec, toolName, action, site, 'denied', `approval-${outcome}`)
       throw new BridgeError('APPROVAL_DENIED', `browser action was not approved (${outcome})`)
     }
+    writeAudit(exec, toolName, action, site, 'allowed', 'approval')
   }
 
   async function hardConfirmAsk(exec, toolName, { header, question, detail, timeoutMs }) {
@@ -1166,6 +1212,78 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         { maxChars: args?.maxChars, tabId: args?.tabId, owner: ownerOf(exec) },
         30000,
       )
+    },
+  })
+
+  // ------------------------------------------------------- 1b. policy/audit
+  list.push({
+    name: 'chrome_policy',
+    description:
+      'Read the effective site policy for the current page (or an explicit origin) from ~/.dsh/cache/dsh-chrome/policy.json. Modes: allow (skip ordinary approval), ask (session approval), block (SITE_BLOCKED). Read-only: policy.json is edited by the human, never by tools.',
+    parameters: {
+      type: 'object',
+      properties: {
+        origin: { type: 'string', description: 'Optional origin, e.g. https://example.com (default: current session tab).' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        origin: {},
+        mode: {},
+        source: { type: 'string' },
+        policyPath: { type: 'string' },
+        url: { type: 'string' },
+      }),
+      render: (_args, value) =>
+        renderText(
+          `Policy for ${value.origin || '(unknown origin)'}: ${value.mode || 'default (follow-dsh)'} [${value.source}]\npolicy file: ${value.policyPath}`,
+        ),
+    },
+    async execute(args, exec) {
+      const site = args?.origin
+        ? { origin: originOf(args.origin) || String(args.origin), url: '', title: '', tabId: null }
+        : await currentSite(exec)
+      const resolved = resolvePolicy(loadPolicy(dshHome()), site.origin)
+      return {
+        origin: resolved.origin,
+        mode: resolved.mode,
+        source: resolved.source,
+        policyPath: policyPath(dshHome()),
+        url: site.url || '',
+      }
+    },
+  })
+
+  list.push({
+    name: 'chrome_audit',
+    description:
+      'Read the recent site-policy audit log (~/.dsh/cache/dsh-chrome/audit.jsonl): timestamp, session, tool, origin, action, decision and reason for every guarded browser write.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max entries returned (default 20, max 100).' },
+        origin: { type: 'string', description: 'Only entries for this origin.' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        entries: { type: 'array', items: { type: 'object', additionalProperties: true } },
+      }),
+      render: (_args, value) => {
+        const lines = (value.entries || []).map(
+          (entry) =>
+            `- ${entry.ts} ${entry.tool || '?'} ${entry.origin || '(none)'} → ${entry.decision} (${entry.reason || ''})`,
+        )
+        return renderText(`Audit entries: ${value.entries?.length ?? 0}\n${lines.join('\n')}`)
+      },
+    },
+    async execute(args) {
+      const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.min(100, Number(args.limit))) : 20
+      const origin = args?.origin ? originOf(args.origin) || String(args.origin) : null
+      return { entries: readAudit(dshHome(), { limit, origin }) }
     },
   })
 

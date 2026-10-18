@@ -11,6 +11,18 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.74] - 2026-10-17
+
+### Added（批次 D1：站点信任 + 持久审批 + 审计）
+
+- 扩展 `browser.site`：返回当前会话标签的 origin/url/title（provider guard 用）
+- provider 侧 `~/.dsh/cache/dsh-chrome/policy.json`（人工编辑，工具不写）：origin → `allow` / `ask` / `block`
+- `guard` 前置站点策略：`allow` 跳过普通 approval；`block` 返回 `SITE_BLOCKED` 且动作不到达扩展；`ask`/无策略保持 follow-dsh
+- 审计 `~/.dsh/cache/dsh-chrome/audit.jsonl`（0600，append-only）：ts/session/tool/origin/action/decision/reason
+- 新工具（工具面 32→34）：`chrome_policy`（只读有效策略）、`chrome_audit`（读最近审计）
+- 真机：policy allow → chrome_goto/click 审计 `site-allow`；policy block → `SITE_BLOCKED` 且页面文本不变，审计 `site-blocked`；删除 policy 恢复默认
+- p2 测试覆盖 allow/block/audit/policy 工具与 SITE_BLOCKED 不到达扩展
+
 ## [0.1.73] - 2026-10-17
 
 ### Added（批次 C2b：抓包 body + 脱敏）

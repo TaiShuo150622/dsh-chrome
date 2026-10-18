@@ -494,6 +494,8 @@ async function handleRequest(message) {
       return frames(owner, params)
     case 'tab.evaluate':
       return evaluate(owner, params)
+    case 'browser.site':
+      return siteInfo(owner, params)
     case 'tab.capture_start':
       return startCapture(owner, params)
     case 'tab.capture_stop':
@@ -1793,6 +1795,19 @@ async function frames(owner, params) {
     }
     return { tabId, frames: out }
   })
+}
+
+async function siteInfo(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params?.tabId)
+  const tab = await chrome.tabs.get(tabId)
+  const url = tab.url || ''
+  let origin = null
+  try {
+    origin = new URL(url).origin
+  } catch {
+    origin = null
+  }
+  return { tabId, url, title: tab.title || '', origin }
 }
 
 async function evaluate(owner, params) {
