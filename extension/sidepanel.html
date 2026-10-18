@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DSH Sidebar</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="brand">
+        <span class="logo">DSH</span>
+        <div>
+          <strong>DeepSeek Harness</strong>
+          <small id="status">未连接</small>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="reload" title="重新加载">↻</button>
+        <button id="opentab" title="在标签页打开">↗</button>
+        <button id="settings" title="设置 DSH Web 地址">⚙</button>
+      </div>
+    </header>
+
+    <section id="setup" class="setup" hidden>
+      <h2>连接到 DSH</h2>
+      <p>
+        粘贴 <code>dsh web</code> 打印的完整地址（通常带 <code>?token=…</code>）。
+        侧边栏只是嵌入 DSH Web 界面，会话/工具仍由 DSH 本体执行。
+      </p>
+      <input id="url" type="url" spellcheck="false" placeholder="http://127.0.0.1:50863/?token=…" />
+      <div class="row">
+        <button id="save" class="primary">保存并打开</button>
+        <button id="detect">使用当前标签页的 DSH 地址</button>
+      </div>
+      <p class="hint" id="hint"></p>
+    </section>
+
+    <div id="frameWrap" class="frame-wrap" hidden>
+      <iframe id="frame" title="DeepSeek Harness" allow="clipboard-read; clipboard-write"></iframe>
+    </div>
+
+    <div id="empty" class="empty">
+      <p>还没有配置 DSH Web 地址。</p>
+      <button id="start" class="primary">开始配置</button>
+    </div>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

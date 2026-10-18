@@ -1,0 +1,73 @@
+:root {
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0f1115;
+  color: #e8eaf0;
+  min-width: 260px;
+}
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #232833;
+  background: #12151c;
+  flex: 0 0 auto;
+}
+.brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.brand strong { display: block; font-size: 13px; line-height: 1.2; white-space: nowrap; }
+.brand small { display: block; color: #8b93a7; font-size: 10px; margin-top: 2px; }
+.logo {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #4f7cff, #8b5cf6);
+  color: #fff;
+  font: 700 10px/1 ui-monospace, monospace;
+  letter-spacing: .3px;
+}
+.actions { display: flex; gap: 4px; flex: 0 0 auto; }
+button {
+  border: 1px solid #2d3444;
+  background: #1b1f29;
+  color: #cfd6e6;
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+button:hover { border-color: #4a5670; }
+button.primary { background: #2f5cff; border-color: #2f5cff; color: #fff; }
+button.primary:hover { background: #3c68ff; }
+.actions button { width: 28px; height: 28px; padding: 0; font-size: 14px; line-height: 1; }
+.setup { padding: 16px; overflow: auto; }
+.setup h2 { margin: 0 0 8px; font-size: 15px; }
+.setup p { margin: 0 0 12px; color: #aab2c5; font-size: 12px; line-height: 1.55; }
+.setup input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #2d3444;
+  background: #0b0d12;
+  color: #e8eaf0;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+.row { display: flex; flex-wrap: wrap; gap: 8px; }
+.hint { margin-top: 10px; }
+.hint.error { color: #f87171; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; background: #1b1f29; padding: 1px 4px; border-radius: 4px; }
+.frame-wrap { flex: 1 1 auto; min-height: 0; display: flex; }
+iframe { flex: 1 1 auto; width: 100%; height: 100%; border: 0; background: #0f1115; }
+.empty { flex: 1 1 auto; display: grid; place-content: center; gap: 10px; justify-items: center; color: #8b93a7; font-size: 12px; padding: 20px; text-align: center; }
+[hidden] { display: none !important; }

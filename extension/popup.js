@@ -5,6 +5,7 @@ const hint = document.getElementById('hint')
 const reconnect = document.getElementById('reconnect')
 const reload = document.getElementById('reload')
 const focus = document.getElementById('focus')
+const sidebar = document.getElementById('sidebar')
 const selfheal = document.getElementById('selfheal')
 const autoupdate = document.getElementById('autoupdate')
 
@@ -33,6 +34,16 @@ function render(status) {
     hint.textContent += `\nLast error: ${status.lastError}`
   }
 }
+
+sidebar.addEventListener('click', async () => {
+  try {
+    const win = await chrome.windows.getCurrent()
+    await chrome.sidePanel.open({ windowId: win.id })
+    window.close()
+  } catch (error) {
+    hint.textContent = `Sidebar failed: ${error?.message || error}`
+  }
+})
 
 chrome.storage.local.get('dshSelfHeal', (stored) => {
   const count = stored?.dshSelfHeal?.count || 0

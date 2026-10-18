@@ -11,6 +11,10 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.93] - 2026-10-18
+
+- 浏览器侧边栏 v1 preview：sidePanel 权限、sidepanel UI、popup Sidebar 按钮、DSH Web URL 配置/检测
+
 ## [0.1.92] - 2026-10-18
 
 - `chrome_pointer` 自动跟随 click/type/hover（op=auto，桌面默认开、headless 默认关）
