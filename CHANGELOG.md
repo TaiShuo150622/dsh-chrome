@@ -13,6 +13,14 @@
 
 ## [Unreleased]
 
+### Added（并行批次：capability / platform / screencast 可见性）
+
+- **backend capability 契约**（`src/capabilities.js`、`src/backend.js`）：10 项能力矩阵（desktop 10/10、headless 除 pick/pause 外 8/10）、`capabilities`/`supports()`、`test/backend-contract.mjs`、`docs/CAPABILITIES.md`
+- **平台/浏览器路径表**（`src/platform.js`、`src/install.js` 查表化）：chrome/edge/brave/chromium × mac/linux/win；macOS 产物逐字节不变；Windows 输出注册表命令但不执行；`docs/INSTALL-PLATFORM.md`
+- **screencast 后台 tab 无帧修复**（扩展 0.1.87）：start 时激活 tab/展开折叠组/恢复+聚焦窗口/USER_SWITCHED 复位；status 增加 visible/tabActive/frameAt/frameAgeMs/hint；真机验证 frames=1、visible=true
+- **viewer 提示**：页面/frame 404 文案说明需要可见 tab；status render 输出 visible/frameAgeMs/hint
+- **Ralph 3 轮性能试验**：截图走 screencast 帧流，578 轮/10s、每动作 17.08ms（旧 ~35.8ms）、RSS 1031MB；已接近 60Hz 合成上限
+
 ### Fixed（headless capture 对齐扩展语义）
 
 - 抓取阶段 `resourceTypes` 过滤生效；`maxEntries` 改为丢最旧保最新；`capture_requests` 取最新 N 条并按过滤后计数
