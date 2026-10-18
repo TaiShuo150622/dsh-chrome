@@ -19,6 +19,9 @@
 - **自愈计数在连接成功后归零**：之前 `dshSelfHeal.count` 只增不减，累计 5 次失败后自动重载永久失效；现在首条 native 消息即重置，并在内存里清空失败窗口
 - onInstalled 里补 `initActiveWindows`（缩进修正）；startup 也初始化 active window
 - extension-logic 新增回归：worker 启动后存在 `dsh-chrome-reconnect` alarm；首条 native 消息写入 `dshSelfHeal.count=0`
+- 真机验证（桌面 Chrome 0.1.79）：
+  - 扩展 reload + host kill 竞态：touch manifest → 0.35s 后 kill host → **+12s 自动重连**（新 host pid，无人工 ⟳）
+  - provider reload 竞态：host 在 bridge socket 重建期间重试 → **+8s 自动重连**
 
 ## [0.1.78] - 2026-10-17
 
