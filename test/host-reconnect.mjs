@@ -94,6 +94,7 @@ host.stdout.on(
 
 await waitFor(() => bridge.connected, 5000, 'initial host authentication')
 check('host connects to the first provider instance', bridge.connected)
+await waitFor(() => events.some((event) => event.event === 'ext.state'), 5000, 'initial ext.state event')
 const stateEvent = events.find((event) => event.event === 'ext.state')
 const manifestVersion = JSON.parse(await fsp.readFile(path.join(root, 'extension', 'manifest.json'), 'utf8')).version
 check('host reports the disk extension version on connect', stateEvent?.params?.version === manifestVersion, JSON.stringify(stateEvent?.params))
