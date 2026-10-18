@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：40
+> 工具数量：42
 
 ### `chrome_status`
 
@@ -231,6 +231,39 @@ Open a visible, dedicated Chrome window at a human-interaction step (login, CAPT
 |---|---|---|---|
 | `op` | enum(start | show | status | finish) | yes |  |
 | `url` | string | no | start/show: http(s) URL (show defaults to the current headless page). |
+
+### `chrome_pointer`
+
+Show a persistent virtual pointer pinned to an element (ref/selector) or viewport coordinates, with an optional label; op="show"/"move" pins it, op="hide" hides it, pulse:true plays a click ripple. The pointer is an overlay (pointer-events:none) and appears in screenshots but not in page text snapshots.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `op` | enum(show | move | hide) | yes |  |
+| `ref` | number | no | Pin to the element with this snapshot ref. |
+| `selector` | string | no | Pin to this CSS selector instead of ref. |
+| `x` | number | no | Viewport x (CSS px) when not using ref/selector. |
+| `y` | number | no | Viewport y (CSS px) when not using ref/selector. |
+| `label` | string | no | Label next to the pointer (default "DSH"; empty hides it). |
+| `pulse` | boolean | no | Play a click ripple after moving. |
+| `tabId` | number | no | Optional tab id owned by this session. |
+
+### `chrome_annotate`
+
+Draw annotations over the current page: highlight text (text/ref/selector), box/circle an element, draw an arrow from one target to another, or add a text label/index bubble; op="list" returns current annotations and op="clear" removes them (all, or one by id). Overlays appear in screenshots and are excluded from page text snapshots.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `op` | enum(highlight | box | circle | arrow | label | list | clear) | yes |  |
+| `ref` | number | no | Target element ref (highlight/box/circle/arrow/label). |
+| `selector` | string | no | Target CSS selector instead of ref. |
+| `text` | string | no | Text to find/highlight when no ref/selector is given. |
+| `fromRef` | number | no | Arrow start ref. |
+| `fromSelector` | string | no | Arrow start selector. |
+| `color` | string | no | CSS color (default cycles DSH palette). |
+| `label` | string | no | Text label/bubble content. |
+| `id` | string | no | clear: remove this annotation id only. |
+| `index` | number | no | label: numeric badge shown in the bubble. |
+| `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_screencast`
 

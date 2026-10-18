@@ -10,6 +10,17 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import zlib from 'node:zlib'
 
+let overlaySourceCache = null
+function overlaySource() {
+  if (overlaySourceCache != null) return overlaySourceCache
+  try {
+    overlaySourceCache = fs.readFileSync(new URL('../extension/overlay.js', import.meta.url), 'utf8')
+  } catch {
+    overlaySourceCache = ''
+  }
+  return overlaySourceCache
+}
+
 const CHROME_CANDIDATES = [
   process.env.DSH_HEADLESS_CHROME,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -54,6 +65,7 @@ const SUPPORTED = new Set([
   'tab.capture_start',
   'tab.capture_stop',
   'tab.capture_requests',
+  'tab.overlay',
   'tab.screencast_start',
   'tab.screencast_stop',
   'tab.screencast_status',
@@ -939,8 +951,12 @@ function snapshotPage(maxChars, boxes) {
     controls.push(control)
   }
   // body.innerText forces a layout: read it once and derive both text and the
-  // truncation flag from the same string.
+  // truncation flag from the same string. Hide the DSH overlay so annotations
+  // and the virtual pointer do not leak into page text.
+  const overlayRoot = document.getElementById('__dsh_overlay__')
+  if (overlayRoot) overlayRoot.style.display = 'none'
   const bodyText = document.body?.innerText || ''
+  if (overlayRoot) overlayRoot.style.display = ''
   return {
     title: document.title || '',
     url: location.href,
@@ -2728,6 +2744,23 @@ export class HeadlessDriver {
         tab.viewport = mobile ? null : { w: width, h: height, dpr: 1 }
         await this.stopShotStream(tab)
         return { applied: true, reloaded: false, viewport: { width, height, mobile } }
+      }
+      case 'tab.overlay': {
+        const tab = await this.ensureTab(owner, params.tabId)
+        const source = overlaySource()
+        if (!source) throw error('UNSUPPORTED_BACKEND', 'overlay script is not available')
+        await this.evalOn(
+          tab,
+          `(() => { if (!window.__dshOverlay) { ${source} } return Boolean(window.__dshOverlay) })()`,
+        )
+        const payload = { ...params }
+        delete payload.owner
+        delete payload.tabId
+        const result = await this.evalOn(tab, `window.__dshOverlay.handle(${JSON.stringify(payload)})`)
+        // Overlay changes are page paints; make the next screenshot wait for a
+        // fresh frame instead of serving the cached pre-overlay frame.
+        tab.renderChangeAt = Date.now() / 1000
+        return result
       }
       case 'tab.snapshot': {
         const tab = await this.ensureTab(owner, params.tabId)

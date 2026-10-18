@@ -1169,14 +1169,41 @@ try {
   assert.equal(driver.loginStatus().running, false)
   await run('chrome_close_session')
 
+  await run('chrome_goto', { url: `${BASE}/` })
+  await check('chrome_pointer shows, moves and hides the virtual pointer', async () => {
+    const shown = await run('chrome_pointer', { op: 'show', selector: 'h1', label: 'DSH', pulse: true })
+    assert.equal(shown.ok, true)
+    assert.equal(shown.visible, true)
+    const hidden = await run('chrome_pointer', { op: 'hide' })
+    assert.equal(hidden.visible, false)
+  })
+
+  await check('chrome_annotate highlight/box/arrow/label/list/clear', async () => {
+    const highlight = await run('chrome_annotate', { op: 'highlight', selector: 'h1', color: '#ff0' })
+    assert.equal(highlight.ok, true)
+    const box = await run('chrome_annotate', { op: 'box', selector: 'button' })
+    assert.equal(box.ok, true)
+    const circle = await run('chrome_annotate', { op: 'circle', selector: 'input' })
+    assert.equal(circle.ok, true)
+    const arrow = await run('chrome_annotate', { op: 'arrow', fromSelector: 'h1', selector: 'button', label: 'here' })
+    assert.equal(arrow.ok, true)
+    const label = await run('chrome_annotate', { op: 'label', selector: 'h1', label: 'title', index: 1 })
+    assert.equal(label.ok, true)
+    const list = await run('chrome_annotate', { op: 'list' })
+    assert.equal(list.ok, true)
+    assert.ok(list.count >= 5)
+    const cleared = await run('chrome_annotate', { op: 'clear' })
+    assert.equal(cleared.ok, true)
+  })
+
   // --------------------------------------------------------------- coverage
   await check('all chrome_* tool definitions were exercised', () => {
     const missing = tools.map((tool) => tool.name).filter((name) => !covered.has(name))
     assert.deepEqual(missing, [], `tools never exercised: ${missing.join(', ')}`)
-    assert.equal(tools.length, 41, 'expected 40 default tools + conditional chrome_evaluate')
+    assert.equal(tools.length, 43, 'expected 42 default tools + conditional chrome_evaluate')
   })
 
-  await check('default registration is 40 tools (chrome_evaluate is opt-in)', () => {
+  await check('default registration is 42 tools (chrome_evaluate is opt-in)', () => {
     const defaultTools = chromeTools({
       bridge: router,
       attachments,
@@ -1186,7 +1213,7 @@ try {
       userQuestions,
       config: () => ({}),
     })
-    assert.equal(defaultTools.length, 40)
+    assert.equal(defaultTools.length, 42)
     assert.equal(defaultTools.some((tool) => tool.name === 'chrome_evaluate'), false)
   })
 

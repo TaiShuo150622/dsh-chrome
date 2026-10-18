@@ -382,7 +382,7 @@ check(
 const PAGE_ACTIONS = vm.runInContext('PAGE_ACTIONS', sandbox)
 check(
   'PAGE_ACTIONS has the expected page actions',
-  ['snapshot', 'click', 'type', 'press', 'scroll', 'find', 'hover', 'select', 'getText', 'console', 'network'].every(
+  ['snapshot', 'click', 'type', 'press', 'scroll', 'find', 'hover', 'select', 'getText', 'console', 'network', 'overlay'].every(
     (name) => typeof PAGE_ACTIONS[name] === 'function',
   ),
 )

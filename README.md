@@ -3,9 +3,9 @@
 **DSH 桌面端（DeepSeek Harness Desktop）的 Chrome 操控插件**：让模型直接操作你当前已登录的 Google Chrome —— 读页面、点击、填表、开后台标签、截图看图、按会话隔离，危险动作先问你。
 
 > 状态：**P1 真机可用（40 个工具；含后台 headless Chromium 同套工具面）**（2026-10-17）
-> 版本：扩展 **0.1.90** / provider **0.1.90**；`npm test` **22 个测试文件全过**；私有仓库 CI 绿。
+> 版本：扩展 **0.1.91** / provider **0.1.91**；`npm test` **23 个测试文件全过**；私有仓库 CI 绿。
 > 重点能力：桌面 Chrome 可见操作 + `backend:"headless"` 后台无窗口浏览器 + screencast 实时画面 viewer。
-> 待做与阻塞项：[docs/BACKLOG.md](docs/BACKLOG.md)；最新发布说明：[docs/RELEASE-NOTES-0.1.90.md](docs/RELEASE-NOTES-0.1.90.md)。
+> 待做与阻塞项：[docs/BACKLOG.md](docs/BACKLOG.md)；最新发布说明：[docs/RELEASE-NOTES-0.1.91.md](docs/RELEASE-NOTES-0.1.91.md)。
 
 ## 快速开始（macOS）
 
@@ -29,6 +29,7 @@
 | 抓包/实时画面 | capture（脱敏、预算、自动停）/ screencast + viewer（loopback token URL） |
 | 登录态 | `chrome_headless_login`：一次性登录到 headless profile（硬确认 + 可见窗口） |
 | 体验 | follow-dsh 审批、dialog 自动处理（安全默认）、开发期扩展自动重载 |
+| 可视化 | `chrome_pointer` 常驻虚拟鼠标；`chrome_annotate` 高亮/框/圈/箭头/标签 |
 | 稳定性 | host 常驻重连、SW 端口自愈、provider/扩展版本握手 |
 
 工具参数与说明见 [docs/TOOLS.md](docs/TOOLS.md)（自动生成）。
@@ -71,6 +72,7 @@
 - [能力差距与参考项目分析：需求、验收与公开项目借鉴](docs/GAP-ANALYSIS.md)
 - [安装指南（macOS 本地/开发者）](docs/INSTALL.md) · [工具参考（自动生成）](docs/TOOLS.md)
 - [用法示例：典型任务的工具序列](docs/EXAMPLES.md) · [FAQ](docs/FAQ.md)
+- [发布说明 0.1.91（虚拟鼠标/标注）](docs/RELEASE-NOTES-0.1.91.md)
 - [发布说明 0.1.90（人工接管/CI 硬化）](docs/RELEASE-NOTES-0.1.90.md)
 - [发布说明 0.1.89（Windows host/沙箱 QA/安全收口）](docs/RELEASE-NOTES-0.1.89.md)
 - [发布说明 0.1.88（能力门控/操作记录/性能循环）](docs/RELEASE-NOTES-0.1.88.md)

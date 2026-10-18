@@ -1659,6 +1659,110 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   })
 
+  // ------------------------------------------------ 4h-2. pointer/annotate
+  list.push({
+    name: 'chrome_pointer',
+    description:
+      'Show a persistent virtual pointer pinned to an element (ref/selector) or viewport coordinates, with an optional label; op="show"/"move" pins it, op="hide" hides it, pulse:true plays a click ripple. The pointer is an overlay (pointer-events:none) and appears in screenshots but not in page text snapshots.',
+    parameters: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['show', 'move', 'hide'] },
+        ref: { type: 'number', description: 'Pin to the element with this snapshot ref.' },
+        selector: { type: 'string', description: 'Pin to this CSS selector instead of ref.' },
+        x: { type: 'number', description: 'Viewport x (CSS px) when not using ref/selector.' },
+        y: { type: 'number', description: 'Viewport y (CSS px) when not using ref/selector.' },
+        label: { type: 'string', description: 'Label next to the pointer (default "DSH"; empty hides it).' },
+        pulse: { type: 'boolean', description: 'Play a click ripple after moving.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['op'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({ ok: { type: 'boolean' }, visible: { type: 'boolean' }, x: { type: 'number' }, y: { type: 'number' }, label: { type: 'string' }, error: { type: 'string' } }),
+      render: (_args, value) =>
+        value?.visible
+          ? renderText(`Pointer at (${Math.round(value.x)}, ${Math.round(value.y)}) label=${JSON.stringify(value.label || '')}`)
+          : renderText(value?.error ? `Pointer error: ${value.error}` : 'Pointer hidden'),
+    },
+    async execute(args, exec) {
+      const op = String(args?.op || 'show')
+      return call('tab.overlay', {
+        op: op === 'hide' ? 'hide-pointer' : 'pointer',
+        ref: args?.ref,
+        selector: args?.selector,
+        x: args?.x,
+        y: args?.y,
+        label: args?.label,
+        pulse: Boolean(args?.pulse),
+        tabId: args?.tabId,
+        owner: ownerOf(exec),
+      })
+    },
+  })
+
+  list.push({
+    name: 'chrome_annotate',
+    description:
+      'Draw annotations over the current page: highlight text (text/ref/selector), box/circle an element, draw an arrow from one target to another, or add a text label/index bubble; op="list" returns current annotations and op="clear" removes them (all, or one by id). Overlays appear in screenshots and are excluded from page text snapshots.',
+    parameters: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['highlight', 'box', 'circle', 'arrow', 'label', 'list', 'clear'] },
+        ref: { type: 'number', description: 'Target element ref (highlight/box/circle/arrow/label).' },
+        selector: { type: 'string', description: 'Target CSS selector instead of ref.' },
+        text: { type: 'string', description: 'Text to find/highlight when no ref/selector is given.' },
+        fromRef: { type: 'number', description: 'Arrow start ref.' },
+        fromSelector: { type: 'string', description: 'Arrow start selector.' },
+        color: { type: 'string', description: 'CSS color (default cycles DSH palette).' },
+        label: { type: 'string', description: 'Text label/bubble content.' },
+        id: { type: 'string', description: 'clear: remove this annotation id only.' },
+        index: { type: 'number', description: 'label: numeric badge shown in the bubble.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['op'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        ok: { type: 'boolean' },
+        id: { type: 'string' },
+        kind: { type: 'string' },
+        count: { type: 'number' },
+        cleared: {},
+        annotations: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        rect: { type: 'object', additionalProperties: true },
+        error: { type: 'string' },
+      }),
+      render: (_args, value) => {
+        if (!value?.ok) return renderText(`Annotate error: ${value?.error || 'unknown'}`)
+        if (Array.isArray(value.annotations)) {
+          const lines = value.annotations.map((a) => `${a.id} ${a.kind} ${a.label || ''}`)
+          return renderText(`Annotations (${value.count ?? lines.length}):
+${lines.length ? lines.join('\n') : '(none)'}`)
+        }
+        if (value.cleared) return renderText(`Cleared ${value.cleared === true ? 'all annotations' : `annotation ${value.cleared}`}`)
+        return renderText(`Added ${value.kind || 'annotation'} ${value.id || ''} (${value.count ?? '?'} total)`)
+      },
+    },
+    async execute(args, exec) {
+      return call('tab.overlay', {
+        op: String(args?.op || 'list'),
+        ref: args?.ref,
+        selector: args?.selector,
+        text: args?.text,
+        from: args?.fromRef != null ? { ref: args.fromRef } : args?.fromSelector ? { selector: args.fromSelector } : undefined,
+        color: args?.color,
+        label: args?.label,
+        id: args?.id,
+        index: args?.index,
+        tabId: args?.tabId,
+        owner: ownerOf(exec),
+      })
+    },
+  })
+
   // ----------------------------------------------------- 4j. screencast
   list.push({
     name: 'chrome_screencast',

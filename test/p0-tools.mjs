@@ -127,7 +127,7 @@ const tools = chromeTools({
   approval: () => ({ request: async () => 'allowed-once' }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('forty tools registered', tools.length === 40, tools.map((t) => t.name).join(', '))
+check('forty-two tools registered', tools.length === 42, tools.map((t) => t.name).join(', '))
 for (const definition of tools) {
   check(`${definition.name} has output schema and render`, Boolean(definition.output?.schema && definition.output?.render))
 }

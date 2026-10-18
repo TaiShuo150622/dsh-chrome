@@ -703,6 +703,8 @@ async function handleRequest(message) {
       return drag(owner, params)
     case 'tab.pdf':
       return pdf(owner, params)
+    case 'tab.overlay':
+      return overlayAction(owner, params)
     case 'tab.a11y':
       return a11y(owner, params)
     case 'tab.get_text':
@@ -764,6 +766,7 @@ const PAGE_ACTIONS = {
   drag: dragByRef,
   elementBox,
   html: outerHtml,
+  overlay: (params) => (window.__dshOverlay ? window.__dshOverlay.handle(params) : { ok: false, error: 'OVERLAY_NOT_READY' }),
   selection: readSelection,
   pickStart,
   pickStatus,
@@ -2512,6 +2515,21 @@ async function tabs(owner, params) {
     return { tabId, url: tab.url || '', title: tab.title || '', focused: true }
   }
   throw bridgeError('UNSUPPORTED', `unknown tabs op: ${op}`)
+}
+
+async function overlayAction(owner, params) {
+  await ensureNotPaused(owner)
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  let result = await callInPage(tabId, 'overlay', [params])
+  if (result?.error === 'OVERLAY_NOT_READY') {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['overlay.js'], world: 'MAIN' })
+    } catch (error) {
+      throw bridgeError('OVERLAY_FAILED', `cannot inject overlay: ${error?.message || error}`)
+    }
+    result = await callInPage(tabId, 'overlay', [params])
+  }
+  return result
 }
 
 async function selectAgent(owner, params) {
