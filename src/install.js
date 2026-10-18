@@ -1,7 +1,9 @@
 /**
  * Installation assets for the desktop-extension backend:
  * - copy host.mjs and generate a platform launcher that runs it with the DSH
- *   app's own Electron-as-Node binary (no system Node requirement);
+ *   app's own Electron-as-Node binary (no system Node requirement); on Windows
+ *   prefer the packaged Node SEA `dsh-chrome-host.exe` when present, because
+ *   Chrome cannot CreateProcess a `.cmd` native host (see docs/WINDOWS-HOST.md);
  * - write the native messaging host manifest for the selected browser/platform
  *   (macOS / Linux: a well-known per-browser directory; Windows: a DSH-owned
  *   file plus a manual registry registration, which is only printed here and
@@ -21,7 +23,91 @@ import { browserPaths, getPlatform } from './platform.js'
 
 export const HOST_NAME = 'com.deepseek.dsh.chrome'
 
+/**
+ * Name of the single-file Windows native host built by
+ * `scripts/build-windows-host.mjs` (Node SEA with host/host.mjs embedded).
+ * Chrome on Windows can only launch an executable, so this is what the native
+ * messaging manifest must point at; `.cmd` is a development-only fallback.
+ */
+export const WINDOWS_HOST_EXE_NAME = 'dsh-chrome-host.exe'
+
 const PLATFORM_LABELS = Object.freeze({ mac: 'macOS', linux: 'Linux', win: 'Windows' })
+
+/**
+ * Where a packaged Windows `host.exe` may live, in preference order:
+ *
+ *   1. `DSH_CHROME_HOST_EXE` (explicit override / custom release layout)
+ *   2. `host/bin/win32-<arch>/dsh-chrome-host.exe` — the shipped layout
+ *      (`package.json` `files` already includes the whole `host/` tree)
+ *   3. `dist/windows-host/win32-<arch>/dsh-chrome-host.exe` — optional local
+ *      build dir (`--out dist/windows-host/...`; `dist/` is gitignored)
+ *   4. `host/host.exe` — ad-hoc copy used during bring-up
+ *
+ * `ensureInstallAssets()` returns `[]` for macOS/Linux and never looks here.
+ */
+export function windowsHostExeCandidates({ root, arch = process.arch, env = process.env } = {}) {
+  if (!root) throw new Error('windowsHostExeCandidates requires { root }')
+  const binName = `win32-${arch}`
+  const candidates = [
+    env?.DSH_CHROME_HOST_EXE,
+    path.join(root, 'host', 'bin', binName, WINDOWS_HOST_EXE_NAME),
+    path.join(root, 'dist', 'windows-host', binName, WINDOWS_HOST_EXE_NAME),
+    path.join(root, 'host', 'host.exe'),
+  ]
+  return candidates.filter((candidate) => typeof candidate === 'string' && candidate.length > 0)
+}
+
+async function firstExistingPath(fsImpl, candidates) {
+  // Test fakes (test/install-platform.mjs) do not implement access(): treat
+  // that as "no packaged host.exe" and keep the historical .cmd scaffold.
+  if (typeof fsImpl?.access !== 'function') return null
+  for (const candidate of candidates) {
+    try {
+      await fsImpl.access(candidate)
+      return candidate
+    } catch {
+      // keep looking
+    }
+  }
+  return null
+}
+
+async function statFile(fsImpl, file) {
+  if (typeof fsImpl?.stat !== 'function') return null
+  try {
+    const stat = await fsImpl.stat(file)
+    return stat?.isFile?.() ? stat : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Copy the SEA exe into the DSH cache.
+ *
+ * Windows keeps the executable image locked while the native host is running,
+ * so a plain `copyFile` fails with EBUSY/EPERM when DSH restarts (or reloads
+ * the provider) while Chrome still has a host process. Keep the already
+ * installed exe in that case and warn: the next browser exit releases the lock
+ * and a later DSH start installs the new build. A failed copy never truncates
+ * the destination (the open itself is denied), so the old exe stays runnable.
+ */
+async function installWindowsHostExe(fsImpl, source, target, logger) {
+  const targetStat = await statFile(fsImpl, target)
+  try {
+    await fsImpl.copyFile(source, target)
+    return { copied: true, reason: 'installed' }
+  } catch (error) {
+    if (targetStat) {
+      logger?.warn?.(
+        'dsh-chrome: cannot replace the running Windows host.exe (%s); keeping the installed copy. Fully exit the browser and restart DSH to install the new build.',
+        error?.message || error,
+      )
+      return { copied: false, reason: 'locked', error }
+    }
+    throw error
+  }
+}
 
 export function dshHome() {
   return process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
@@ -77,11 +163,11 @@ function commandQuote(value) {
 }
 
 /**
- * Windows launcher scaffold. Chrome on Windows expects the manifest `path` to
- * be an executable; a `.cmd` is the cheapest thing that keeps the manifest
- * writable without a build step, but it has not been verified on a real
- * Windows box and may need to be replaced by a small `.exe` wrapper before
- * release. See docs/INSTALL-PLATFORM.md ("当前限制").
+ * Development-only Windows fallback launcher. Chrome on Windows expects the
+ * manifest `path` to be an executable and cannot CreateProcess a `.cmd`; this
+ * file only exists so a source checkout can install *something* without a
+ * build step. Release installs must ship `dsh-chrome-host.exe` (Node SEA) and
+ * `ensureInstallAssets()` points the manifest at it — see docs/WINDOWS-HOST.md.
  */
 function windowsLauncherScript({ nodePath }) {
   const lines = [
@@ -141,6 +227,7 @@ function installInstructions({
   extensionId,
   nativeManifestPath,
   launcherPath,
+  launcherKind,
   cacheDir,
   registration,
 }) {
@@ -149,7 +236,7 @@ function installInstructions({
     `- 扩展 ID: ${extensionId}`,
     `- 扩展目录: ${extensionDir}`,
     `- native messaging manifest: ${nativeManifestPath}`,
-    `- native host launcher: ${launcherPath}`,
+    `- native host launcher (${launcherKind}): ${launcherPath}`,
     `- 桥接 discovery: ${path.join(cacheDir, 'bridge.json')}`,
     `- host 日志: ${path.join(cacheDir, 'host.log')}`,
   ]
@@ -185,8 +272,16 @@ function installInstructions({
   if (platform === 'win') {
     notes.push(
       '- Windows 上浏览器不读固定的 NativeMessagingHosts 目录：manifest 可以放在任意位置，注册表默认值指向它即可。',
-      '- 当前 launcher 是 `.cmd` 脚手架（未真机验证；Chrome 通常要求真正的 `.exe`），正式发布前需要替换。',
     )
+    if (launcherKind === 'exe') {
+      notes.push(
+        '- manifest 的 `path` 指向 Node SEA 单文件 `dsh-chrome-host.exe`（内嵌 host.mjs）；浏览器直接启动它，用户无需安装 Node。',
+      )
+    } else {
+      notes.push(
+        '- 未找到预编译的 `dsh-chrome-host.exe`，当前 manifest 指向 `.cmd` 脚手架。Chrome 在 Windows 上通常无法直接启动 `.cmd`；正式使用前请构建并随包分发 host.exe（见 docs/WINDOWS-HOST.md）。',
+      )
+    }
   }
   if (platform === 'linux') {
     notes.push('- 若 manifest 是在浏览器启动后才写入的，完全退出并重新打开浏览器即可。')
@@ -240,17 +335,43 @@ export async function ensureInstallAssets({
   const manifest = JSON.parse(await fsImpl.readFile(path.join(extensionDir, 'manifest.json'), 'utf8'))
   const extensionId = extensionIdFromKey(manifest.key)
 
+  const isWindows = platformId === 'win'
+  const hostExeCandidates = isWindows ? windowsHostExeCandidates({ root, env }) : []
+  const hostExeSource = isWindows ? await firstExistingPath(fsImpl, hostExeCandidates) : null
+
   const hostSource = path.join(root, 'host', 'host.mjs')
   const hostTarget = path.join(hostDir, 'host.mjs')
-  await fsImpl.copyFile(hostSource, hostTarget)
 
-  const isWindows = platformId === 'win'
-  const launcherPath = path.join(hostDir, isWindows ? 'dsh-chrome-host.cmd' : 'dsh-chrome-host')
-  const launcher = isWindows
-    ? windowsLauncherScript({ nodePath: process.execPath })
-    : posixLauncherScript({ nodePath: process.execPath })
-  await fsImpl.writeFile(launcherPath, launcher, { mode: isWindows ? 0o644 : 0o755 })
-  if (!isWindows) await fsImpl.chmod(launcherPath, 0o755)
+  let launcherPath
+  let launcherKind
+  if (hostExeSource) {
+    // Windows release path: a Node SEA executable with host.mjs embedded.
+    // Chrome launches it through CreateProcess; no Node/Electron on the box.
+    launcherPath = path.join(hostDir, WINDOWS_HOST_EXE_NAME)
+    const installed = await installWindowsHostExe(fsImpl, hostExeSource, launcherPath, logger)
+    launcherKind = 'exe'
+    if (installed.copied) {
+      logger?.info?.('dsh-chrome: Windows native host executable installed at %s', launcherPath)
+    }
+  } else {
+    // macOS/Linux unchanged; Windows keeps the historical .cmd scaffold for
+    // source checkouts, with a warning because Chrome usually cannot run it.
+    await fsImpl.copyFile(hostSource, hostTarget)
+    launcherPath = path.join(hostDir, isWindows ? 'dsh-chrome-host.cmd' : 'dsh-chrome-host')
+    launcherKind = isWindows ? 'cmd' : 'script'
+    const launcher = isWindows
+      ? windowsLauncherScript({ nodePath: process.execPath })
+      : posixLauncherScript({ nodePath: process.execPath })
+    await fsImpl.writeFile(launcherPath, launcher, { mode: isWindows ? 0o644 : 0o755 })
+    if (!isWindows) await fsImpl.chmod(launcherPath, 0o755)
+    if (isWindows) {
+      logger?.warn?.(
+        'dsh-chrome: Windows host.exe not found (looked at %s); falling back to the .cmd scaffold at %s. Chrome normally cannot launch a .cmd — run `node scripts/build-windows-host.mjs` (see docs/WINDOWS-HOST.md).',
+        hostExeCandidates.join('; '),
+        launcherPath,
+      )
+    }
+  }
 
   const nativeManifestPath = path.join(paths.nativeMessagingHostsDir, `${HOST_NAME}.json`)
   await fsImpl.mkdir(paths.nativeMessagingHostsDir, { recursive: true })
@@ -292,6 +413,7 @@ export async function ensureInstallAssets({
     extensionId,
     nativeManifestPath,
     launcherPath,
+    launcherKind,
     cacheDir,
     registration,
   })
@@ -314,6 +436,9 @@ export async function ensureInstallAssets({
     extensionDir,
     nativeManifestPath,
     launcherPath,
+    launcherKind,
+    hostExePath: launcherKind === 'exe' ? launcherPath : null,
+    hostExeCandidates,
     hostDir,
     instructionsPath,
     chromeNativeHostsDir: paths.nativeMessagingHostsDir,

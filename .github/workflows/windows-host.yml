@@ -1,0 +1,95 @@
+name: windows-host
+
+# Build the Windows native messaging host as a single Node SEA executable.
+# Chrome on Windows can only launch an .exe through the native messaging
+# manifest path; the .cmd scaffold is development-only. See docs/WINDOWS-HOST.md.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'host/**'
+      - 'scripts/build-windows-host.mjs'
+      - 'src/install.js'
+      - 'src/platform.js'
+      - 'test/platform-windows-host.mjs'
+      - 'docs/WINDOWS-HOST.md'
+      - '.github/workflows/windows-host.yml'
+  pull_request:
+    paths:
+      - 'host/**'
+      - 'scripts/build-windows-host.mjs'
+      - 'src/install.js'
+      - 'src/platform.js'
+      - 'test/platform-windows-host.mjs'
+      - 'docs/WINDOWS-HOST.md'
+      - '.github/workflows/windows-host.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Static checks (host, build script, Windows-host tests)
+        run: |
+          node --check host/host.mjs
+          node --check scripts/build-windows-host.mjs
+          node --check test/platform-windows-host.mjs
+          node test/platform-windows-host.mjs
+
+      - name: Install pinned postject (SEA blob injector)
+        run: npm install --no-save --no-package-lock postject@1.0.0-alpha.6
+
+      - name: Build host.exe with Node SEA
+        run: node scripts/build-windows-host.mjs --arch x64
+
+      - name: Smoke test host.exe (stdin EOF, no provider)
+        run: |
+          $env:DSH_HOME = Join-Path $env:RUNNER_TEMP 'dsh-host-smoke'
+          Remove-Item -Recurse -Force $env:DSH_HOME -ErrorAction Ignore
+          cmd /c "host\bin\win32-x64\dsh-chrome-host.exe < NUL"
+          if ($LASTEXITCODE -ne 0) { throw "host.exe exited $LASTEXITCODE" }
+          $log = Join-Path $env:DSH_HOME 'cache\dsh-chrome\host.log'
+          if (-not (Test-Path $log)) { throw "missing host.log at $log" }
+          Get-Content $log
+          if (-not (Select-String -Path $log -Pattern 'host started' -Quiet)) {
+            throw 'host.exe did not log "host started"'
+          }
+          if (-not (Select-String -Path $log -Pattern 'stdin ended' -Quiet)) {
+            throw 'host.exe did not shut down on stdin EOF'
+          }
+
+      - name: Install-layout integration (manifest path -> host.exe)
+        run: node test/platform-windows-host.mjs --require-built
+
+      - name: Record artifact size and SHA-256
+        run: |
+          $file = 'host/bin/win32-x64/dsh-chrome-host.exe'
+          Get-Item $file | Format-List Name,Length
+          (Get-FileHash $file -Algorithm SHA256).Hash | Set-Content "$file.sha256"
+          Get-Content "$file.sha256"
+
+      - name: Upload dsh-chrome-host.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-chrome-host-windows-x64
+          path: |
+            host/bin/win32-x64/dsh-chrome-host.exe
+            host/bin/win32-x64/dsh-chrome-host.exe.sha256
+          if-no-files-found: error
+          retention-days: 30
