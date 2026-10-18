@@ -246,7 +246,7 @@ Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG
 
 ### `chrome_shots`
 
-List or read screenshot history saved by this provider (~/.dsh/cache/dsh-chrome/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under that directory) as an image attachment.
+List or read screenshot history saved by this provider (desktop ~/.dsh/cache/dsh-chrome/screenshots and headless ~/.dsh/cache/dsh-chrome/headless/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under either directory) as an image attachment.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
