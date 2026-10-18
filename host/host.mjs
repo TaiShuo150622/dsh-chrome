@@ -216,11 +216,27 @@ function writeNative(message) {
   process.stdout.write(Buffer.concat([header, body]))
 }
 
-function materializeScreencastFrame(message) {
+// Viewer frame materialization is throttled like the headless driver
+// (docs/HEADLESS.md §4.1.6): the live viewer polls every 300ms, so decode and
+// atomic-write at most once per interval, with one trailing timer so the last
+// frame of a burst still lands.
+const SCREENCAST_WRITE_INTERVAL_MS = 100
+let screencastPending = null
+let screencastFlushTimer = null
+let screencastLastWriteAt = 0
+let screencastDirReady = false
+
+function flushScreencastFrame() {
+  const message = screencastPending
+  screencastPending = null
+  if (!message) return
+  screencastLastWriteAt = Date.now()
   try {
+    if (!screencastDirReady) {
+      fs.mkdirSync(screencastDir, { recursive: true })
+      screencastDirReady = true
+    }
     const data = String(message?.data || '')
-    if (!data) return
-    fs.mkdirSync(screencastDir, { recursive: true })
     const format = message.format === 'png' ? 'png' : 'jpg'
     const file = path.join(screencastDir, `latest.${format}`)
     const buffer = Buffer.from(data, 'base64')
@@ -241,6 +257,22 @@ function materializeScreencastFrame(message) {
   } catch {
     // screencast frames are best effort
   }
+}
+
+function materializeScreencastFrame(message) {
+  if (!String(message?.data || '')) return
+  screencastPending = message
+  const waited = Date.now() - screencastLastWriteAt
+  if (waited >= SCREENCAST_WRITE_INTERVAL_MS) {
+    flushScreencastFrame()
+    return
+  }
+  if (screencastFlushTimer) return
+  screencastFlushTimer = setTimeout(() => {
+    screencastFlushTimer = null
+    flushScreencastFrame()
+  }, SCREENCAST_WRITE_INTERVAL_MS - waited)
+  screencastFlushTimer.unref?.()
 }
 
 function handleNativeMessage(message) {

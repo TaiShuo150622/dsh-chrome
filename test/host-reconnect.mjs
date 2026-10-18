@@ -99,6 +99,47 @@ const stateEvent = events.find((event) => event.event === 'ext.state')
 const manifestVersion = JSON.parse(await fsp.readFile(path.join(root, 'extension', 'manifest.json'), 'utf8')).version
 check('host reports the disk extension version on connect', stateEvent?.params?.version === manifestVersion, JSON.stringify(stateEvent?.params))
 
+// Viewer screencast frames are materialized by the host itself and throttled to
+// one flush per 100ms (docs/HEADLESS.md §4.1.6). Two frames sent back to back
+// must still leave the *newest* one on disk: the first flushes immediately, the
+// second lands through the trailing timer.
+const screencastDir = path.join(home, 'cache', 'dsh-chrome', 'screencast')
+const castFrames = [Buffer.from([0xff, 0xd8, 0x01, 0xd9]), Buffer.from([0xff, 0xd8, 0x02, 0xd9])]
+for (const [index, frame] of castFrames.entries()) {
+  host.stdin.write(
+    encodeNative({
+      type: 'screencast-frame',
+      data: frame.toString('base64'),
+      format: 'jpg',
+      frames: index + 1,
+      metadata: { timestamp: Date.now() / 1000 },
+    }),
+  )
+}
+let castMeta = null
+let castWrite = null
+const castDeadline = Date.now() + 5000
+while (Date.now() < castDeadline) {
+  try {
+    castMeta = JSON.parse(await fsp.readFile(path.join(screencastDir, 'meta.json'), 'utf8'))
+    castWrite = await fsp.readFile(path.join(screencastDir, 'latest.jpg'))
+    if (castMeta.frames === castFrames.length) break
+  } catch {
+    // the throttled flush has not landed yet
+  }
+  await new Promise((resolve) => setTimeout(resolve, 50))
+}
+check(
+  'host keeps the newest screencast frame (trailing flush)',
+  Boolean(castWrite?.equals(castFrames[castFrames.length - 1])),
+  JSON.stringify(castWrite ? [...castWrite] : null),
+)
+check(
+  'host screencast meta matches the written frame',
+  castMeta?.frames === castFrames.length && castMeta?.bytes === castWrite?.length,
+  JSON.stringify(castMeta),
+)
+
 let updateState = null
 try {
   updateState = JSON.parse(

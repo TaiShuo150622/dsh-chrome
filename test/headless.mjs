@@ -326,6 +326,29 @@ try {
   const castStop = await driver.request('tab.screencast_stop', { owner: 's1' })
   assert.equal(castStop.active, false)
   assert.ok(castStop.frames > 0)
+  // Screencast materialization is throttled (docs/HEADLESS.md §4.1.6): frames
+  // are decoded and written at most every 100ms, and `stop` flushes the newest
+  // frame synchronously. The on-disk artifact must therefore still be fresh,
+  // valid, and internally consistent right after stop.
+  const castFile = path.join(home, 'cache', 'dsh-chrome', 'screencast', 'latest.jpg')
+  const castMetaPath = path.join(home, 'cache', 'dsh-chrome', 'screencast', 'meta.json')
+  assert.ok(fs.existsSync(castFile), 'screencast stop left no latest.jpg')
+  const castBytes = fs.readFileSync(castFile)
+  assert.ok(
+    castBytes.length > 2 && castBytes[0] === 0xff && castBytes[1] === 0xd8,
+    `screencast frame is not a JPEG (${castBytes.length} bytes)`,
+  )
+  const castMeta = JSON.parse(fs.readFileSync(castMetaPath, 'utf8'))
+  assert.equal(castMeta.bytes, castBytes.length, `meta.json bytes do not match latest.jpg: ${JSON.stringify(castMeta)}`)
+  assert.ok(castMeta.frames > 0, `meta.json lost the frame counter: ${JSON.stringify(castMeta)}`)
+  assert.ok(
+    castMeta.frames <= castStop.frames,
+    `meta.json counted more frames than the stream: ${JSON.stringify({ meta: castMeta.frames, stop: castStop.frames })}`,
+  )
+  assert.ok(
+    Date.now() - castMeta.updatedAt < 5000,
+    `throttled screencast left a stale frame on disk: ${JSON.stringify(castMeta)}`,
+  )
 
   console.log('HEADLESS TEST: PASS')
 } finally {

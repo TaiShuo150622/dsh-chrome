@@ -436,6 +436,46 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 
 **回归**：`node test/headless.mjs` PASS。
 
+### 4.1.6 2026-10-17 第七轮：viewer screencast 帧写盘节流（Ralph 循环第 1 轮）
+
+背景：§4.1.4 方向 I 的附带发现——viewer 分支**每帧**都 base64 解码 + `mkdirSync` + 原子写 `latest.<ext>` + 重写 `meta.json`（≤30 次/s），而消费端（liveview 页面）300ms 才轮询一次。桌面路径（`host/host.mjs`，扩展 → native 消息 → 落盘）和 headless 路径（`src/headless.js`）各有一份同样的代码。
+
+**改动**（两处同构）：
+
+1. 帧到达时只记 `state.pending = params` 并计数/更新 `lastAt`（ack 仍立即发，否则帧流会停）；**解码与写盘移到 flush**。
+2. flush 节流到 `SCREENCAST_WRITE_INTERVAL_MS = 100`：距上次写 ≥100ms 立即 flush；否则挂一个 trailing timer（`.unref()`），保证一串变化的**最后一帧**仍会落盘（否则静止页面会永久停在旧帧上）。
+3. `mkdirSync` 从每帧一次改为每次 screencast 会话一次（`dirReady` 标记）。
+4. `tab.screencast_stop` 与 10 分钟自动停止：先清 trailing timer 并**同步 flush** 最新帧，再停 `Page.stopScreencast`——停流不会丢掉最后一帧。
+
+**测量方法**：`/tmp` 探针（`--import` 一个只读 fs 钩子，统计 `/screencast` 目录下的 `writeFileSync`/`mkdirSync`/`renameSync` 次数、字节数与同步耗时；headless 探针跑一个「视口内每 33ms 变色」的页面并取 5s 稳定窗口，host 探针用 native 消息管道按 30 帧/s 灌 60 帧）。对照组用 `git archive HEAD` 导出的同一个 `d5b06c4` 树，A/B 各 3 次。
+
+| 路径 | 指标（5s / 60 帧窗口） | 改前（d5b06c4） | 改后 |
+|---|---|---|---|
+| headless | 帧/5s（everyNthFrame=2） | 75 / 76 / 76 | 75 / 75 / 76 |
+| | 落盘帧/s | 15.0 / 15.2 / 15.2 | **10.0 / 10.0 / 10.0** |
+| | `writeFileSync`/5s（帧 + meta） | 150 / 152 / 152 | **100 / 100 / 100** |
+| | 磁盘字节/5s | 549.6 / 556.9 / 858.0 KB | **366.4 / 366.4 / 366.4 KB** |
+| | fs 同步耗时/5s | 64.2 / 52.1 / 58.0 ms | **42.3 / 35.6 / 40.2 ms** |
+| | node CPU/5s | 124.1 / 119.1 / 116.7 ms | **103.4 / 99.3 / 108.3 ms**（中位 −13.2%） |
+| | CPU/帧 | 1.65 / 1.57 / 1.54 ms | **1.38 / 1.32 / 1.42 ms** |
+| host（桌面） | 落盘帧/s | 29.7 / 29.7 / 29.8（3 次） | **10.4 / 10.4 / 10.4** |
+| | `writeFileSync`/60 帧 | 120 / 120 | **42 / 42 / 42** |
+| | fs 同步耗时 | 47.4 / 52.2 ms | **25.9 / 19.1 / 22.0 ms**（中位 −55%） |
+| | 最后一帧落盘 | 是 | **是**（3/3） |
+
+`mkdirSync`：改前每帧一次（headless 75 次/5s、host 60 次/窗口），改后每次会话一次（0 次在后 5s 统计窗口内，会话开始时创建）。headless 探针 6 次（A/B 各 3 次）`ok` 全为真：viewer 路由返回 200 + `image/jpeg` + 字节数与 `latest.jpg` 一致，`meta.json` 的 `bytes` 与文件一致、`frames` 为最新计数、`updatedAt` 落后 ≤8ms。
+
+**为什么 CPU 只降 ~13%**：per-frame 成本的大头是 WS/native 消息的 JSON 解析与 ack（每帧都必须做），解码 + 2 次写 + rename 只是其中一部分；节流去掉的是后一部分里被跳过的那 1/3 帧。写盘次数/字节/同步耗时都降了 1/3（headless）到 65%（桌面），这才是本轮的确定收益。
+
+**边界与取舍**：
+
+- `latest.<ext>` 最多落后 100ms（消费端 300ms 轮询，肉眼不可见）；`meta.json.updatedAt` 同理，`chrome_screencast {op:"status"}` 读到的帧年龄 ≤100ms。
+- 静止页面：帧本来就不再来，节流不会让画面更旧；一串变化结束时 trailing timer 会把最后一帧写下去（探针在 stop 后测到 `metaAge` 2–8ms）。
+- 帧流本身的 10 分钟自动停止、5 分钟 viewer 空闲自停（`src/screencast-guard.js`）行为不变：`tab.screencast` 计数（`frames`）仍是**每帧**累加，只有落盘被节流。
+- 未改协议/参数：`everyNthFrame` 默认仍为 2；提高它（例如 4）可以再降编码/传输成本，但那是画质/流畅度取舍，留给调用方。
+
+**回归**：`node test/headless.mjs` PASS（新增断言：stop 后 `latest.jpg` 是合法 JPEG、`meta.json.bytes` 与文件大小一致、`frames` 不超过流计数、`updatedAt` 新鲜）；`node test/host-reconnect.mjs` PASS（新增断言：连发两帧后磁盘上是**第二帧**——trailing flush 生效——且 meta 的 `frames`/`bytes` 与文件一致）；`node test/liveview.mjs`、`node test/extension-logic.mjs`、`npm test` PASS。
+
 ## 5. 下一步（H1）
 
 1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
@@ -443,7 +483,7 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 3. 截图性能：PNG/JPEG 帧流（§4.1.1、§4.1.2）、静态页空闲保活（§4.1.3）、`clip`/`ref` 从帧缓存裁剪（§4.1.4）都已落地；整视口「页面变了」的下限仍是合成器帧间隔 ~15–16ms。本轮之后剩余的方向：
    - `clip` 的 JPEG 请求仍走 capture（driver 里没有 JPEG 解码），~45ms；如要补，需要 JPEG 帧流 + 一个能裁剪 JPEG 的路径（或让调用方接受 PNG）。
    - 只读 evaluate 后的 40ms 重绘窗：需要可靠的「没有重绘」信号（`Page` 无 damage/sequence），暂未找到不返回陈旧帧的做法；有信号后这段可从 40ms 压到 ~1ms。
-   - viewer 分支每帧的 base64+磁盘写可节流（§4.1.4 方向 I 的附带发现，未做）。
+   - viewer 分支每帧的 base64+磁盘写已节流（§4.1.6）：headless 落盘 15.0→10.0 帧/s、fs 同步耗时中位 −31%、node CPU −13%；桌面 host 落盘 29.7→10.4 帧/s、fs 同步耗时 −55%。
    - 冷启动剩下的 ~750ms 在 Chrome 进程启动与 CDP 端口就绪（§4.1.5），Node 侧不可控；不建议预热进程（空闲即 672MB RSS）。
 4. 启动参数在帧流路径上扫过（§4.1.3），没有净收益；`--disable-frame-rate-limit` 仍是否掉的（每动作 CPU +41%）。
 
@@ -451,9 +491,11 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 
 | 文件 | 内容 |
 |---|---|
-| `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5） |
+| `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6） |
+| `host/host.mjs` | Chrome native messaging host：扩展 ↔ provider 的 JSON 帧中继、discovery 文件重连、viewer 帧落盘（节流，§4.1.6）与扩展热更新监听 |
 | `src/backend.js` | BackendRouter + AsyncLocalStorage + `wrapToolsForBackend`（给 39 个工具加 `backend` 参数） |
 | `index.js` | 创建 HeadlessDriver/Router，包装工具，卸载时关闭 |
 | `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4）；动作上限 `ACTIONS*50`，保证 `--seconds` 跑满 |
 | `test/backend-router.mjs` | 路由/参数剥离/默认桌面回归 |
-| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度断言） |
+| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、viewer 帧落盘产物断言） |
+| `test/host-reconnect.mjs` | native host 持久化（provider 重启后重连）+ viewer 帧落盘/节流 trailing flush 断言（§4.1.6） |

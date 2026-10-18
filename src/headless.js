@@ -112,6 +112,14 @@ const SHOT_STREAM_KEEPALIVE = process.env.DSH_HEADLESS_SHOT_STREAM_KEEPALIVE !==
 const SHOT_STREAM_FAILURES_BEFORE_BACKOFF = 2
 const SHOT_STREAM_BACKOFF_MS = 5000
 
+// Viewer screencast materialization (docs/HEADLESS.md §4.1.6): the live viewer
+// polls `/live/frame` every 300ms, so decoding and rewriting latest.<ext> +
+// meta.json for every screencast frame (up to 30/s) is wasted work. Keep only
+// the newest frame and flush it at most once per interval; a trailing timer
+// makes sure the last frame of a burst still lands, and `tab.screencast_stop`
+// flushes synchronously so the final frame is never dropped.
+const SCREENCAST_WRITE_INTERVAL_MS = 100
+
 // Every request that can change what the page renders bumps the owning tab's
 // change marker. `tab.screenshot` only reuses a streamed frame (or waits for a
 // new one) whose composition timestamp is at least this marker.
@@ -937,6 +945,58 @@ export class HeadlessDriver {
     this.lastActivity = Date.now()
   }
 
+  // Throttled viewer-frame materialization (§4.1.6). Runs at most once per
+  // SCREENCAST_WRITE_INTERVAL_MS; if a flush just happened, arm one trailing
+  // timer instead of dropping the frame so a page that changes once still ends
+  // up on disk.
+  scheduleScreencastFlush(tab) {
+    const state = tab.screencast
+    if (!state || state.flushTimer) return
+    const waited = Date.now() - (state.lastWriteAt || 0)
+    if (waited >= SCREENCAST_WRITE_INTERVAL_MS) {
+      this.flushScreencastFrame(tab)
+      return
+    }
+    state.flushTimer = setTimeout(() => {
+      state.flushTimer = null
+      this.flushScreencastFrame(tab)
+    }, SCREENCAST_WRITE_INTERVAL_MS - waited)
+    state.flushTimer.unref?.()
+  }
+
+  flushScreencastFrame(tab) {
+    const state = tab.screencast
+    const params = state?.pending
+    if (!params) return
+    state.pending = null
+    state.lastWriteAt = Date.now()
+    try {
+      const data = Buffer.from(String(params.data || ''), 'base64')
+      if (!state.dirReady) {
+        fs.mkdirSync(this.screencastDir, { recursive: true })
+        state.dirReady = true
+      }
+      const file = path.join(this.screencastDir, `latest.${state.format === 'png' ? 'png' : 'jpg'}`)
+      const tmp = `${file}.${process.pid}.tmp`
+      fs.writeFileSync(tmp, data, { mode: 0o600 })
+      fs.renameSync(tmp, file)
+      fs.writeFileSync(
+        path.join(this.screencastDir, 'meta.json'),
+        `${JSON.stringify({
+          updatedAt: Date.now(),
+          format: state.format === 'png' ? 'png' : 'jpg',
+          bytes: data.byteLength,
+          frames: state.frames,
+          metadata: params.metadata || null,
+          backend: 'headless',
+        })}\n`,
+        { mode: 0o600 },
+      )
+    } catch {
+      // best effort
+    }
+  }
+
   onNetworkEvent(tab, method, params) {
     if (!tab) return
     const capture = this.captureByTab.get(tab.tabId)
@@ -1082,28 +1142,9 @@ export class HeadlessDriver {
       if (state) {
         state.frames += 1
         state.lastAt = Date.now()
-        try {
-          const data = Buffer.from(String(params.data || ''), 'base64')
-          fs.mkdirSync(this.screencastDir, { recursive: true })
-          const file = path.join(this.screencastDir, `latest.${state.format === 'png' ? 'png' : 'jpg'}`)
-          const tmp = `${file}.${process.pid}.tmp`
-          fs.writeFileSync(tmp, data, { mode: 0o600 })
-          fs.renameSync(tmp, file)
-          fs.writeFileSync(
-            path.join(this.screencastDir, 'meta.json'),
-            `${JSON.stringify({
-              updatedAt: Date.now(),
-              format: state.format === 'png' ? 'png' : 'jpg',
-              bytes: data.byteLength,
-              frames: state.frames,
-              metadata: params.metadata || null,
-              backend: 'headless',
-            })}\n`,
-            { mode: 0o600 },
-          )
-        } catch {
-          // best effort
-        }
+        // Decode + atomic write happen on flush, not per frame (§4.1.6).
+        state.pending = params
+        this.scheduleScreencastFlush(tab)
         return
       }
       // Screenshot frame cache: keep only the newest composited frame. Its
@@ -2122,8 +2163,20 @@ export class HeadlessDriver {
         const everyNthFrame = Number.isFinite(params.everyNthFrame)
           ? Math.max(1, Math.min(10, Math.trunc(params.everyNthFrame)))
           : 2
-        tab.screencast = { active: true, format, frames: 0, startedAt: Date.now(), lastAt: null }
+        tab.screencast = {
+          active: true,
+          format,
+          frames: 0,
+          startedAt: Date.now(),
+          lastAt: null,
+          pending: null,
+          flushTimer: null,
+          lastWriteAt: 0,
+          dirReady: false,
+        }
         tab.screencast.timer = setTimeout(() => {
+          if (tab.screencast?.flushTimer) clearTimeout(tab.screencast.flushTimer)
+          if (tab.screencast) this.flushScreencastFrame(tab)
           this.cdp?.send('Page.stopScreencast', {}, tab.sessionId).catch(() => {})
           tab.screencast = null
         }, 10 * 60 * 1000)
@@ -2140,6 +2193,10 @@ export class HeadlessDriver {
         const tab = await this.ensureTab(owner, params.tabId)
         const state = tab.screencast
         if (state?.timer) clearTimeout(state.timer)
+        if (state?.flushTimer) clearTimeout(state.flushTimer)
+        // Write the newest frame synchronously so stopping never loses it
+        // (§4.1.6: with the throttle the last frame may still be pending).
+        if (state) this.flushScreencastFrame(tab)
         await this.cdp.send('Page.stopScreencast', {}, tab.sessionId).catch(() => {})
         tab.screencast = null
         return {
