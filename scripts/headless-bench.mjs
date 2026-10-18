@@ -26,7 +26,11 @@
  * screencast). The PNG path defaults to Chrome's fast PNG encoder
  * (`optimizeForSpeed`); `--no-optimize` measures the old, smaller-PNG capture
  * path. `--shot-format jpeg` measures the JPEG path (not the tool default) with
- * `--shot-quality`. `--gap-ms` inserts that much idle time between rounds, which
+ * `--shot-quality`. `--shot-clip WxH` screenshots a fixed viewport region and
+ * `--shot-ref` screenshots the round's input element by ref: both exercise the
+ * element/region screenshot path (`clip`/`ref` are CSS px; the PNG is device
+ * px), which used to fall back to Page.captureScreenshot. `--gap-ms` inserts
+ * that much idle time between rounds, which
  * is the realistic tool-call cadence for the frame-stream idle policy (the
  * default 0 gap is the back-to-back worst case; use a gap longer than
  * DSH_HEADLESS_SHOT_STREAM_IDLE_MS to exercise a stream restart). `--static`
@@ -56,6 +60,18 @@ const SHOT_QUALITY = Math.max(1, Math.min(100, argValue('--shot-quality', 60)))
 const SHOT_OPTIMIZE = !hasFlag('--no-optimize')
 const GAP_MS = Math.max(0, Math.min(30000, argValue('--gap-ms', 0)))
 const STATIC = hasFlag('--static')
+// Element/region screenshot scenarios. Clip coordinates are CSS px like the
+// `clip` tool parameter; ref mode uses the input control from the same snapshot
+// the round already takes, so it measures ref resolution + crop end to end.
+const SHOT_REF = hasFlag('--shot-ref')
+const SHOT_CLIP = (() => {
+  const index = args.indexOf('--shot-clip')
+  if (index < 0) return null
+  const match = /^(\d{1,5})x(\d{1,5})$/.exec(String(args[index + 1] || ''))
+  if (!match) return null
+  return { x: 0, y: 0, width: Math.max(1, Number(match[1])), height: Math.max(1, Number(match[2])) }
+})()
+const SHOT_MODE = SHOT_CLIP ? 'clip' : SHOT_REF ? 'ref' : 'viewport'
 
 // Measured on this machine (Chrome 155) before the screenshot/round-trip work;
 // keep in sync with docs/HEADLESS.md §4.1.
@@ -159,14 +175,20 @@ try {
     format: SHOT_FORMAT,
     ...(SHOT_FORMAT === 'jpeg' ? { quality: SHOT_QUALITY } : {}),
     optimizeForSpeed: SHOT_OPTIMIZE,
+    ...(SHOT_CLIP ? { clip: SHOT_CLIP } : {}),
   }
   const runRound = async (timer, index) => {
     const timed = timer ? (kind, fn) => timer.time(kind, fn) : (kind, fn) => fn()
     const snap = await timed('snapshot', () => driver.request('tab.snapshot', { owner: 'bench', maxChars: 2000 }))
     const input = snap.controls.find((control) => control.tag === 'input')
     if (input && !STATIC) await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${index}`, replace: true }))
-    await timed('screenshot', () => driver.request('tab.screenshot', shotParams))
-    if (!STATIC) await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: 200 }))
+    const params = SHOT_REF && input ? { ...shotParams, ref: input.ref } : shotParams
+    await timed('screenshot', () => driver.request('tab.screenshot', params))
+    // Ref mode keeps the element in view: it scrolls less than the input's
+    // viewport offset, otherwise half the rounds would fall back to capture
+    // because the element left the viewport (the honest off-screen case, but
+    // not what this scenario is measuring).
+    if (!STATIC) await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: SHOT_REF ? 60 : 200 }))
   }
 
   // One untimed warm-up round keeps the first screenshot (cold compositor) out
@@ -200,10 +222,12 @@ try {
   console.log(
     JSON.stringify(
       {
-        scenario: `headless active: ${actions} ${SHOT_FORMAT} ${STATIC ? 'snapshot/screenshot (static page)' : 'snapshot/type/screenshot/scroll'} rounds`,
+        scenario: `headless active: ${actions} ${SHOT_FORMAT} ${STATIC ? 'snapshot/screenshot (static page)' : 'snapshot/type/screenshot/scroll'} rounds${SHOT_MODE === 'viewport' ? '' : ` (${SHOT_MODE} screenshot)`}`,
         elapsedSeconds: round(elapsed, 1),
         gapMs: GAP_MS,
         staticMode: STATIC,
+        shotMode: SHOT_MODE,
+        ...(SHOT_CLIP ? { shotClip: SHOT_CLIP } : {}),
         actions,
         roundsPerSecond,
         processes: after.processes,
