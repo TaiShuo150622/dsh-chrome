@@ -63,6 +63,13 @@ const SUPPORTED = new Set([
   'tab.debug_diag',
 ])
 
+// Extra Chrome switches appended after the defaults (space-separated). This is
+// the launch-flag experiment hook used by docs/HEADLESS.md §4.1.3; defaults do
+// not set it.
+const EXTRA_CHROME_ARGS = String(process.env.DSH_HEADLESS_CHROME_ARGS || '')
+  .split(/\s+/)
+  .filter(Boolean)
+
 const DEFAULT_IDLE_MINUTES = Number(process.env.DSH_HEADLESS_IDLE_MINUTES) || 5
 const MAX_TABS = Number(process.env.DSH_HEADLESS_MAX_TABS) || 12
 
@@ -87,6 +94,12 @@ const SHOT_STREAM_ENABLED = process.env.DSH_HEADLESS_SHOT_STREAM !== '0'
 const SHOT_STREAM_IDLE_MS = Math.max(250, Number(process.env.DSH_HEADLESS_SHOT_STREAM_IDLE_MS) || 2000)
 const SHOT_STREAM_FRAME_TIMEOUT_MS = Math.max(20, Number(process.env.DSH_HEADLESS_SHOT_STREAM_FRAME_TIMEOUT_MS) || 40)
 const SHOT_STREAM_FIRST_FRAME_TIMEOUT_MS = Math.max(50, Number(process.env.DSH_HEADLESS_FIRST_FRAME_TIMEOUT_MS) || 150)
+// Keep the frame stream (and its cached frame) alive only across idle windows
+// in which the page produced no frame at all: a blinking caret or any animation
+// repaints within the window, and encoding those frames while nobody is
+// screenshotting both burns CPU and slows the next CDP round trip, so those
+// pages keep the old stop-after-idle behaviour.
+const SHOT_STREAM_KEEPALIVE = process.env.DSH_HEADLESS_SHOT_STREAM_KEEPALIVE !== '0'
 const SHOT_STREAM_FAILURES_BEFORE_BACKOFF = 2
 const SHOT_STREAM_BACKOFF_MS = 5000
 
@@ -658,6 +671,7 @@ export class HeadlessDriver {
           '--disable-extensions',
           '--mute-audio',
           '--window-size=1440,900',
+          ...EXTRA_CHROME_ARGS,
           'about:blank',
         ],
         { stdio: ['ignore', 'ignore', 'pipe'] },
@@ -1074,6 +1088,8 @@ export class HeadlessDriver {
         maxWidth: 0,
         maxHeight: 0,
         startedAt: 0,
+        restarts: 0,
+        framesAtIdleCheck: 0,
         last: null,
         waiters: [],
         stopTimer: null,
@@ -1122,6 +1138,7 @@ export class HeadlessDriver {
     }
     state.active = true
     state.frames = 0
+    state.restarts += 1
     state.last = null
     state.format = format
     state.quality = streamQuality
@@ -1166,8 +1183,31 @@ export class HeadlessDriver {
 
   touchShotStream(tab, state) {
     if (state.stopTimer) clearTimeout(state.stopTimer)
-    state.stopTimer = setTimeout(() => {
+    state.framesAtIdleCheck = state.frames
+    state.stopTimer = setTimeout(async () => {
       state.stopTimer = null
+      if (!state.active) return
+      // A screenshot is in flight: the frame it is waiting for is not an
+      // "unattended" repaint, so keep the stream for it.
+      if (state.waiters.length > 0) {
+        this.touchShotStream(tab, state)
+        return
+      }
+      // A visible page that produced no frame during the idle window is static:
+      // keeping the stream (and its cached frame) alive turns the next screenshot
+      // into a cache hit instead of a stream restart. Hidden tabs are not
+      // composited, so their cached frame may predate page changes that happened
+      // while hidden; drop it instead of serving it later.
+      const idleFrames = state.frames - state.framesAtIdleCheck
+      if (
+        SHOT_STREAM_KEEPALIVE &&
+        state.served > 0 &&
+        idleFrames === 0 &&
+        (await this.pageVisible(tab))
+      ) {
+        this.touchShotStream(tab, state)
+        return
+      }
       this.stopShotStream(tab).catch(() => {})
     }, SHOT_STREAM_IDLE_MS)
     state.stopTimer.unref?.()
@@ -1846,6 +1886,7 @@ export class HeadlessDriver {
                     format: stream.format,
                     quality: stream.quality,
                     frames: stream.frames,
+                    restarts: stream.restarts,
                     served: stream.served,
                     fallbacks: stream.fallbacks,
                     timeouts: stream.timeouts,
@@ -1888,6 +1929,7 @@ export class HeadlessDriver {
     if (op === 'close') {
       const tab = entry.tabs.get(Number(params.tabId))
       if (!tab) throw error('TAB_NOT_FOUND', `tab ${params.tabId} is not owned by this session`)
+      this.dropShotStream(tab)
       try {
         await this.cdp.send('Target.closeTarget', { targetId: tab.targetId })
       } catch {

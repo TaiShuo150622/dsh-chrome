@@ -235,6 +235,33 @@ try {
   const dragged = await driver.request('tab.drag', { owner: 's1', fromRef: dragSrc.ref, toRef: dropTarget.ref })
   assert.equal(dragged.ok, true)
 
+  // Frame-stream keep-alive (docs/HEADLESS.md §4.1.3): an unchanged visible
+  // page that produced no frame for longer than the idle window must keep its
+  // cached frame and its screencast instead of restarting, so the next
+  // screenshot is a cache hit rather than a first-frame wait.
+  // Blur first: a focused input blinks a caret (~2 frames/s) and a repainting
+  // page deliberately keeps the old stop-after-idle behaviour.
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur()' })
+  const keepaliveRef = await driver.request('tab.screenshot', { owner: 's1' })
+  assert.ok(fs.existsSync(keepaliveRef.path))
+  // Let the blur repaint land, then reset the idle window with a cache hit so
+  // the measurement starts from a quiet page.
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  await driver.request('tab.screenshot', { owner: 's1' })
+  const keepaliveBefore = (await driver.request('tab.debug_diag')).tabs.find((tab) => tab.tabId === gone.tabId)?.screenshotStream
+  await new Promise((resolve) => setTimeout(resolve, 2600))
+  const keepaliveShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const keepaliveAfter = (await driver.request('tab.debug_diag')).tabs.find((tab) => tab.tabId === gone.tabId)?.screenshotStream
+  assert.equal(keepaliveAfter.active, true, `quiet frame stream stopped: ${JSON.stringify(keepaliveAfter)}`)
+  assert.equal(
+    keepaliveAfter.restarts,
+    keepaliveBefore.restarts,
+    `idle stream restarted instead of keeping the cached frame: ${JSON.stringify({ keepaliveBefore, keepaliveAfter })}`,
+  )
+  assert.ok(
+    keepaliveAfter.served > keepaliveBefore.served,
+    `idle screenshot was not served from the frame stream: ${JSON.stringify({ keepaliveBefore, keepaliveAfter })}`,
+  )
   const cast = await driver.request('tab.screencast_start', { owner: 's1', everyNthFrame: 1, quality: 50 })
   assert.equal(cast.active, true)
   await new Promise((resolve) => setTimeout(resolve, 200))

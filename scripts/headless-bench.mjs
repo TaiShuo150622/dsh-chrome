@@ -20,14 +20,20 @@
  * Usage:
  *   node scripts/headless-bench.mjs [--seconds 10] [--actions 20]
  *                                   [--shot-format png|jpeg] [--shot-quality 60]
- *                                   [--no-optimize]
+ *                                   [--no-optimize] [--gap-ms 0] [--static]
  *
  * Both formats are served from the tab's screenshot frame stream (PNG or JPEG
  * screencast). The PNG path defaults to Chrome's fast PNG encoder
  * (`optimizeForSpeed`); `--no-optimize` measures the old, smaller-PNG capture
  * path. `--shot-format jpeg` measures the JPEG path (not the tool default) with
- * `--shot-quality`. The action cap is ACTIONS*50 so the default 10s run is
- * time-bound rather than cap-bound.
+ * `--shot-quality`. `--gap-ms` inserts that much idle time between rounds, which
+ * is the realistic tool-call cadence for the frame-stream idle policy (the
+ * default 0 gap is the back-to-back worst case; use a gap longer than
+ * DSH_HEADLESS_SHOT_STREAM_IDLE_MS to exercise a stream restart). `--static`
+ * drops the page-changing type/scroll actions: every round then screenshots an
+ * unchanged page, which measures the cached-frame/idle-stream path (combine it
+ * with `--gap-ms` to measure the idle window). The action cap is ACTIONS*50 so
+ * the default 10s run is time-bound rather than cap-bound.
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -48,6 +54,8 @@ const DURATION = Math.max(5, Math.min(60, argValue('--seconds', 10)))
 const SHOT_FORMAT = hasFlag('--shot-format') && args[args.indexOf('--shot-format') + 1] === 'jpeg' ? 'jpeg' : 'png'
 const SHOT_QUALITY = Math.max(1, Math.min(100, argValue('--shot-quality', 60)))
 const SHOT_OPTIMIZE = !hasFlag('--no-optimize')
+const GAP_MS = Math.max(0, Math.min(30000, argValue('--gap-ms', 0)))
+const STATIC = hasFlag('--static')
 
 // Measured on this machine (Chrome 155) before the screenshot/round-trip work;
 // keep in sync with docs/HEADLESS.md §4.1.
@@ -156,9 +164,9 @@ try {
     const timed = timer ? (kind, fn) => timer.time(kind, fn) : (kind, fn) => fn()
     const snap = await timed('snapshot', () => driver.request('tab.snapshot', { owner: 'bench', maxChars: 2000 }))
     const input = snap.controls.find((control) => control.tag === 'input')
-    if (input) await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${index}`, replace: true }))
+    if (input && !STATIC) await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${index}`, replace: true }))
     await timed('screenshot', () => driver.request('tab.screenshot', shotParams))
-    await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: 200 }))
+    if (!STATIC) await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: 200 }))
   }
 
   // One untimed warm-up round keeps the first screenshot (cold compositor) out
@@ -176,6 +184,7 @@ try {
   while (Date.now() < until && actions < ACTIONS * 50) {
     await runRound(timer, actions)
     actions += 1
+    if (GAP_MS > 0) await new Promise((resolve) => setTimeout(resolve, GAP_MS))
   }
   const elapsed = (Date.now() - t0) / 1000
   const after = processStats()
@@ -191,8 +200,10 @@ try {
   console.log(
     JSON.stringify(
       {
-        scenario: `headless active: ${actions} ${SHOT_FORMAT} snapshot/type/screenshot/scroll rounds`,
+        scenario: `headless active: ${actions} ${SHOT_FORMAT} ${STATIC ? 'snapshot/screenshot (static page)' : 'snapshot/type/screenshot/scroll'} rounds`,
         elapsedSeconds: round(elapsed, 1),
+        gapMs: GAP_MS,
+        staticMode: STATIC,
         actions,
         roundsPerSecond,
         processes: after.processes,
