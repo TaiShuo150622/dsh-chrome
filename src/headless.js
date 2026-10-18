@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
+import zlib from 'node:zlib'
 
 const CHROME_CANDIDATES = [
   process.env.DSH_HEADLESS_CHROME,
@@ -131,6 +132,195 @@ const SHOT_STREAM_METHODS = new Set([
   'tab.storage',
   'tab.emulate',
 ])
+// ------------------------------------------------ driver-side PNG crop (clip/ref)
+// `tab.screenshot` with `clip`/`ref` has to return a region of the page. The
+// frame stream already holds the last composited frame as a device-pixel PNG,
+// so the region shot is decoded, cropped and re-encoded in the driver instead
+// of forcing a fresh `Page.captureScreenshot` (~45ms, docs/HEADLESS.md §4.1.4).
+// Chrome screencast frames are 8-bit, non-interlaced RGB/RGBA PNGs; anything
+// else (16-bit, palette, interlaced) makes `decodePngFrame` return null and the
+// caller keeps the capture path. The decoded pixels are cached on the frame
+// object, so repeated crops of an unchanged page skip the decode.
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+const PNG_CHANNELS = new Map([[0, 1], [2, 3], [4, 2], [6, 4]])
+const PNG_CRC_TABLE = (() => {
+  const table = new Int32Array(256)
+  for (let n = 0; n < 256; n += 1) {
+    let c = n
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    table[n] = c
+  }
+  return table
+})()
+
+function pngCrc32(buffer) {
+  let crc = -1
+  for (let index = 0; index < buffer.length; index += 1) crc = PNG_CRC_TABLE[(crc ^ buffer[index]) & 0xff] ^ (crc >>> 8)
+  return (crc ^ -1) >>> 0
+}
+
+function pngChunk(type, data) {
+  const chunk = Buffer.allocUnsafe(12 + data.length)
+  chunk.writeUInt32BE(data.length, 0)
+  chunk.write(type, 4, 'ascii')
+  data.copy(chunk, 8)
+  chunk.writeUInt32BE(pngCrc32(chunk.subarray(4, 8 + data.length)), 8 + data.length)
+  return chunk
+}
+
+const paethPredictor = (left, up, upLeft) => {
+  const estimate = left + up - upLeft
+  const toLeft = Math.abs(estimate - left)
+  const toUp = Math.abs(estimate - up)
+  const toUpLeft = Math.abs(estimate - upLeft)
+  if (toLeft <= toUp && toLeft <= toUpLeft) return left
+  return toUp <= toUpLeft ? up : upLeft
+}
+
+// Per-row PNG unfiltering (filters 0..4) for the top-left prefix of the image.
+// A crop only needs the rows/columns above-left of it: every PNG filter
+// references just the previous pixels in the same row and the row above, so
+// decoding the `maxRows` x `maxColumns` prefix is exact. A top-of-viewport clip
+// therefore decodes a fraction of a full frame. Branches are per row and the
+// left-neighbour prefix is peeled out of the inner loop.
+function unfilterPngRows(filtered, width, height, channels, maxColumns, maxRows) {
+  const sourceStride = width * channels
+  const columns = Math.max(1, Math.min(width, maxColumns))
+  const rows = Math.max(1, Math.min(height, maxRows))
+  const stride = columns * channels
+  if (filtered.length < (rows - 1) * (sourceStride + 1) + 1 + stride) return null
+  const out = Buffer.allocUnsafe(stride * rows)
+  let previous = null
+  let inputOffset = 0
+  let outputOffset = 0
+  for (let y = 0; y < rows; y += 1) {
+    const filter = filtered[inputOffset]
+    inputOffset += 1
+    const row = out.subarray(outputOffset, outputOffset + stride)
+    if (filter === 0) {
+      filtered.copy(out, outputOffset, inputOffset, inputOffset + stride)
+    } else if (filter === 2) {
+      if (previous) {
+        for (let x = 0; x < stride; x += 1) row[x] = (filtered[inputOffset + x] + previous[x]) & 0xff
+      } else {
+        filtered.copy(out, outputOffset, inputOffset, inputOffset + stride)
+      }
+    } else if (filter === 1) {
+      const head = Math.min(channels, stride)
+      for (let x = 0; x < head; x += 1) row[x] = filtered[inputOffset + x]
+      for (let x = head; x < stride; x += 1) row[x] = (filtered[inputOffset + x] + row[x - channels]) & 0xff
+    } else if (filter === 3) {
+      const head = Math.min(channels, stride)
+      for (let x = 0; x < head; x += 1) row[x] = filtered[inputOffset + x]
+      for (let x = head; x < stride; x += 1) {
+        const up = previous ? previous[x] : 0
+        row[x] = (filtered[inputOffset + x] + ((row[x - channels] + up) >> 1)) & 0xff
+      }
+    } else if (filter === 4) {
+      const head = Math.min(channels, stride)
+      for (let x = 0; x < head; x += 1) row[x] = (filtered[inputOffset + x] + (previous ? previous[x] : 0)) & 0xff
+      for (let x = head; x < stride; x += 1) {
+        const left = row[x - channels]
+        const up = previous ? previous[x] : 0
+        const upLeft = previous ? previous[x - channels] : 0
+        row[x] = (filtered[inputOffset + x] + paethPredictor(left, up, upLeft)) & 0xff
+      }
+    } else {
+      return null
+    }
+    previous = row
+    inputOffset += sourceStride
+    outputOffset += stride
+  }
+  return { pixels: out, width: columns, height: rows }
+}
+
+// Cheap IHDR-only parse: the device-pixel size of a frame before paying for a
+// decode (needed to convert the CSS-px clip into frame pixels).
+function pngFrameSize(buffer) {
+  if (!buffer || buffer.length < 24) return null
+  if (!buffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return null
+  if (buffer.toString('ascii', 12, 16) !== 'IHDR') return null
+  const width = buffer.readUInt32BE(16)
+  const height = buffer.readUInt32BE(20)
+  if (!width || !height) return null
+  return { width, height }
+}
+
+function decodePngFrame(buffer, { maxColumns = 0, maxRows = 0 } = {}) {
+  if (!buffer || buffer.length < PNG_SIGNATURE.length) return null
+  if (!buffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return null
+  let offset = PNG_SIGNATURE.length
+  let header = null
+  const dataChunks = []
+  while (offset + 12 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset)
+    const type = buffer.toString('ascii', offset + 4, offset + 8)
+    if (offset + 12 + length > buffer.length) return null
+    const data = buffer.subarray(offset + 8, offset + 8 + length)
+    if (type === 'IHDR') {
+      if (length < 13) return null
+      const width = data.readUInt32BE(0)
+      const height = data.readUInt32BE(4)
+      const bitDepth = data[8]
+      const colorType = data[9]
+      const interlace = data[12]
+      const channels = PNG_CHANNELS.get(colorType)
+      if (!channels || bitDepth !== 8 || interlace !== 0 || width <= 0 || height <= 0) return null
+      header = { width, height, channels }
+    } else if (type === 'IDAT') {
+      dataChunks.push(data)
+    }
+    offset += 12 + length
+    if (type === 'IEND') break
+  }
+  if (!header || dataChunks.length === 0) return null
+  let filtered
+  try {
+    filtered = zlib.inflateSync(Buffer.concat(dataChunks))
+  } catch {
+    return null
+  }
+  const decoded = unfilterPngRows(
+    filtered,
+    header.width,
+    header.height,
+    header.channels,
+    maxColumns || header.width,
+    maxRows || header.height,
+  )
+  if (!decoded) return null
+  return {
+    width: header.width,
+    height: header.height,
+    decodedWidth: decoded.width,
+    decodedHeight: decoded.height,
+    channels: header.channels,
+    pixels: decoded.pixels,
+  }
+}
+
+// Re-encode a cropped RGB/RGBA buffer as a PNG. Filter 0 (none) plus zlib level
+// 6 keeps the encode in the low single-digit milliseconds even for a large
+// region; the output is 1.3-2x the size of Chrome's own encoder, which does not
+// matter for the image that is handed to the model.
+function encodePngFrame(width, height, channels, pixels) {
+  const colorType = channels === 3 ? 2 : channels === 4 ? 6 : channels === 1 ? 0 : 4
+  const stride = width * channels
+  const filtered = Buffer.allocUnsafe((stride + 1) * height)
+  for (let y = 0; y < height; y += 1) {
+    filtered[y * (stride + 1)] = 0
+    pixels.copy(filtered, y * (stride + 1) + 1, y * stride, (y + 1) * stride)
+  }
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(width, 0)
+  header.writeUInt32BE(height, 4)
+  header[8] = 8
+  header[9] = colorType
+  const compressed = zlib.deflateSync(filtered)
+  return Buffer.concat([PNG_SIGNATURE, pngChunk('IHDR', header), pngChunk('IDAT', compressed), pngChunk('IEND', Buffer.alloc(0))])
+}
+
 const CAPTURE_BODY_TOTAL_LIMIT = 8 * 1024 * 1024
 const CAPTURE_RESPONSE_BODY_CHARS = 4096
 const CAPTURE_REQUEST_BODY_CHARS = 2048
@@ -1094,6 +1284,7 @@ export class HeadlessDriver {
         active: false,
         frames: 0,
         served: 0,
+        cropped: 0,
         fallbacks: 0,
         timeouts: 0,
         repaintMisses: 0,
@@ -1257,8 +1448,94 @@ export class HeadlessDriver {
     })
   }
 
-  // Returns a PNG buffer for the current viewport, or null when no frame is
-  // available at all (caller falls back to Page.captureScreenshot).
+  // `clip` is CSS px (same contract as the desktop backend); `ref` resolves to
+  // the element's viewport box, which is exactly the box the extension captures.
+  // `fullPage` overrides both, so it never reaches here.
+  async resolveScreenshotClip(tab, params) {
+    const raw = params?.clip
+    if (raw && typeof raw === 'object') {
+      const x = Number(raw.x)
+      const y = Number(raw.y)
+      const width = Number(raw.width)
+      const height = Number(raw.height)
+      if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+        throw error('INVALID_ARGUMENT', 'clip must be {x,y,width,height} with positive width/height')
+      }
+      return { x, y, width, height }
+    }
+    if (params?.ref != null) {
+      const ref = Number(params.ref)
+      const box = await this.evalOn(
+        tab,
+        `(() => { const el = document.querySelector('[data-dsh-ref="${Number.isFinite(ref) ? ref : -1}"]'); if (!el) return null; const rect = el.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height } })()`,
+      ).catch(() => null)
+      if (!box || !(Number(box.width) > 0) || !(Number(box.height) > 0)) {
+        throw error('REF_STALE', `ref ${params.ref} has no visible box; take a new snapshot`)
+      }
+      return { x: Number(box.x), y: Number(box.y), width: Number(box.width), height: Number(box.height) }
+    }
+    return null
+  }
+
+  // Crop a CSS-px region out of a device-pixel frame, re-encoding it as PNG.
+  // Returns null when the region is fully outside the frame or the frame is not
+  // a decodable 8-bit RGB/RGBA PNG — the caller then falls back to capture.
+  // Only the top-left prefix that contains the crop is decoded (see
+  // unfilterPngRows) and the result is kept on the frame object, so repeated
+  // shots of an unchanged page skip both the decode and the frame wait.
+  async cropScreenshotFrame(tab, frame, clip) {
+    const size = frame.pngSize || (frame.pngSize = pngFrameSize(frame.buffer))
+    if (!size) return null
+    const viewport = await this.viewportSize(tab)
+    const scale = size.width / (viewport.w || size.width)
+    const requestedX = Math.round(clip.x * scale)
+    const requestedY = Math.round(clip.y * scale)
+    const requestedWidth = Math.max(1, Math.round(clip.width * scale))
+    const requestedHeight = Math.max(1, Math.round(clip.height * scale))
+    if (
+      requestedX >= size.width ||
+      requestedY >= size.height ||
+      requestedX + requestedWidth <= 0 ||
+      requestedY + requestedHeight <= 0
+    ) {
+      return null
+    }
+    const x = Math.max(0, requestedX)
+    const y = Math.max(0, requestedY)
+    const width = Math.min(size.width - x, requestedWidth - (x - requestedX))
+    const height = Math.min(size.height - y, requestedHeight - (y - requestedY))
+    if (width < 1 || height < 1) return null
+    const neededColumns = x + width
+    const neededRows = y + height
+    let decoded = frame.decoded
+    if (
+      !decoded ||
+      decoded.width !== size.width ||
+      decoded.height !== size.height ||
+      decoded.decodedWidth < neededColumns ||
+      decoded.decodedHeight < neededRows
+    ) {
+      decoded = decodePngFrame(frame.buffer, { maxColumns: neededColumns, maxRows: neededRows })
+      if (!decoded) return null
+      frame.decoded = decoded
+    }
+    const { channels, pixels } = decoded
+    const stride = decoded.decodedWidth * channels
+    const cropped = Buffer.allocUnsafe(width * height * channels)
+    for (let row = 0; row < height; row += 1) {
+      pixels.copy(
+        cropped,
+        row * width * channels,
+        (y + row) * stride + x * channels,
+        (y + row) * stride + (x + width) * channels,
+      )
+    }
+    return encodePngFrame(width, height, channels, cropped)
+  }
+
+  // Returns a PNG buffer for the current viewport (or for the requested `clip`
+  // region), or null when no frame is available at all (caller falls back to
+  // Page.captureScreenshot).
   //
   // Freshness rule: a cached frame is only reused when its composition
   // timestamp is at or after the last page-changing request. Otherwise wait for
@@ -1307,7 +1584,14 @@ export class HeadlessDriver {
     state.timeouts = 0
     state.served += 1
     this.touchShotStream(tab, state)
-    return frame.buffer
+    if (!options.clip) return frame.buffer
+    const cropped = await this.cropScreenshotFrame(tab, frame, options.clip)
+    if (!cropped) {
+      state.fallbacks += 1
+      return null
+    }
+    state.cropped += 1
+    return cropped
   }
 
   async pageAction(tab, name, args, timeoutMs = 15000) {
@@ -1548,16 +1832,24 @@ export class HeadlessDriver {
         const tab = await this.ensureTab(owner, params.tabId)
         const format = params.format === 'jpeg' ? 'jpeg' : 'png'
         const quality = Math.max(1, Math.min(100, Number(params.quality) || 70))
+        // Element/region semantics match the desktop backend: `clip` is CSS px,
+        // `ref` is the element's viewport box, and `fullPage` overrides both.
+        const fullPage = Boolean(params.fullPage)
+        const clip = fullPage ? null : await this.resolveScreenshotClip(tab, params)
         // A plain viewport shot (the common case for both formats) is served
-        // from the compositor's own frames. Anything that needs a crop, the
-        // slow-PNG opt-out, or a full-page capture keeps the exact
-        // Page.captureScreenshot path.
+        // from the compositor's own frames, and PNG clip/ref shots are cropped
+        // out of that frame in the driver (see cropScreenshotFrame). The
+        // slow-PNG opt-out, full-page, frameRef, highlight and JPEG crops keep
+        // the exact Page.captureScreenshot path; the resolved clip is passed
+        // through so the fallback is still the requested region.
         const needsCapture =
-          Boolean(params.fullPage || params.clip || params.ref != null || params.frameRef || params.highlight) ||
-          (format === 'png' && params.optimizeForSpeed === false)
-        let data = needsCapture ? null : await this.screenshotFromStream(tab, { format, quality })
+          Boolean(fullPage || params.frameRef || params.highlight) ||
+          (format === 'png' && params.optimizeForSpeed === false) ||
+          (format === 'jpeg' && clip != null)
+        let data = needsCapture ? null : await this.screenshotFromStream(tab, { format, quality, clip })
         if (!data) {
-          const captureParams = { format, captureBeyondViewport: Boolean(params.fullPage) }
+          const captureParams = { format, captureBeyondViewport: fullPage }
+          if (clip) captureParams.clip = { ...clip, scale: 1 }
           if (format === 'jpeg') {
             captureParams.quality = quality
           } else if (params.optimizeForSpeed !== false) {
@@ -1576,8 +1868,8 @@ export class HeadlessDriver {
         return {
           path: file,
           mediaType: format === 'jpeg' ? 'image/jpeg' : 'image/png',
-          width: viewport.w,
-          height: viewport.h,
+          width: clip ? Math.round(clip.width) : viewport.w,
+          height: clip ? Math.round(clip.height) : viewport.h,
           bytes: data.byteLength,
         }
       }
@@ -1904,6 +2196,7 @@ export class HeadlessDriver {
                     frames: stream.frames,
                     restarts: stream.restarts,
                     served: stream.served,
+                    cropped: stream.cropped,
                     fallbacks: stream.fallbacks,
                     timeouts: stream.timeouts,
                     repaintMisses: stream.repaintMisses,
