@@ -11,6 +11,13 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.64] - 2026-10-17
+
+### Added
+
+- **chrome_selection（批次 A4，工具面 28）**：读取选区文本 + 来源 URL/标题；无选区 `NO_SELECTION`；密码/支付/secret 字段 `SENSITIVE_SELECTION`
+- fixture：`selection.html`；真机验证无选区报错 → 点击选中段落后返回原文 + URL
+
 ## [0.1.63] - 2026-10-17
 
 ### Added

@@ -1016,6 +1016,43 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   })
 
+  // --------------------------------------------------------- 4c. selection
+  list.push({
+    name: 'chrome_selection',
+    description:
+      'Read the current page selection (or selected text inside a focused input/textarea) with its source URL and title, wrapped as untrusted page content. Password/payment/secret fields return SENSITIVE_SELECTION; no selection returns NO_SELECTION.',
+    parameters: {
+      type: 'object',
+      properties: {
+        maxChars: { type: 'number', description: 'Optional cap (10-20000, default 4000).' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        found: { type: 'boolean' },
+        text: { type: 'string' },
+        url: { type: 'string' },
+        title: { type: 'string' },
+        truncated: { type: 'boolean' },
+        source: { type: 'string' },
+        tabId: { type: 'number' },
+      }),
+      render: (_args, value) =>
+        renderText(
+          `Selection from ${value.url || 'page'} (${value.title || ''}):\n${value.text || ''}${value.truncated ? '\n[truncated]' : ''}`,
+        ),
+    },
+    async execute(args, exec) {
+      return call(
+        'tab.selection',
+        { maxChars: args?.maxChars, tabId: args?.tabId, owner: ownerOf(exec) },
+        30000,
+      )
+    },
+  })
+
   // ------------------------------------------------------------ 5b. click_at
   list.push({
     name: 'chrome_click_at',

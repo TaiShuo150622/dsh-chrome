@@ -122,7 +122,7 @@ const tools = chromeTools({
   approval: () => approvalService,
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('twenty-seven tools registered', tools.length === 27, tools.map((t) => t.name).join(', '))
+check('twenty-eight tools registered', tools.length === 28, tools.map((t) => t.name).join(', '))
 
 const sessionId = 'session-test-abcdef'
 const exec = () => ({

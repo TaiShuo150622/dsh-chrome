@@ -490,6 +490,8 @@ async function handleRequest(message) {
       return clickAt(owner, params)
     case 'tab.html':
       return html(owner, params)
+    case 'tab.selection':
+      return selection(owner, params)
     case 'tab.type':
       return typeText(owner, params)
     case 'tab.press':
@@ -576,6 +578,7 @@ const PAGE_ACTIONS = {
   drag: dragByRef,
   elementBox,
   html: outerHtml,
+  selection: readSelection,
   overlay: drawRefOverlay,
   overlayRemove: removeRefOverlay,
   hasSelector,
@@ -965,6 +968,16 @@ async function html(owner, params) {
   const result = await callInPage(tabId, 'html', [selector, mode, Number.isFinite(maxChars) ? maxChars : null], 15000)
   if (!result?.found) {
     throw bridgeError(result?.error || 'SELECTOR_NOT_FOUND', result?.message || `selector not found: ${selector || '(document)'}`)
+  }
+  return { ...result, tabId }
+}
+
+async function selection(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const maxChars = Number(params.maxChars)
+  const result = await callInPage(tabId, 'selection', [Number.isFinite(maxChars) ? maxChars : null], 15000)
+  if (!result?.found) {
+    throw bridgeError(result?.reason || 'NO_SELECTION', result?.message || 'no page selection')
   }
   return { ...result, tabId }
 }
@@ -2160,6 +2173,51 @@ function outerHtml(selector, mode, maxChars) {
     html: truncated ? raw.slice(0, limit) : raw,
     truncated,
     length: raw.length,
+  }
+}
+
+function readSelection(maxChars) {
+  const limit = Number.isFinite(maxChars) ? Math.max(10, Math.min(20000, maxChars)) : 4000
+  const active = document.activeElement
+  const sensitive = (element) => {
+    if (!element) return false
+    const tag = String(element.tagName || '').toLowerCase()
+    const type = String(element.getAttribute('type') || '').toLowerCase()
+    const autocomplete = String(element.getAttribute('autocomplete') || '').toLowerCase()
+    const name = String(element.getAttribute('name') || '').toLowerCase()
+    if (type === 'password' || type === 'hidden') return true
+    if (autocomplete.includes('cc-') || autocomplete.includes('password')) return true
+    return /pass(word)?|card|otp|token|secret|cvv|payment/.test(name)
+  }
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && sensitive(active)) {
+    return { found: false, reason: 'SENSITIVE_SELECTION', message: 'selection is inside a sensitive field' }
+  }
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+    const start = Number(active.selectionStart)
+    const end = Number(active.selectionEnd)
+    const value = typeof active.value === 'string' ? active.value : ''
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+      const text = value.slice(start, end)
+      return {
+        found: true,
+        text: text.slice(0, limit),
+        url: location.href,
+        title: document.title,
+        truncated: text.length > limit,
+        source: 'input',
+      }
+    }
+  }
+  const selection = window.getSelection()
+  const text = selection ? String(selection) : ''
+  if (!text.trim()) return { found: false, reason: 'NO_SELECTION', message: 'no text is selected on the page' }
+  return {
+    found: true,
+    text: text.slice(0, limit),
+    url: location.href,
+    title: document.title,
+    truncated: text.length > limit,
+    source: 'page',
   }
 }
 

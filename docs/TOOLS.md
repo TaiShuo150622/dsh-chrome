@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：27
+> 工具数量：28
 
 ### `chrome_status`
 
@@ -183,6 +183,15 @@ Click the interactive control with the given snapshot ref number on the current 
 | `clickCount` | number | no | Click count, 1-3 (default 1; 2 = double click). |
 | `snapshot` | boolean | no | Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip). |
 | `dialog` | object | no | How to answer a JS dialog (confirm/prompt/beforeunload) triggered by this action. Default: dismiss. Set accept:true to accept; promptText fills a prompt. |
+| `tabId` | number | no | Optional tab id owned by this session. |
+
+### `chrome_selection`
+
+Read the current page selection (or selected text inside a focused input/textarea) with its source URL and title, wrapped as untrusted page content. Password/payment/secret fields return SENSITIVE_SELECTION; no selection returns NO_SELECTION.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `maxChars` | number | no | Optional cap (10-20000, default 4000). |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_click_at`
