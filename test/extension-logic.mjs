@@ -41,6 +41,14 @@ const storageSets = []
 const tabRemovedListeners = []
 const tabGroupUpdates = []
 const tabActivatedListeners = []
+const tabUpdates = []
+// Windows the mocked tabs live in. `makeTabVisibleForScreencast` reads/writes
+// focus + state here (screencast only emits frames for a visible tab).
+const windows = new Map([[1, { id: 1, focused: true, state: 'normal' }]])
+const windowUpdates = []
+// Session tabs are grouped; a collapsed group is another reason Chrome does not
+// render the tab (makeTabVisibleForScreencast expands it).
+const tabGroups = new Map([[5, { id: 5, collapsed: true, title: 'DSH · demo-project', color: 'blue' }]])
 let connectNativeCalls = 0
 let runtimeReloads = 0
 const nativePortListeners = { message: [], disconnect: [] }
@@ -122,6 +130,7 @@ const chrome = {
     async update(tabId, props) {
       const tab = tabs.get(tabId)
       if (!tab) throw new Error(`no tab ${tabId}`)
+      tabUpdates.push({ tabId, ...props })
       Object.assign(tab, props)
       return tab
     },
@@ -143,11 +152,34 @@ const chrome = {
     },
   },
   tabGroups: {
+    async get(groupId) {
+      const group = tabGroups.get(groupId)
+      if (!group) throw new Error(`no group ${groupId}`)
+      return group
+    },
+    // Keep query() empty: reconcileGroups() runs on a 1.2s timer and must stay a
+    // no-op here so the mocked session state is not rewritten mid-test.
     async query() {
       return []
     },
     async update(id, props) {
       tabGroupUpdates.push({ id, ...props })
+      const group = tabGroups.get(id)
+      if (group) Object.assign(group, props)
+    },
+  },
+  windows: {
+    async get(windowId) {
+      const window = windows.get(windowId)
+      if (!window) throw new Error(`no window ${windowId}`)
+      return window
+    },
+    async update(windowId, props) {
+      const window = windows.get(windowId)
+      if (!window) throw new Error(`no window ${windowId}`)
+      windowUpdates.push({ windowId, ...props })
+      Object.assign(window, props)
+      return window
     },
   },
   alarms: {
@@ -561,13 +593,102 @@ const afterResume = await sandbox.handleRequest({ method: 'tab.click', params: {
 check('click works again after resume', afterResume?.ok === true)
 
 // F1: screencast dispatch + frame counter (host writes frames to disk)
+// F1b: the session tab sits in the background (the viewer is another window) —
+// `start` must activate it, restore/focus the window, expand its collapsed tab
+// group and clear a pending USER_SWITCHED pause, otherwise Chrome emits no
+// frames (frames=0 / stale image).
+tabs.get(7).active = false
+tabs.get(7).groupId = 5
+tabGroups.get(5).collapsed = true
+windows.get(1).focused = false
+windows.get(1).state = 'minimized'
+// Simulate the user switching away: session tab 7 -> unrelated tab 9 pauses s1.
+for (const listener of tabActivatedListeners) await listener({ tabId: 7, windowId: 1 })
+for (const listener of tabActivatedListeners) await listener({ tabId: 9, windowId: 1 })
+const castStatusBackground = await sandbox.handleRequest({
+  method: 'tab.screencast_status',
+  params: { owner: 's1' },
+  id: 'cast-status-background',
+})
+check(
+  'screencast status reports a background tab as not visible',
+  castStatusBackground?.active === false &&
+    castStatusBackground?.visible === false &&
+    castStatusBackground?.tabActive === false &&
+    castStatusBackground?.tabGroupCollapsed === true,
+  JSON.stringify(castStatusBackground),
+)
+
+const tabUpdatesBeforeCast = tabUpdates.length
+const windowUpdatesBeforeCast = windowUpdates.length
+const tabGroupUpdatesBeforeCast = tabGroupUpdates.length
 const castStart = await sandbox.handleRequest({ method: 'tab.screencast_start', params: { owner: 's1', quality: 50 }, id: 'cast-start' })
 check('tab.screencast_start dispatches', castStart?.active === true)
+check(
+  'screencast start activates the background session tab',
+  castStart?.activated === true &&
+    tabUpdates.slice(tabUpdatesBeforeCast).some((update) => update.tabId === 7 && update.active === true) &&
+    tabs.get(7)?.active === true,
+)
+check(
+  'screencast start expands the collapsed session tab group',
+  castStart?.expandedGroup === true &&
+    tabGroupUpdates.slice(tabGroupUpdatesBeforeCast).some((update) => update.id === 5 && update.collapsed === false) &&
+    tabGroups.get(5)?.collapsed === false,
+  JSON.stringify(tabGroupUpdates.slice(tabGroupUpdatesBeforeCast)),
+)
+check(
+  'screencast start restores and focuses a minimized window',
+  castStart?.restoredWindow === true &&
+    castStart?.focusedWindow === true &&
+    windowUpdates.slice(windowUpdatesBeforeCast).some((update) => update.windowId === 1 && update.state === 'normal') &&
+    windowUpdates.slice(windowUpdatesBeforeCast).some((update) => update.windowId === 1 && update.focused === true),
+  JSON.stringify(windowUpdates.slice(windowUpdatesBeforeCast)),
+)
+check(
+  'screencast start reports the tab as visible',
+  castStart?.visible === true && castStart?.tabActive === true && windows.get(1)?.focused === true,
+)
+check('screencast start clears the USER_SWITCHED pause', castStart?.resumedFromPause === true)
+check(
+  'auto-activation tells the caller the tab was brought to the front',
+  /visible tab/i.test(castStart?.hint || ''),
+  castStart?.hint,
+)
+nextPageValue = { ok: true, tag: 'button', label: 'After cast activation' }
+const clickAfterCast = await sandbox.handleRequest({ method: 'tab.click', params: { ref: 1, owner: 's1' }, id: 'click-after-cast' })
+check('mutating actions work again after the screencast auto-resume', clickAfterCast?.ok === true)
+
+const castStatusBeforeFrame = await sandbox.handleRequest({
+  method: 'tab.screencast_status',
+  params: { owner: 's1' },
+  id: 'cast-status-before-frame',
+})
+check(
+  'screencast status exposes visibility and frame time before the first frame',
+  castStatusBeforeFrame?.active === true &&
+    castStatusBeforeFrame?.visible === true &&
+    castStatusBeforeFrame?.tabGroupCollapsed === false &&
+    castStatusBeforeFrame?.frames === 0 &&
+    castStatusBeforeFrame?.frameAt === null &&
+    castStatusBeforeFrame?.frameAgeMs === null &&
+    /waiting for the first frame/i.test(castStatusBeforeFrame?.hint || ''),
+  JSON.stringify(castStatusBeforeFrame),
+)
 for (const listener of eventListeners) {
   listener({ tabId: 7 }, 'Page.screencastFrame', { sessionId: 's1', data: 'AA==', metadata: { timestamp: 1 } })
 }
 const castStatus = await sandbox.handleRequest({ method: 'tab.screencast_status', params: { owner: 's1' }, id: 'cast-status' })
 check('tab.screencast_status counts frames', castStatus?.active === true && castStatus?.frames === 1)
+check(
+  'screencast status exposes the last-frame time',
+  typeof castStatus?.frameAt === 'number' &&
+    castStatus.frameAt > 0 &&
+    typeof castStatus?.lastAt === 'string' &&
+    typeof castStatus?.frameAgeMs === 'number' &&
+    castStatus.visible === true,
+  JSON.stringify({ frameAt: castStatus?.frameAt, frameAgeMs: castStatus?.frameAgeMs }),
+)
 const castStop = await sandbox.handleRequest({ method: 'tab.screencast_stop', params: { owner: 's1' }, id: 'cast-stop' })
 check('tab.screencast_stop dispatches', castStop?.active === false && castStop?.frames === 1)
 

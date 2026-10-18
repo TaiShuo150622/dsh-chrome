@@ -1002,11 +1002,159 @@ async function readDiag() {
   return { entries: list.slice(-50) }
 }
 
+// ------------------------------------------------ screencast tab visibility
+// Chrome only composites frames for a tab that is actually visible: the active
+// tab of a non-minimized window. A desktop session tab normally sits in the
+// background (the live viewer is another window/tab), and there
+// `Page.startScreencast` attaches successfully but never emits a frame — the
+// host keeps serving the previous latest.jpg and the viewer looks frozen.
+// `start` therefore brings the target tab to the front and reports what it did.
+async function readTabVisibility(tabId) {
+  let tab = null
+  try {
+    tab = await chrome.tabs.get(tabId)
+  } catch {
+    return null
+  }
+  let window = null
+  try {
+    window = chrome.windows?.get ? await chrome.windows.get(tab.windowId) : null
+  } catch {
+    window = null
+  }
+  const tabActive = Boolean(tab.active)
+  const windowState = window?.state || 'normal'
+  const windowMinimized = windowState === 'minimized'
+  // Session tabs live in a collapsed "DSH · …" group; a tab that stays inside a
+  // collapsed group is not rendered either.
+  const groupId = Number(tab.groupId)
+  const tabGroupId = Number.isFinite(groupId) && groupId >= 0 ? groupId : null
+  let tabGroupCollapsed = null
+  if (tabGroupId != null && chrome.tabGroups?.get) {
+    try {
+      const group = await chrome.tabGroups.get(tabGroupId)
+      tabGroupCollapsed = Boolean(group?.collapsed)
+    } catch {
+      tabGroupCollapsed = null
+    }
+  }
+  return {
+    tabActive,
+    windowId: Number.isFinite(tab.windowId) ? tab.windowId : null,
+    windowFocused: Boolean(window?.focused),
+    windowState,
+    windowMinimized,
+    tabGroupId,
+    tabGroupCollapsed,
+    // What Page.startScreencast needs before it emits frames. Window focus is
+    // reported separately: an unfocused-but-on-screen window can still
+    // composite (fully occluded windows cannot be detected from the extension).
+    visible: tabActive && !windowMinimized && tabGroupCollapsed !== true,
+  }
+}
+
+async function makeTabVisibleForScreencast(tabId) {
+  let activated = false
+  let expandedGroup = false
+  let focusedWindow = false
+  let restoredWindow = false
+  let visibilityError = null
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    if (!tab.active) {
+      // Mark the activation as expected so the tab listener does not read it as
+      // the user switching away (same convention as chrome_tabs {op:"focus"}).
+      expectedActivations.add(tabId)
+      await chrome.tabs.update(tabId, { active: true })
+      activated = true
+    }
+    const groupId = Number(tab.groupId)
+    if (Number.isFinite(groupId) && groupId >= 0 && chrome.tabGroups?.get && chrome.tabGroups?.update) {
+      try {
+        const group = await chrome.tabGroups.get(groupId)
+        if (group?.collapsed) {
+          await chrome.tabGroups.update(groupId, { collapsed: false })
+          expandedGroup = true
+        }
+      } catch {
+        // group API unavailable; the visibility check below reports the outcome
+      }
+    }
+    if (chrome.windows?.update && Number.isFinite(tab.windowId)) {
+      let window = null
+      try {
+        window = await chrome.windows.get(tab.windowId)
+      } catch {
+        window = null
+      }
+      if (window?.state === 'minimized') {
+        await chrome.windows.update(tab.windowId, { state: 'normal' })
+        restoredWindow = true
+      }
+      if (window && !window.focused) {
+        await chrome.windows.update(tab.windowId, { focused: true })
+        focusedWindow = true
+      }
+    }
+  } catch (error) {
+    visibilityError = error?.message || String(error)
+  }
+  const after = await readTabVisibility(tabId)
+  const visible = Boolean(after?.visible)
+  const moved = activated || expandedGroup || focusedWindow || restoredWindow
+  return {
+    activated,
+    expandedGroup,
+    focusedWindow,
+    restoredWindow,
+    visible,
+    tabActive: Boolean(after?.tabActive),
+    windowFocused: Boolean(after?.windowFocused),
+    windowState: after?.windowState ?? null,
+    tabGroupCollapsed: after?.tabGroupCollapsed ?? null,
+    visibilityError,
+    hint: visible
+      ? moved
+        ? 'screencast needs a visible tab; DSH brought the session tab to the front automatically'
+        : null
+      : 'screencast needs a visible tab (active tab in a non-minimized window); automatic activation failed — bring the session tab to the front manually',
+  }
+}
+
 async function startScreencast(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   return withDebugger(tabId, async (session) => {
+    // Attach first: if another debugger (DevTools) owns the tab, do not steal
+    // focus only to fail the start afterwards.
+    const sessionEntry = await getSessionEntry(owner)
+    const pausedBefore = Boolean(sessionEntry.paused)
+    const visibility = await makeTabVisibleForScreencast(tabId)
+    // Bringing the session tab to the front is exactly what chrome_resume /
+    // chrome_tabs {op:"focus"} do, so a pending USER_SWITCHED pause no longer
+    // applies: clear it and report the auto-resume rather than failing the start.
+    let resumedFromPause = false
+    if (pausedBefore && (visibility.activated || visibility.visible)) {
+      sessionEntry.paused = false
+      sessionEntry.pausedAt = null
+      sessionEntry.pausedUrl = ''
+      await saveSessions()
+      resumedFromPause = true
+      diag('screencast-auto-resume', { owner: ownerShort(owner), tabId })
+    }
+    const startState = { ...visibility, resumedFromPause }
+    if (visibility.activated || visibility.expandedGroup || visibility.focusedWindow || visibility.restoredWindow) {
+      diag('screencast-autofocus', {
+        owner: ownerShort(owner),
+        tabId,
+        activated: visibility.activated,
+        expandedGroup: visibility.expandedGroup,
+        focusedWindow: visibility.focusedWindow,
+        restoredWindow: visibility.restoredWindow,
+        visible: visibility.visible,
+      })
+    }
     if (session.screencast) {
-      return { active: true, alreadyActive: true, tabId, format: session.screencast.format }
+      return { active: true, alreadyActive: true, tabId, format: session.screencast.format, ...startState }
     }
     await chrome.debugger.sendCommand(session.target, 'Page.enable').catch(() => {})
     const format = params.format === 'png' ? 'png' : 'jpeg'
@@ -1040,8 +1188,15 @@ async function startScreencast(owner, params) {
       session.screencast = null
       throw error
     }
-    diag('screencast-start', { owner: ownerShort(owner), tabId, format, everyNthFrame })
-    return { active: true, alreadyActive: false, tabId, format, everyNthFrame }
+    diag('screencast-start', {
+      owner: ownerShort(owner),
+      tabId,
+      format,
+      everyNthFrame,
+      activated: visibility.activated,
+      visible: visibility.visible,
+    })
+    return { active: true, alreadyActive: false, tabId, format, everyNthFrame, ...startState }
   })
 }
 
@@ -1064,16 +1219,46 @@ async function stopScreencast(owner) {
 
 async function screencastStatus(owner) {
   const tabId = await resolveOwnedTabId(owner)
+  // Visibility is reported even when no screencast is running: it is the single
+  // most common reason for "frames=0 / viewer shows an old frame".
+  const visibility = await readTabVisibility(tabId)
+  const visibilityFields = {
+    visible: Boolean(visibility?.visible),
+    tabActive: Boolean(visibility?.tabActive),
+    windowFocused: Boolean(visibility?.windowFocused),
+    windowState: visibility?.windowState ?? null,
+    tabGroupCollapsed: visibility?.tabGroupCollapsed ?? null,
+  }
   const session = debuggerSessions.get(tabId)
   const state = session?.screencast
-  if (!state) return { active: false, tabId, frames: 0 }
+  if (!state) {
+    return {
+      active: false,
+      tabId,
+      frames: 0,
+      ...visibilityFields,
+      frameAt: null,
+      frameAgeMs: null,
+      hint: visibilityFields.visible
+        ? null
+        : 'screencast needs a visible tab; op:"start" activates the session tab automatically',
+    }
+  }
   return {
     active: true,
     tabId,
     frames: state.frames,
     startedAt: new Date(state.startedAt).toISOString(),
     lastAt: state.lastAt ? new Date(state.lastAt).toISOString() : null,
+    frameAt: state.lastAt || null,
+    frameAgeMs: state.lastAt ? Math.max(0, Date.now() - state.lastAt) : null,
     format: state.format,
+    ...visibilityFields,
+    hint: !visibilityFields.visible
+      ? 'screencast needs a visible tab (active tab in a non-minimized window); bring the session tab to the front to receive frames'
+      : state.frames === 0
+        ? 'waiting for the first frame; Chrome only emits frames when the page changes'
+        : null,
   }
 }
 
