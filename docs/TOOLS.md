@@ -23,7 +23,7 @@ Return a text snapshot of the current DSH session page: title, URL, a numbered l
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `maxChars` | number | no | Maximum page-text characters to return (default 100000). |
+| `maxChars` | number | no | Maximum page-text characters to return (default 20000, up to 200000). 正文预算只影响 `Page text` 那一段；要看长正文用 `chrome_get_text`，或显式传更大的 `maxChars`。 |
 | `boxes` | boolean | no | Include each control viewport box [x,y,width,height] in CSS px. |
 | `mode` | enum(full | delta) | no | delta returns only controls that changed since the previous snapshot in this page. |
 | `frames` | enum(all | main) | no | all (default) includes iframe controls with f<frame>:<ref> handles; main keeps legacy main-frame-only output. |

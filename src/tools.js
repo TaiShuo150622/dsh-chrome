@@ -17,6 +17,14 @@ import { createScreencastGuard } from './screencast-guard.js'
 
 const MUTATION_TIMEOUT_MS = 45000
 
+// Page-text budget for chrome_snapshot. The snapshot exists for structure and
+// refs, not for dumping a whole page: measured on a page with ~100KB of visible
+// text (docs/PERF-LOOP.md §6), the old 100000-char default put 102.7KB on the
+// wire per call (≈26k tokens) and cost 3.41ms in the driver; 20000 chars is
+// 20.8KB / 1.32ms, and on a ~1MB-text page 5.86 -> 4.78ms. Two escapes cover
+// callers that need the rest: maxChars (up to 200000) and chrome_get_text.
+const SNAPSHOT_TEXT_DEFAULT_CHARS = 20000
+
 // Next-step hint shared by the pick capability gate and the runtime fallback
 // (a backend that declares pick but fails at request time).
 const PICK_UNSUPPORTED_MESSAGE =
@@ -435,7 +443,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     parameters: {
       type: 'object',
       properties: {
-        maxChars: { type: 'number', description: 'Maximum page-text characters to return (default 100000).' },
+        maxChars: { type: 'number', description: 'Maximum page-text characters to return (default 20000, up to 200000). Use chrome_get_text to read a long page.' },
         boxes: { type: 'boolean', description: 'Include each control viewport box [x,y,width,height] in CSS px.' },
         mode: { type: 'string', enum: ['full', 'delta'], description: 'delta returns only controls that changed since the previous snapshot in this page.' },
         frames: { type: 'string', enum: ['all', 'main'], description: 'all (default) includes iframe controls with f<frame>:<ref> handles; main keeps legacy main-frame-only output.' },
@@ -529,14 +537,24 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
             }
           }
         }
-        body.push('', 'Page text:', value.text || '', value.truncated ? '\n[truncated]' : '')
+        // A budget the reader cannot see is a budget it cannot raise: the
+        // truncation line carries the effective size and both escapes.
+        const pageText = value.text || ''
+        body.push(
+          '',
+          'Page text:',
+          pageText,
+          value.truncated
+            ? `\n[page text truncated at ${pageText.length} characters — pass maxChars (up to 200000) for more, or use chrome_get_text]`
+            : '',
+        )
         return renderText(body.join('\n'))
       },
     },
     async execute(args, exec) {
       const maxChars = Number.isFinite(args?.maxChars)
         ? Math.max(1000, Math.min(200000, args.maxChars))
-        : 100000
+        : SNAPSHOT_TEXT_DEFAULT_CHARS
       return call(
         'tab.snapshot',
         { maxChars, boxes: Boolean(args?.boxes), mode: args?.mode || 'full', frames: args?.frames || 'all', tabId: args?.tabId, owner: ownerOf(exec) },

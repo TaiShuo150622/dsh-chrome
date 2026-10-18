@@ -66,10 +66,15 @@ const host = spawn(process.execPath, [path.join(root, 'host', 'host.mjs')], {
   env: { ...process.env, DSH_HOME: home },
   stdio: ['pipe', 'pipe', 'inherit'],
 })
+// The page-text budget is a tool-layer default (docs/PERF-LOOP.md §6): record
+// what the desktop host actually forwarded so the assertion covers the wire
+// params, not just the tool's own return value.
+const forwarded = []
 host.stdout.on(
   'data',
   frameReader((message) => {
     if (message.id == null) return
+    forwarded.push({ method: message.method, params: message.params })
     const table = {
       'browser.status': {
         extensionVersion: 'p0-fake',
@@ -144,6 +149,27 @@ const snapshot = await byName.chrome_snapshot.execute({})
 check('chrome_snapshot executes', snapshot.controls?.[0]?.ref === 1)
 const snapshotRender = byName.chrome_snapshot.output.render({}, snapshot)
 check('chrome_snapshot render lists the control', snapshotRender[0]?.text?.includes('[1] a (link) "More information..."'))
+
+// §6: the snapshot page-text budget defaults to 20000 characters (measured
+// 102.7KB -> 20.8KB wire per call) and an explicit maxChars still wins.
+const sentSnapshotParams = forwarded.filter((entry) => entry.method === 'tab.snapshot').map((entry) => entry.params)
+check(
+  'chrome_snapshot sends the 20000-character default',
+  sentSnapshotParams[0]?.maxChars === 20000,
+  JSON.stringify(sentSnapshotParams[0]),
+)
+await byName.chrome_snapshot.execute({ maxChars: 12345 })
+const explicitParams = forwarded.filter((entry) => entry.method === 'tab.snapshot').map((entry) => entry.params).at(-1)
+check('chrome_snapshot passes an explicit maxChars through', explicitParams?.maxChars === 12345, JSON.stringify(explicitParams))
+const truncatedValue = { title: 'T', url: 'https://example.com/', controls: [], text: 'x'.repeat(20000), truncated: true, mode: 'full' }
+const truncatedRender = byName.chrome_snapshot.output.render({}, truncatedValue)
+check(
+  'chrome_snapshot truncation line reports the size and both escapes',
+  truncatedRender[0]?.text?.includes('truncated at 20000 characters') &&
+    truncatedRender[0].text.includes('maxChars') &&
+    truncatedRender[0].text.includes('chrome_get_text'),
+  truncatedRender[0]?.text?.slice(-160),
+)
 
 const shot = await byName.chrome_screenshot.execute({})
 check('chrome_screenshot executes and returns attachment', shot.image?.attachmentId === 'att-test-1')

@@ -91,6 +91,13 @@ try {
   const button = snap.controls.find((control) => control.tag === 'button')
   assert.ok(input && button, `unexpected controls: ${JSON.stringify(snap.controls)}`)
   assert.equal(button.label, 'Go')
+  // The page-text budget the tool default relies on (docs/PERF-LOOP.md §6): a
+  // snapshot returns exactly maxChars characters and flags the truncation.
+  const fullText = await driver.request('tab.snapshot', { owner: 's1', maxChars: 200000 })
+  const budgetText = await driver.request('tab.snapshot', { owner: 's1', maxChars: 1000 })
+  assert.equal(budgetText.text, fullText.text.slice(0, 1000))
+  assert.equal(budgetText.text.length, Math.min(1000, fullText.text.length))
+  assert.equal(budgetText.truncated, fullText.text.length > 1000)
 
   const typed = await driver.request('tab.type', { owner: 's1', ref: input.ref, text: 'world', replace: true })
   assert.equal(typed.value, 'world')
