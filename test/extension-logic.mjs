@@ -154,6 +154,20 @@ const chrome = {
     async sendCommand(target, method, params) {
       debuggerCalls.push({ method, target, params })
       if (method === 'Page.enable') return {}
+      if (method === 'Page.getFrameTree') {
+        return {
+          frameTree: {
+            frame: {
+              id: 'FRAME_MAIN',
+              url: 'https://example.test/',
+              domainAndRegistry: 'example.test',
+              mimeType: 'text/html',
+            },
+            childFrames: [],
+          },
+        }
+      }
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 }
       if (method === 'Page.captureScreenshot') return { data: 'iVBORw0KGgo=' }
       if (method === 'Page.handleJavaScriptDialog') {
         dialogCommands.push(params)

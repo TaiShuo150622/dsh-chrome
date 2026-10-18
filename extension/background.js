@@ -910,7 +910,7 @@ async function find(owner, params) {
   const useRegex = Boolean(params.regex)
   if (!query.trim()) throw bridgeError('INVALID_ARGUMENT', 'query must not be empty')
   const limit = Number.isFinite(params.maxResults) ? Math.min(50, Math.max(1, params.maxResults)) : 20
-  const value = await callInPage(tabId, 'find', [query, limit, useRegex])
+  const value = await findAcrossFrames(tabId, query, limit, useRegex)
   if (!value) throw bridgeError('INTERNAL', 'page find returned no result')
   return value
 }
@@ -1097,6 +1097,98 @@ async function callInFrame(tabId, frameId, action, args, timeoutMs = 15000) {
   }
 }
 
+async function withDebuggerFrames(tabId, visitor, timeoutMs = 15000) {
+  const target = { tabId }
+  await chrome.debugger.attach(target, '1.3')
+  try {
+    const tree = await readFrameTree(target)
+    const results = []
+    for (const frame of tree) {
+      try {
+        results.push({
+          frame,
+          value: await evalInFrameContext(target, frame.frameId, visitor.fn, visitor.args, timeoutMs),
+        })
+      } catch (error) {
+        results.push({ frame, error: String(error?.message || error) })
+      }
+    }
+    return results
+  } finally {
+    try {
+      await chrome.debugger.detach(target)
+    } catch {
+      // tab may have closed
+    }
+  }
+}
+
+async function probeFrames(tabId, fn, args, timeoutMs = 5000) {
+  const results = await withDebuggerFrames(tabId, { fn, args }, timeoutMs)
+  const hit = results.find((entry) => entry.value)
+  if (!hit) return null
+  return {
+    frameId: hit.frame.frameId,
+    prefix: framePrefix(hit.frame.frameId).toLowerCase(),
+    url: hit.frame.url,
+    parentFrameId: hit.frame.parentFrameId,
+  }
+}
+
+async function findAcrossFrames(tabId, query, limit, useRegex) {
+  const results = await withDebuggerFrames(tabId, { fn: findInPage, args: [query, limit, useRegex] })
+  const matches = []
+  let failedFrames = 0
+  for (const entry of results) {
+    if (!entry.value || !Array.isArray(entry.value.matches)) {
+      if (entry.error) failedFrames += 1
+      continue
+    }
+    const isMain = !entry.frame.parentFrameId
+    const prefix = framePrefix(entry.frame.frameId).toLowerCase()
+    for (const match of entry.value.matches) {
+      if (matches.length >= limit) break
+      matches.push(
+        isMain
+          ? match
+          : { ...match, frameRef: `f${prefix}:${match.ref}`, frame: prefix, frameId: entry.frame.frameId },
+      )
+    }
+  }
+  return {
+    query,
+    matches: matches.slice(0, limit),
+    truncated: matches.length >= limit,
+    frameCount: results.length,
+    ...(failedFrames > 0 ? { failedFrames } : {}),
+  }
+}
+
+async function getTextAcrossFrames(tabId, selector, maxChars) {
+  const results = await withDebuggerFrames(tabId, { fn: getText, args: [selector, maxChars] })
+  const parts = []
+  let found = false
+  let framesWithText = 0
+  for (const entry of results) {
+    if (!entry.value || entry.value.found === false) continue
+    found = true
+    framesWithText += 1
+    if (!entry.frame.parentFrameId) {
+      parts.unshift(entry.value.text || '')
+      continue
+    }
+    const prefix = framePrefix(entry.frame.frameId).toLowerCase()
+    parts.push(`\n\n[f${prefix}] ${entry.frame.url}\n${entry.value.text || ''}`)
+  }
+  const text = parts.join('')
+  return {
+    found,
+    text: text.slice(0, maxChars),
+    truncated: text.length > maxChars,
+    frames: framesWithText,
+  }
+}
+
 async function snapshotAllFrames(tabId, params) {
   const limit = Number.isFinite(params.maxChars) ? Math.max(1000, Math.min(200000, params.maxChars)) : 100000
   const boxes = Boolean(params.boxes)
@@ -1106,11 +1198,13 @@ async function snapshotAllFrames(tabId, params) {
   try {
     const tree = await readFrameTree(target)
     const frames = []
+    let mainRaw = null
     for (const frame of tree) {
       const prefix = framePrefix(frame.frameId).toLowerCase()
       try {
         const value = await evalInFrameContext(target, frame.frameId, pageSnapshot, [limit, boxes, mode], 15000)
         const isMain = !frame.parentFrameId
+        if (isMain) mainRaw = value
         const controls = Array.isArray(value?.controls)
           ? value.controls.map((control) =>
               isMain
@@ -1151,6 +1245,11 @@ async function snapshotAllFrames(tabId, params) {
       text: main?.text || '',
       truncated: Boolean(main?.truncated),
       frameCount: frames.length,
+    }
+    if (mode === 'delta') {
+      result.changedCount = Number.isFinite(mainRaw?.changedCount) ? mainRaw.changedCount : result.controls.length
+      result.sameCount = Number.isFinite(mainRaw?.sameCount) ? mainRaw.sameCount : 0
+      result.removedRefs = Array.isArray(mainRaw?.removedRefs) ? mainRaw.removedRefs : []
     }
     if (frames.length > 1) {
       result.frames = frames.map((frame) => ({
@@ -1284,7 +1383,16 @@ async function history(owner, params) {
   else throw bridgeError('UNSUPPORTED', `unknown history op: ${op}`)
   await waitForComplete(tabId, 45000).catch(() => {})
   const tab = await chrome.tabs.get(tabId)
-  return { tabId, url: tab.url || '', title: tab.title || '', loadState: tab.status || 'complete' }
+  const result = { tabId, url: tab.url || '', title: tab.title || '', loadState: tab.status || 'complete' }
+  if (params.frameHit) {
+    result.frame = {
+      prefix: params.frameHit.prefix,
+      frameId: params.frameHit.frameId,
+      url: params.frameHit.url,
+      parentFrameId: params.frameHit.parentFrameId,
+    }
+  }
+  return result
 }
 
 async function tabs(owner, params) {
@@ -1575,6 +1683,11 @@ async function getTextAgent(owner, params) {
   if (String(params.format || 'text') === 'markdown') {
     return callInPage(tabId, 'getMarkdown', [selector, maxChars])
   }
+  if (params.frames === 'all') {
+    const value = await getTextAcrossFrames(tabId, selector, maxChars)
+    if (!value) throw bridgeError('INTERNAL', 'get_text returned no result')
+    return value
+  }
   return callInPage(tabId, 'getText', [selector, maxChars])
 }
 
@@ -1609,24 +1722,26 @@ async function wait(owner, params) {
     const text = String(params.text || '')
     if (!text) throw bridgeError('INTERNAL', 'text is required when until=text')
     const started = Date.now()
-    let found = false
+    let hit = null
     while (Date.now() - started < timeoutMs) {
-      found = Boolean(await callInPage(tabId, 'hasText', [text], 5000))
-      if (found) break
+      hit = await probeFrames(tabId, hasText, [text], 5000)
+      if (hit) break
       await new Promise((resolve) => setTimeout(resolve, 300))
     }
-    if (!found) throw bridgeError('TIMEOUT', `text not found within ${timeoutMs}ms: ${text}`)
+    if (!hit) throw bridgeError('TIMEOUT', `text not found within ${timeoutMs}ms: ${text}`)
+    params = { ...params, frameHit: hit }
   } else if (until === 'selector') {
     const selector = String(params.selector || '')
     if (!selector) throw bridgeError('INVALID_ARGUMENT', 'selector is required when until=selector')
     const started = Date.now()
-    let found = false
+    let hit = null
     while (Date.now() - started < timeoutMs) {
-      found = Boolean(await callInPage(tabId, 'hasSelector', [selector], 5000))
-      if (found) break
+      hit = await probeFrames(tabId, hasSelector, [selector], 5000)
+      if (hit) break
       await new Promise((resolve) => setTimeout(resolve, 300))
     }
-    if (!found) throw bridgeError('TIMEOUT', `selector not found within ${timeoutMs}ms: ${selector}`)
+    if (!hit) throw bridgeError('TIMEOUT', `selector not found within ${timeoutMs}ms: ${selector}`)
+    params = { ...params, frameHit: hit }
   } else if (until === 'change') {
     const started = Date.now()
     let changed = false
@@ -1654,7 +1769,16 @@ async function wait(owner, params) {
     throw bridgeError('UNSUPPORTED', `unknown wait target: ${until}`)
   }
   const tab = await chrome.tabs.get(tabId)
-  return { tabId, url: tab.url || '', title: tab.title || '', loadState: tab.status || 'complete' }
+  const result = { tabId, url: tab.url || '', title: tab.title || '', loadState: tab.status || 'complete' }
+  if (params.frameHit) {
+    result.frame = {
+      prefix: params.frameHit.prefix,
+      frameId: params.frameHit.frameId,
+      url: params.frameHit.url,
+      parentFrameId: params.frameHit.parentFrameId,
+    }
+  }
+  return result
 }
 
 function waitForComplete(tabId, timeoutMs) {

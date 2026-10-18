@@ -11,6 +11,17 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.68] - 2026-10-17
+
+### Added
+
+- **批次 B4 跨 frame 读取**：
+  - `chrome_wait {until:"selector"|"text"}` 在所有 frame 的 isolated world 轮询，命中时结果带 `Frame: f<prefix> <url>`
+  - `chrome_find` 跨 frame 聚合，iframe 命中带 `frameRef`（`f<prefix>:<ref>`）
+  - `chrome_get_text {frames:"all"}` 把各 iframe 文本按 `[f<prefix>] <url>` 拼入输出
+- 真机验证：iframe 页 wait #child-button 命中同源 frame；find "child" 返回 7 条（主 frame + 两个 iframe）；get_text frames:all 包含两个子 frame 文本
+- extension-logic mock 补 `Page.getFrameTree` / `Page.createIsolatedWorld`
+
 ## [0.1.67] - 2026-10-17
 
 ### Added

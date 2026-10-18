@@ -49,6 +49,7 @@ Read the visible text of the DSH session page (or one element via a CSS selector
 | `selector` | string | no | Optional CSS selector; defaults to main/article/[role=main]/body. |
 | `maxChars` | number | no | Max characters, 500-200000 (default 20000). |
 | `format` | enum(text | markdown) | no | Output format (default text). |
+| `frames` | enum(all | main) | no | all joins iframe text with [f<frame>] labels; main (default) keeps main-frame text only. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_select`

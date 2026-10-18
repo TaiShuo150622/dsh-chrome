@@ -255,6 +255,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         url: { type: 'string' },
         title: { type: 'string' },
         loadState: { type: 'string' },
+        frame: { type: 'object', additionalProperties: true },
       }),
       render: (_args, value) =>
         renderText(`Navigated to ${value.title || '(untitled)'} — ${value.url} (${value.loadState})`),
@@ -408,6 +409,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
             type: 'object',
             properties: {
               ref: { type: 'number' },
+              frameRef: { type: 'string' },
+              frame: { type: 'string' },
               text: { type: 'string' },
               tag: { type: 'string' },
               x: { type: 'number' },
@@ -420,7 +423,9 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       }),
       render: (_args, value) => {
         const header = `Matches for "${value.query}": ${value.matches?.length ?? 0}${value.truncated ? ' (truncated)' : ''}`
-        const lines = (value.matches ?? []).map((match) => `- [ref ${match.ref}] ${match.tag} ${JSON.stringify(match.text)}`)
+        const lines = (value.matches ?? []).map(
+          (match) => `- [${match.frameRef ? match.frameRef : `ref ${match.ref}`}] ${match.tag} ${JSON.stringify(match.text)}`,
+        )
         return [{ type: 'text', text: [header, ...lines].join('\n') }]
       },
     },
@@ -450,6 +455,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         selector: { type: 'string', description: 'Optional CSS selector; defaults to main/article/[role=main]/body.' },
         maxChars: { type: 'number', description: 'Max characters, 500-200000 (default 20000).' },
         format: { type: 'string', enum: ['text', 'markdown'], description: 'Output format (default text).' },
+        frames: { type: 'string', enum: ['all', 'main'], description: 'all joins iframe text with [f<frame>] labels; main (default) keeps main-frame text only.' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
       additionalProperties: false,
@@ -459,6 +465,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         found: { type: 'boolean' },
         text: { type: 'string' },
         truncated: { type: 'boolean' },
+        frames: { type: 'number' },
       }),
       render: (_args, value) => {
         if (!value.found) return [{ type: 'text', text: 'No matching element found for the requested selector.' }]
@@ -473,7 +480,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     async execute(args, exec) {
       const value = await call(
         'tab.get_text',
-        { selector: args?.selector, maxChars: args?.maxChars, format: args?.format, tabId: args?.tabId, owner: ownerOf(exec) },
+        { selector: args?.selector, maxChars: args?.maxChars, format: args?.format, frames: args?.frames, tabId: args?.tabId, owner: ownerOf(exec) },
         30000,
       )
       if (!value) throw new BridgeError('INTERNAL', 'extension returned no text result')
@@ -1362,6 +1369,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         url: { type: 'string' },
         title: { type: 'string' },
         loadState: { type: 'string' },
+        frame: { type: 'object', additionalProperties: true },
       }),
       render: (_args, value) =>
         renderText(`${value.title || '(untitled)'} — ${value.url} (${value.loadState})`),
@@ -1567,9 +1575,15 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         url: { type: 'string' },
         title: { type: 'string' },
         loadState: { type: 'string' },
+        frame: { type: 'object', additionalProperties: true },
       }),
       render: (_args, value) =>
-        renderText(`Ready: ${value.title || '(untitled)'} — ${value.url} (${value.loadState})`),
+        renderText(
+          [
+            `Ready: ${value.title || '(untitled)'} — ${value.url} (${value.loadState})`,
+            ...(value.frame ? [`Frame: f${value.frame.prefix} ${value.frame.url}`] : []),
+          ].join('\n'),
+        ),
     },
     async execute(args, exec) {
       return call(
