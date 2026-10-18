@@ -15,6 +15,7 @@ import { BridgeServer } from './src/bridge.js'
 import { HeadlessDriver, headlessSupported } from './src/headless.js'
 import { ensureInstallAssets } from './src/install.js'
 import { registerLiveView, unregisterLiveView } from './src/liveview.js'
+import { wrapToolsForOperationLog } from './src/operation-log.js'
 import { chromeTools } from './src/tools.js'
 
 export const name = 'dsh-chrome'
@@ -149,7 +150,10 @@ export function apply(ctx) {
   // service has no browser methods); this provider keeps owning its tools,
   // state and cleanup, exactly like the official Playwright/Stagehand providers.
   ctx.effect(() => {
-    const disposers = wrapToolsForBackend(
+    // Order matters: backend routing first, then the operation log, then
+    // registration. The log layer observes the routed call without changing
+    // the tool's arguments, output, or errors.
+    const definitions = wrapToolsForBackend(
       chromeTools({
         bridge: router,
         attachments: () => attachments.current,
@@ -160,7 +164,10 @@ export function apply(ctx) {
         config: () => providerConfig,
       }),
       router,
-    ).map((definition) => ctx.tools.register(definition))
+    )
+    const disposers = wrapToolsForOperationLog(definitions, {
+      defaultBackend: () => router.backend,
+    }).map((definition) => ctx.tools.register(definition))
 
     let releaseBrowserUse = null
     if (hasBrowserUse) {
