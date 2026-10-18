@@ -13,6 +13,15 @@
 
 ## [Unreleased]
 
+### Added（capability 门控 / 操作记录 / 优化 Round 2）
+
+- **capability 门控接入 tools**：`supports(capability)` helper；chrome_pick/screencast 前置门控，headless pick 直接返回可执行 `UNSUPPORTED_BACKEND`（b363866）
+- **操作记录系统**：`src/operation-log.js` 记录每个 chrome_* 调用的 tool/backend/耗时/ok/errorCode/参数与结果摘要；JSONL ≤2KB/条、4MiB 轮转、URL/secret/password 脱敏、HTML/body/base64 不落盘、env `DSH_OPERATION_LOG=0` 关闭、`readOperationStats()`（2b4ff7d，10 项测试）
+- **优化 Round 2**：clip/ref 从 screencast 帧缓存裁剪（clip 吞吐 ×2、ref ×2.8，screenshot 42→19ms/14.8ms；修复 headless clip/ref 静默返回整视口）；冷启动并行化 CDP 调用 + readyState 轮询 25ms（约 -55~85ms）（dff3417/4b6a6ac/b9e7244/799dea8）
+- npm test 纳入 operation-log / backend-contract / install-platform 等新套件
+
+## [Unreleased]
+
 ### Added（并行批次：capability / platform / screencast 可见性）
 
 - **backend capability 契约**（`src/capabilities.js`、`src/backend.js`）：10 项能力矩阵（desktop 10/10、headless 除 pick/pause 外 8/10）、`capabilities`/`supports()`、`test/backend-contract.mjs`、`docs/CAPABILITIES.md`
