@@ -72,6 +72,7 @@ host.stdout.on(
       'tab.upload': { ok: true, ref: 5, files: 1 },
       'browser.downloads': { items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z' }] },
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
+      'tab.evaluate': { ok: true, value: 2, type: 'number' },
       'tab.frames': { tabId: 7, frames: [{ frameId: 'main', parentFrameId: null, url: 'http://127.0.0.1:8765/iframe.html' }] },
       'tab.selection': { found: true, text: 'selected paragraph', url: 'http://127.0.0.1:8765/selection.html', title: 'DSH Selection Test Page', truncated: false, source: 'page' },
       'tab.html': { found: true, mode: 'simplified', html: '<div id="api" value="••••">x</div>', truncated: false, length: 42 },
@@ -222,6 +223,72 @@ const networkValue = await byName.chrome_network.execute({ filter: 'a.js', limit
 check('network status is returned', networkValue.entries?.[0]?.status === 200)
 check('chrome_network executes', networkValue.entries?.[0]?.url === 'https://example.com/a.js')
 check('network filter reaches the extension', requests.at(-1)?.params?.filter === 'a.js')
+
+// C1: chrome_evaluate is gated by config and hard-confirmed every call
+const evalTools = (config, questions) =>
+  chromeTools({
+    bridge,
+    attachments: () => null,
+    assets: () => ({ extensionId: 'test', extensionDir: '/tmp/ext', nativeManifestPath: '/tmp/nm', instructionsPath: '/tmp/i.md' }),
+    userQuestions: () => questions,
+    config: () => config,
+  })
+
+const gatedTools = evalTools({ allowEvaluate: false }, null)
+check('evaluate is not registered by default', !gatedTools.some((definition) => definition.name === 'chrome_evaluate'))
+
+const allowTools = evalTools(
+  { allowEvaluate: true, evaluateConfirmTimeoutMs: 5000 },
+  { ask: async () => ({ answers: [{ id: 'confirm', selected: ['允许一次'] }] }) },
+)
+const allowByName = Object.fromEntries(allowTools.map((definition) => [definition.name, definition]))
+check('enabling allowEvaluate registers the 30th tool', allowTools.length === 30 && Boolean(allowByName.chrome_evaluate))
+const evalValue = await allowByName.chrome_evaluate.execute({ expression: '1 + 1' }, exec())
+check('evaluate returns the CDP value', evalValue?.value === 2 && evalValue?.type === 'number')
+check('evaluate params reach the extension', requests.at(-1)?.method === 'tab.evaluate' && requests.at(-1)?.params?.expression === '1 + 1')
+
+const denyTools = evalTools(
+  { allowEvaluate: true, evaluateConfirmTimeoutMs: 5000 },
+  { ask: async () => ({ answers: [{ id: 'confirm', selected: ['拒绝'] }] }) },
+)
+const denyByName = Object.fromEntries(denyTools.map((definition) => [definition.name, definition]))
+let denyCode = null
+try {
+  await denyByName.chrome_evaluate.execute({ expression: 'document.title' }, exec())
+} catch (error) {
+  denyCode = error?.code
+}
+check('denied confirmation returns APPROVAL_DENIED', denyCode === 'APPROVAL_DENIED')
+
+const noServiceByName = Object.fromEntries(
+  evalTools({ allowEvaluate: true }, null).map((definition) => [definition.name, definition]),
+)
+let noServiceCode = null
+try {
+  await noServiceByName.chrome_evaluate.execute({ expression: '1' }, exec())
+} catch (error) {
+  noServiceCode = error?.code
+}
+check('missing confirmation service fails closed', noServiceCode === 'APPROVAL_DENIED')
+
+const delegatedTools = evalTools(
+  { allowEvaluate: true, evaluateConfirmTimeoutMs: 5000 },
+  {
+    ask: async () => {
+      const error = new Error('delegated')
+      error.code = 'DELEGATED_CALLER'
+      throw error
+    },
+  },
+)
+const delegatedByName = Object.fromEntries(delegatedTools.map((definition) => [definition.name, definition]))
+let delegatedCode = null
+try {
+  await delegatedByName.chrome_evaluate.execute({ expression: '1' }, exec())
+} catch (error) {
+  delegatedCode = error?.code
+}
+check('delegated caller is rejected explicitly', delegatedCode === 'DELEGATED_CALLER')
 
 host.kill('SIGTERM')
 await bridge.stop()

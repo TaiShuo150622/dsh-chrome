@@ -484,6 +484,15 @@ try {
 } catch (error) {
   unsupported = error?.code
 }
+// C1: tab.evaluate uses the debugger session and returns a serialized value
+nextPageValue = 42
+const evalResult = await sandbox.handleRequest({
+  method: 'tab.evaluate',
+  params: { expression: '40 + 2', owner: 's1' },
+  id: 'evaluate-basic',
+})
+check('tab.evaluate dispatches and returns the value', evalResult?.ok === true && evalResult?.value === 42)
+
 // C0: one debugger session per entry (attach/detach ref counting)
 const sessionCounts = (from) => {
   const slice = debuggerCalls.slice(from)

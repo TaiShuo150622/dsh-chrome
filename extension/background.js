@@ -492,6 +492,8 @@ async function handleRequest(message) {
       return html(owner, params)
     case 'tab.frames':
       return frames(owner, params)
+    case 'tab.evaluate':
+      return evaluate(owner, params)
     case 'tab.selection':
       return selection(owner, params)
     case 'tab.type':
@@ -1373,6 +1375,50 @@ async function frames(owner, params) {
       }
     }
     return { tabId, frames: out }
+  })
+}
+
+async function evaluate(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const expression = String(params.expression ?? '')
+  if (!expression.trim()) throw bridgeError('INVALID_ARGUMENT', 'expression must not be empty')
+  const timeoutMs = Number.isFinite(params.timeoutMs)
+    ? Math.max(500, Math.min(30000, Number(params.timeoutMs)))
+    : 10000
+  return withDebugger(tabId, async (session) => {
+    let response
+    try {
+      response = await chrome.debugger.sendCommand(session.target, 'Runtime.evaluate', {
+        expression,
+        awaitPromise: Boolean(params.awaitPromise),
+        returnByValue: true,
+        timeout: timeoutMs,
+      })
+    } catch (error) {
+      throw bridgeError('EVAL_ERROR', error?.message || String(error))
+    }
+    if (response?.exceptionDetails) {
+      const details = response.exceptionDetails
+      const message =
+        details.exception?.description || details.exception?.value || details.text || 'evaluation threw'
+      return {
+        ok: false,
+        error: {
+          message: String(message).slice(0, 2000),
+          line: Number(details.lineNumber) || 0,
+          column: Number(details.columnNumber) || 0,
+        },
+      }
+    }
+    const result = response?.result
+    if (!result) return { ok: true, value: null, type: 'undefined' }
+    if (typeof result.unserializableValue === 'string') {
+      return { ok: true, value: result.unserializableValue, type: result.type || 'unserializable', unserializable: true }
+    }
+    if ('value' in result) {
+      return { ok: true, value: result.value, type: result.type || typeof result.value }
+    }
+    return { ok: true, value: null, type: result.type || 'object', unserializable: true }
   })
 }
 

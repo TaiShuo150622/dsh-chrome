@@ -11,6 +11,17 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.71] - 2026-10-17
+
+### Added（批次 C1：chrome_evaluate，默认不注册）
+
+- **chrome_evaluate**：CDP `Runtime.evaluate`（带 CDP timeout，可打断死循环）+ 序列化矩阵（unserializable/DOM/异常）
+- **配置门**：`~/.dsh/cache/dsh-chrome/config.json` 的 `allowEvaluate:true` 才注册（默认 29 工具不变，启用后 30）；provider reload 生效
+- **硬确认**：每次调用走 `ctx.userQuestions.ask`（不受 danger-full-access 影响）；拒绝 `APPROVAL_DENIED`、确认超时 `APPROVAL_TIMEOUT`、子代理 `DELEGATED_CALLER`；确认服务缺失 fail-closed
+- index.js 注入 `userQuestions` 并同步读取 config；`evaluateConfirmTimeoutMs` 可配（默认 120s）
+- 真机：临时启用配置 + 3s 确认超时 → 返回 `confirmation timed out`（APPROVAL_TIMEOUT）；恢复配置后工具面回到 29
+- 单元测试：允许/拒绝/无服务/子代理四条路径 + extension tab.evaluate 分发
+
 ## [0.1.70] - 2026-10-17
 
 ### Changed（批次 C0：debugger 会话管理器）

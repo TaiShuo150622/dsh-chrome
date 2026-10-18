@@ -5,6 +5,7 @@
  * chrome_* tools, start the native-host bridge, and write the Chrome native
  * messaging installation assets.
  */
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -27,6 +28,7 @@ export function apply(ctx) {
   const approval = { current: null }
   const sessions = { current: null }
   const sandboxPolicy = { current: null }
+  const userQuestions = { current: null }
   const logger = ctx.logger
 
   ctx.inject(['attachments'], (scoped) => {
@@ -51,6 +53,25 @@ export function apply(ctx) {
       sandboxPolicy.current = null
     }
   })
+
+  ctx.inject(['userQuestions'], (scoped) => {
+    userQuestions.current = scoped.get('userQuestions')
+    return () => {
+      userQuestions.current = null
+    }
+  })
+
+  const providerConfig = (() => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(home, 'cache', 'dsh-chrome', 'config.json'), 'utf8'))
+    } catch {
+      return {}
+    }
+  })()
+  logger?.info?.(
+    'dsh-chrome: provider config loaded (allowEvaluate=%s)',
+    providerConfig?.allowEvaluate === true,
+  )
 
   ctx.effect(() => {
     const ready = bridge.start().catch((error) => {
@@ -88,6 +109,8 @@ export function apply(ctx) {
       assets: () => assets.current,
       approval: () => approval.current,
       sessionContext: () => ({ sessions: sessions.current, sandboxPolicy: sandboxPolicy.current }),
+      userQuestions: () => userQuestions.current,
+      config: () => providerConfig,
     }).map((definition) => ctx.tools.register(definition))
 
     let releaseBrowserUse = null
