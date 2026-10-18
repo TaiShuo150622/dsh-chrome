@@ -944,6 +944,27 @@ try {
   assert.equal(tabs.tabs.length, 1)
   assert.equal(tabs.activeTabId, gone.tabId)
 
+  // R-01: browser.site resolves the requested tab, not just the active one.
+  const siteById = await driver.request('browser.site', { owner: 's1', tabId: gone.tabId })
+  assert.equal(siteById.tabId, gone.tabId)
+  assert.equal(siteById.origin, `http://127.0.0.1:${port}`)
+
+  // R-05: headless tabs new / attachTab / goto only allow http(s) and
+  // about:blank. file:// used to open a real target and was readable through
+  // chrome_get_text.
+  const tabsBeforeScheme = (await driver.request('tab.tabs', { owner: 's1', op: 'list' })).tabs.length
+  for (const method of ['tab.tabs', 'tab.goto']) {
+    let code = null
+    try {
+      await driver.request(method, { owner: 's1', op: 'new', url: 'file:///etc/hosts' })
+    } catch (error) {
+      code = error?.code
+    }
+    assert.equal(code, 'PROTECTED_PAGE', `${method} accepted a file:// URL`)
+  }
+  const tabsAfterScheme = (await driver.request('tab.tabs', { owner: 's1', op: 'list' })).tabs.length
+  assert.equal(tabsAfterScheme, tabsBeforeScheme, 'a rejected scheme created a target')
+
   const html = await driver.request('tab.html', { owner: 's1', maxChars: 500 })
   assert.ok(html.html.includes('Headless Test'))
 
@@ -1425,6 +1446,9 @@ try {
   )
   const castMeta = JSON.parse(fs.readFileSync(castMetaPath, 'utf8'))
   assert.equal(castMeta.bytes, castBytes.length, `meta.json bytes do not match latest.jpg: ${JSON.stringify(castMeta)}`)
+  // R-06: the frame is attributed to the session that started the stream, so
+  // another session's status cannot claim it.
+  assert.equal(castMeta.owner, 's1', `meta.json lost the frame owner: ${JSON.stringify(castMeta)}`)
   assert.ok(castMeta.frames > 0, `meta.json lost the frame counter: ${JSON.stringify(castMeta)}`)
   assert.ok(
     castMeta.frames <= castStop.frames,

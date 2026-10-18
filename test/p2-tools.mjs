@@ -76,6 +76,7 @@ async function waitFor(predicate, timeoutMs, label) {
 }
 
 const requests = []
+let fakeScreencastActive = true
 await bridge.start()
 const host = spawn(process.execPath, [path.join(root, 'host', 'host.mjs')], {
   env: { ...process.env, DSH_HOME: home },
@@ -88,7 +89,7 @@ host.stdout.on(
     requests.push({ method: message.method, params: message.params })
     const replies = {
       'browser.status': { extensionVersion: 'p2-fake', connected: true },
-      'browser.site': { tabId: 7, url: 'http://127.0.0.1:8765/', title: 'DSH Test', origin: 'http://127.0.0.1:8765' },
+      'tab.goto': { tabId: 7, url: String(message.params?.url || ''), title: 'Navigated', loadState: 'complete' },
       'tab.screenshot': { dataBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' },
       'tab.hover': { ok: true, tag: 'button', label: 'Menu', tabId: 7 },
       'tab.click': { ok: true, tag: 'button', label: 'Submit', tabId: 7, dialogs: [{ type: 'confirm', message: 'ok?', accepted: true }] },
@@ -99,7 +100,7 @@ host.stdout.on(
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
       'tab.screencast_start': { active: true, alreadyActive: false, tabId: 7, format: 'jpeg' },
       'tab.screencast_stop': { active: false, tabId: 7, frames: 12, elapsedMs: 3000 },
-      'tab.screencast_status': { active: true, tabId: 7, frames: 12, startedAt: '2026-10-17T10:00:00.000Z', lastAt: '2026-10-17T10:00:03.000Z', format: 'jpeg' },
+      'tab.screencast_status': { active: fakeScreencastActive, tabId: 7, frames: 12, startedAt: '2026-10-17T10:00:00.000Z', lastAt: '2026-10-17T10:00:03.000Z', format: 'jpeg' },
       'tab.resume': { ok: true, tabId: 7 },
       'tab.pick_start': { started: true, alreadyActive: false, tabId: 7 },
       'tab.pick_status': { available: true, active: false, done: true, canceled: false, result: { ref: 3, selector: '#greet', text: 'Greet', tag: 'button', box: [1, 2, 3, 4] } },
@@ -129,6 +130,19 @@ host.stdout.on(
         truncated: false,
       },
     }
+    if (message.method === 'browser.site') {
+      // R-01: the fake answers for the *requested* tab, so a policy decision
+      // can be tied to the target object rather than the active page.
+      const tabId = Number.isFinite(message.params?.tabId) ? message.params.tabId : 7
+      const site =
+        tabId === 8
+          ? { tabId: 8, url: 'https://blocked.example/', title: 'Blocked', origin: 'https://blocked.example' }
+          : tabId === 9
+            ? { tabId: 9, url: 'https://allowed.example/', title: 'Allowed', origin: 'https://allowed.example' }
+            : { tabId: 7, url: 'http://127.0.0.1:8765/', title: 'DSH Test', origin: 'http://127.0.0.1:8765' }
+      host.stdin.write(encodeNative({ id: message.id, result: site }))
+      return
+    }
     const result = replies[message.method]
     host.stdin.write(
       encodeNative(
@@ -142,11 +156,22 @@ host.stdout.on(
 await waitFor(() => bridge.connected, 5000, 'host authentication')
 
 const approvalCalls = []
+const uploadConfirmations = []
+const sessionContext = () => ({
+  sessions: { get: () => ({ header: { cwd: home } }) },
+})
 const tools = chromeTools({
   bridge,
   attachments: () => null,
   assets: () => ({ extensionId: 'test', extensionDir: '/tmp/ext', nativeManifestPath: '/tmp/nm', instructionsPath: '/tmp/i.md' }),
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
+  sessionContext,
+  userQuestions: () => ({
+    async ask(request) {
+      uploadConfirmations.push(request)
+      return { answers: [{ id: 'confirm', selected: ['允许一次'] }] }
+    },
+  }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
 check('forty tools registered', tools.length === 40, tools.map((t) => t.name).join(', '))
@@ -194,6 +219,14 @@ await fsp.writeFile(uploadPath, 'hello')
 const uploadValue = await byName.chrome_upload.execute({ ref: 5, files: [uploadPath] }, exec())
 check('chrome_upload executes', uploadValue.ok === true && uploadValue.files === 1)
 check('upload params reach the extension', requests.at(-1)?.method === 'tab.upload' && requests.at(-1)?.params?.ref === 5)
+const lastUploadConfirm = uploadConfirmations.at(-1)
+check(
+  'R-04 upload always asks a hard confirmation that names the file and the site',
+  String(lastUploadConfirm?.questions?.[0]?.header || '').includes('上传') &&
+    String(lastUploadConfirm?.questions?.[0]?.question || '').includes(uploadPath) &&
+    String(lastUploadConfirm?.questions?.[0]?.question || '').includes('127.0.0.1:8765'),
+  JSON.stringify(lastUploadConfirm?.questions?.[0]?.question || ''),
+)
 
 const downloadValue = await byName.chrome_download.execute({ limit: 5 })
 check('chrome_download executes', downloadValue.items?.[0]?.filename === '/tmp/report.pdf')
@@ -334,7 +367,12 @@ const codedBridge = {
     throw error
   },
 }
-const codedTools = chromeTools({ bridge: codedBridge, attachments: () => null, assets: () => ({}), approval: () => null })
+const codedTools = chromeTools({
+  bridge: codedBridge,
+  attachments: () => null,
+  assets: () => ({}),
+  approval: () => ({ request: async () => 'allowed-once' }),
+})
 let codedClickCode = null
 try {
   await codedTools.find((definition) => definition.name === 'chrome_click').execute({ ref: 999999 }, exec())
@@ -353,7 +391,12 @@ const systemErrorBridge = {
     throw error
   },
 }
-const systemErrorTools = chromeTools({ bridge: systemErrorBridge, attachments: () => null, assets: () => ({}), approval: () => null })
+const systemErrorTools = chromeTools({
+  bridge: systemErrorBridge,
+  attachments: () => null,
+  assets: () => ({}),
+  approval: () => ({ request: async () => 'allowed-once' }),
+})
 let systemErrorCode = null
 try {
   await systemErrorTools.find((definition) => definition.name === 'chrome_click').execute({ ref: 1 }, exec())
@@ -587,13 +630,18 @@ await fsp.writeFile(policyFile, JSON.stringify({ origins: { 'http://127.0.0.1:87
 
 // C2a: capture tools are always registered; start is hard-confirmed
 check('chrome_capture_start registered', Boolean(byName.chrome_capture_start))
+const noConfirmTools = chromeTools({
+  bridge,
+  attachments: () => null,
+  assets: () => ({ extensionId: 'test', extensionDir: '/tmp/ext', nativeManifestPath: '/tmp/nm', instructionsPath: '/tmp/i.md' }),
+})
 let captureStartCode = null
 try {
-  await byName.chrome_capture_start.execute({ maxEntries: 10 }, exec())
+  await noConfirmTools.find((definition) => definition.name === 'chrome_capture_start').execute({ maxEntries: 10 }, exec())
 } catch (error) {
   captureStartCode = error?.code
 }
-check('capture start fails closed without a confirmation service', captureStartCode === 'APPROVAL_DENIED')
+check('capture start fails closed without a confirmation service', captureStartCode === 'APPROVAL_DENIED', String(captureStartCode))
 
 const captureTools = chromeTools({
   bridge,
@@ -687,6 +735,332 @@ try {
   delegatedCode = error?.code
 }
 check('delegated caller is rejected explicitly', delegatedCode === 'DELEGATED_CALLER')
+
+// ============================================================ security top 5
+const securityAssets = () => ({ extensionId: 'test', extensionDir: '/tmp/ext', nativeManifestPath: '/tmp/nm', instructionsPath: '/tmp/i.md' })
+const allowApproval = () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') })
+
+// R-01 / R-02: the policy decision follows the target object (tabId / URL),
+// never the session's currently active page.
+await fsp.writeFile(
+  policyFile,
+  JSON.stringify({
+    origins: {
+      'http://127.0.0.1:8765': 'allow',
+      'https://allowed.example': 'allow',
+      'https://blocked.example': 'block',
+    },
+  }),
+)
+const targetTools = chromeTools({
+  bridge,
+  attachments: () => null,
+  assets: securityAssets,
+  approval: allowApproval,
+  sessionContext,
+})
+const targetByName = Object.fromEntries(targetTools.map((definition) => [definition.name, definition]))
+
+let targetBlockedCode = null
+const beforeTargetClick = requests.length
+try {
+  await targetByName.chrome_click.execute({ ref: 1, tabId: 8 }, exec())
+} catch (error) {
+  targetBlockedCode = error?.code
+}
+check('R-01 click on a blocked target tab returns SITE_BLOCKED', targetBlockedCode === 'SITE_BLOCKED', String(targetBlockedCode))
+check(
+  'R-01 guard looked up the requested tab id',
+  requests.slice(beforeTargetClick).some((request) => request.method === 'browser.site' && request.params?.tabId === 8),
+)
+check(
+  'R-01 blocked target never reaches the action',
+  requests.slice(beforeTargetClick).every((request) => request.method === 'browser.site'),
+)
+
+const beforeAllowedClick = requests.length
+await targetByName.chrome_click.execute({ ref: 1, tabId: 9 }, exec())
+check(
+  'R-01 click on an allowed target tab executes',
+  requests.slice(beforeAllowedClick).some((request) => request.method === 'tab.click' && request.params?.tabId === 9),
+)
+
+let targetTypeCode = null
+try {
+  await targetByName.chrome_type.execute({ ref: 2, text: 'x', tabId: 8 }, exec())
+} catch (error) {
+  targetTypeCode = error?.code
+}
+check('R-01 type on a blocked target tab is refused', targetTypeCode === 'SITE_BLOCKED', String(targetTypeCode))
+
+const beforeBlockedGoto = requests.length
+let gotoBlockedCode = null
+try {
+  await targetByName.chrome_goto.execute({ url: 'https://blocked.example/login' }, exec())
+} catch (error) {
+  gotoBlockedCode = error?.code
+}
+check('R-02 chrome_goto judges the destination URL', gotoBlockedCode === 'SITE_BLOCKED', String(gotoBlockedCode))
+check('R-02 blocked goto performs no lookup or navigation', requests.length === beforeBlockedGoto)
+
+await targetByName.chrome_goto.execute({ url: 'https://allowed.example/page' }, exec())
+check(
+  'R-02 allowed goto still navigates',
+  requests.at(-1)?.method === 'tab.goto' && requests.at(-1)?.params?.url === 'https://allowed.example/page',
+)
+
+const beforeBlockedTabsNew = requests.length
+let tabsNewBlockedCode = null
+try {
+  await targetByName.chrome_tabs.execute({ op: 'new', url: 'https://blocked.example/x' }, exec())
+} catch (error) {
+  tabsNewBlockedCode = error?.code
+}
+check('R-02 chrome_tabs new judges the destination URL', tabsNewBlockedCode === 'SITE_BLOCKED', String(tabsNewBlockedCode))
+check('R-02 blocked tabs new creates no tab', requests.length === beforeBlockedTabsNew)
+
+await targetByName.chrome_tabs.execute({ op: 'new', url: 'https://allowed.example/x' }, exec())
+check(
+  'R-02 allowed tabs new reaches the extension',
+  requests.at(-1)?.method === 'tab.tabs' &&
+    requests.at(-1)?.params?.op === 'new' &&
+    requests.at(-1)?.params?.url === 'https://allowed.example/x',
+)
+
+let tabFileCode = null
+try {
+  await targetByName.chrome_tabs.execute({ op: 'new', url: 'file:///etc/hosts' }, exec())
+} catch (error) {
+  tabFileCode = error?.code
+}
+check('R-05 chrome_tabs new refuses file:// at the tool layer', tabFileCode === 'PROTECTED_PAGE', String(tabFileCode))
+
+const targetAudit = await targetByName.chrome_audit.execute({ limit: 100 }, exec())
+const blockedClickAudit = targetAudit.entries.find(
+  (entry) => entry.tool === 'chrome_click' && entry.decision === 'denied' && entry.origin === 'https://blocked.example',
+)
+check('R-01 audit records the target origin and tabId', blockedClickAudit?.tabId === 8, JSON.stringify(blockedClickAudit))
+const targetPolicy = await targetByName.chrome_policy.execute({ tabId: 9 }, exec())
+check(
+  'chrome_policy resolves an explicit tabId',
+  targetPolicy?.origin === 'https://allowed.example' && targetPolicy?.mode === 'allow',
+  JSON.stringify(targetPolicy),
+)
+
+// R-03: missing approval service / agent and failed site lookup all fail closed.
+// Use a default-policy site: an explicit "allow" legitimately skips approval.
+await fsp.writeFile(policyFile, JSON.stringify({ origins: { 'https://blocked.example': 'block' } }))
+const noApprovalTools = chromeTools({ bridge, attachments: () => null, assets: securityAssets, sessionContext })
+const beforeNoApproval = requests.length
+let noApprovalCode = null
+try {
+  await noApprovalTools.find((definition) => definition.name === 'chrome_click').execute({ ref: 1 }, exec())
+} catch (error) {
+  noApprovalCode = error?.code
+}
+check('R-03 missing approval service fails closed', noApprovalCode === 'APPROVAL_DENIED', String(noApprovalCode))
+check(
+  'R-03 missing approval service never reaches the action',
+  requests.slice(beforeNoApproval).every((request) => request.method === 'browser.site'),
+)
+
+const noAgentTools = chromeTools({ bridge, attachments: () => null, assets: securityAssets, approval: allowApproval })
+const beforeNoAgent = requests.length
+let noAgentCode = null
+try {
+  await noAgentTools.find((definition) => definition.name === 'chrome_click').execute({ ref: 1 }, { callId: 'no-agent' })
+} catch (error) {
+  noAgentCode = error?.code
+}
+check('R-03 missing exec.agent fails closed', noAgentCode === 'APPROVAL_DENIED', String(noAgentCode))
+check('R-03 missing exec.agent performs no lookup', requests.length === beforeNoAgent)
+
+let siteFailActions = 0
+const siteFailTools = chromeTools({
+  bridge: {
+    async call(method) {
+      if (method === 'browser.site') {
+        const error = new Error('site lookup timed out')
+        error.code = 'TIMEOUT'
+        throw error
+      }
+      if (method === 'tab.click') {
+        siteFailActions += 1
+        return { ok: true }
+      }
+      return {}
+    },
+  },
+  attachments: () => null,
+  assets: securityAssets,
+  approval: allowApproval,
+})
+let siteFailCode = null
+try {
+  await siteFailTools.find((definition) => definition.name === 'chrome_click').execute({ ref: 1 }, exec())
+} catch (error) {
+  siteFailCode = error?.code
+}
+check('R-03 failed site lookup fails closed', siteFailCode === 'APPROVAL_DENIED' && siteFailActions === 0, String(siteFailCode))
+const siteFailAudit = await targetByName.chrome_audit.execute({ limit: 30 }, exec())
+check(
+  'R-03 failed site lookup writes a denied audit entry',
+  siteFailAudit.entries.some(
+    (entry) => entry.tool === 'chrome_click' && entry.decision === 'denied' && entry.reason === 'site-unavailable',
+  ),
+)
+
+// policy.json ask: the human asked to be asked, so danger-full-access must not
+// silently allow it.
+await fsp.writeFile(policyFile, JSON.stringify({ origins: { 'http://127.0.0.1:8765': 'ask' } }))
+const dangerSessionContext = () => ({
+  sessions: { get: () => ({ header: { cwd: home } }) },
+  sandboxPolicy: { resolve: () => ({ mode: 'danger-full-access' }) },
+})
+const askCalls = []
+const askTools = chromeTools({
+  bridge,
+  attachments: () => null,
+  assets: securityAssets,
+  sessionContext: dangerSessionContext,
+  approval: () => ({ request: async (request) => (askCalls.push(request), 'allowed-once') }),
+})
+const beforeAskClick = requests.length
+await askTools.find((definition) => definition.name === 'chrome_click').execute({ ref: 1 }, exec())
+check('policy ask forces approval under danger-full-access', askCalls.length === 1)
+check(
+  'policy ask executes only after approval',
+  requests.slice(beforeAskClick).some((request) => request.method === 'tab.click'),
+)
+const askNoApprovalTools = chromeTools({
+  bridge,
+  attachments: () => null,
+  assets: securityAssets,
+  sessionContext: dangerSessionContext,
+})
+let askNoApprovalCode = null
+try {
+  await askNoApprovalTools.find((definition) => definition.name === 'chrome_click').execute({ ref: 1 }, exec())
+} catch (error) {
+  askNoApprovalCode = error?.code
+}
+check('policy ask without an approval service fails closed', askNoApprovalCode === 'APPROVAL_DENIED', String(askNoApprovalCode))
+await fsp.writeFile(policyFile, JSON.stringify({ origins: { 'http://127.0.0.1:8765': 'allow' } }))
+
+// R-04: hard confirmation is mandatory; the path allowlist is independent.
+const noConfirmUploadTools = chromeTools({ bridge, attachments: () => null, assets: securityAssets, sessionContext, approval: allowApproval })
+const beforeNoConfirmUpload = requests.length
+let noConfirmUploadCode = null
+try {
+  await noConfirmUploadTools.find((definition) => definition.name === 'chrome_upload').execute({ ref: 5, files: [uploadPath] }, exec())
+} catch (error) {
+  noConfirmUploadCode = error?.code
+}
+check('R-04 upload without a confirmation service fails closed', noConfirmUploadCode === 'APPROVAL_DENIED', String(noConfirmUploadCode))
+check(
+  'R-04 refused upload never reaches the extension',
+  requests.slice(beforeNoConfirmUpload).every((request) => request.method !== 'tab.upload'),
+)
+
+const deniedUploadTools = chromeTools({
+  bridge,
+  attachments: () => null,
+  assets: securityAssets,
+  sessionContext,
+  approval: allowApproval,
+  userQuestions: () => ({ ask: async () => ({ answers: [{ id: 'confirm', selected: ['拒绝'] }] }) }),
+})
+const beforeDeniedUpload = requests.length
+let deniedUploadCode = null
+try {
+  await deniedUploadTools.find((definition) => definition.name === 'chrome_upload').execute({ ref: 5, files: [uploadPath] }, exec())
+} catch (error) {
+  deniedUploadCode = error?.code
+}
+check('R-04 a denied hard confirmation returns APPROVAL_DENIED', deniedUploadCode === 'APPROVAL_DENIED', String(deniedUploadCode))
+check(
+  'R-04 denied upload never reaches the extension',
+  requests.slice(beforeDeniedUpload).every((request) => request.method !== 'tab.upload'),
+)
+
+const outsideDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-chrome-p2-outside-'))
+const outsideFile = path.join(outsideDir, 'secret.txt')
+await fsp.writeFile(outsideFile, 'outside the workspace')
+const confirmsBeforeOutside = uploadConfirmations.length
+const requestsBeforeOutside = requests.length
+let outsideUploadCode = null
+try {
+  await byName.chrome_upload.execute({ ref: 5, files: [outsideFile] }, exec())
+} catch (error) {
+  outsideUploadCode = error?.code
+}
+check('R-04 upload outside the allowed roots is refused', outsideUploadCode === 'INVALID_ARGUMENT', String(outsideUploadCode))
+check('R-04 outside-root upload never prompts', uploadConfirmations.length === confirmsBeforeOutside)
+check(
+  'R-04 outside-root upload never reaches the extension',
+  requests.slice(requestsBeforeOutside).every((request) => request.method !== 'tab.upload'),
+)
+await fsp.rm(outsideDir, { recursive: true, force: true })
+
+// R-06: screencast frames and screenshots are not shared across sessions.
+const screencastDir = path.join(home, 'cache', 'dsh-chrome', 'screencast')
+await fsp.mkdir(screencastDir, { recursive: true })
+const castFrame = Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+const castFile = path.join(screencastDir, 'latest.jpg')
+const castMeta = path.join(screencastDir, 'meta.json')
+await fsp.writeFile(castFile, castFrame)
+await fsp.writeFile(castMeta, JSON.stringify({ updatedAt: Date.now(), format: 'jpg', bytes: castFrame.length, frames: 1, owner: 'other-session' }))
+await targetByName.chrome_screencast.execute({ op: 'start' }, exec())
+const foreignFrameStatus = await targetByName.chrome_screencast.execute({ op: 'status' }, exec())
+check(
+  'R-06 screencast status withholds a frame owned by another session',
+  foreignFrameStatus.bytes == null && foreignFrameStatus.frameOwner === 'other-session',
+  JSON.stringify({ bytes: foreignFrameStatus.bytes, frameOwner: foreignFrameStatus.frameOwner }),
+)
+await fsp.writeFile(castMeta, JSON.stringify({ updatedAt: Date.now(), format: 'jpg', bytes: castFrame.length, frames: 1, owner: 'session-p2' }))
+const ownFrameStatus = await targetByName.chrome_screencast.execute({ op: 'status' }, exec())
+check(
+  'R-06 the session that started the stream still gets its frame',
+  ownFrameStatus.bytes === castFrame.length && ownFrameStatus.frameOwner === 'session-p2',
+  JSON.stringify({ bytes: ownFrameStatus.bytes, frameOwner: ownFrameStatus.frameOwner }),
+)
+fakeScreencastActive = false
+const inactiveFrameStatus = await targetByName.chrome_screencast.execute({ op: 'status' }, exec())
+check('R-06 an inactive stream never reads the global frame', inactiveFrameStatus.bytes == null)
+fakeScreencastActive = true
+const freshScreencastTools = chromeTools({ bridge, attachments: () => null, assets: securityAssets })
+const freshScreencastStatus = await freshScreencastTools
+  .find((definition) => definition.name === 'chrome_screencast')
+  .execute({ op: 'status' }, exec())
+check(
+  'R-06 a provider that never started a stream returns no global frame',
+  freshScreencastStatus.bytes == null,
+  JSON.stringify({ bytes: freshScreencastStatus.bytes }),
+)
+await targetByName.chrome_screencast.execute({ op: 'stop' }, exec())
+
+const shotOwnersFile = path.join(home, 'cache', 'dsh-chrome', 'shot-owners.json')
+await fsp.writeFile(shotOwnersFile, JSON.stringify({ [path.resolve(shotFile)]: 'other-session' }))
+const foreignShots = await targetByName.chrome_shots.execute({ op: 'list', limit: 50 }, exec())
+check(
+  "R-06 shots list hides another session's screenshot",
+  !foreignShots.entries.some((entry) => entry.path === shotFile),
+)
+let foreignShotReadCode = null
+try {
+  await targetByName.chrome_shots.execute({ op: 'read', path: shotFile }, exec())
+} catch (error) {
+  foreignShotReadCode = error?.code
+}
+check("R-06 shots read refuses another session's screenshot", foreignShotReadCode === 'INVALID_ARGUMENT', String(foreignShotReadCode))
+await fsp.writeFile(shotOwnersFile, JSON.stringify({ [path.resolve(shotFile)]: 'session-p2' }))
+const ownShots = await targetByName.chrome_shots.execute({ op: 'list', limit: 50 }, exec())
+check(
+  "R-06 shots list keeps this session's own screenshot visible",
+  ownShots.entries.some((entry) => entry.path === shotFile),
+)
+const ownShotRead = await targetByName.chrome_shots.execute({ op: 'read', path: shotFile }, exec())
+check("R-06 shots read allows this session's own screenshot", ownShotRead.bytes === tinyPng.length)
 
 host.kill('SIGTERM')
 await bridge.stop()

@@ -121,7 +121,11 @@ const BASE = `http://127.0.0.1:${port}`
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-sandbox-smoke-'))
 const previousHome = process.env.DSH_HOME
+const previousUploadRoots = process.env.DSH_CHROME_UPLOAD_ROOTS
 process.env.DSH_HOME = home
+// R-04: uploads are restricted to the session cwd plus explicit opt-in roots.
+// The smoke fixture lives in a temp DSH_HOME, so opt that directory in.
+process.env.DSH_CHROME_UPLOAD_ROOTS = home
 const cacheDir = path.join(home, 'cache', 'dsh-chrome')
 fs.mkdirSync(cacheDir, { recursive: true })
 fs.writeFileSync(
@@ -206,7 +210,7 @@ const userQuestions = () => ({
       approve = false
       denyCaptureOnce = false
     }
-    confirmations.push({ header, approve })
+    confirmations.push({ header, approve, question: String(question.question || '') })
     return { answers: [{ id: 'confirm', selected: [approve ? '允许一次' : '拒绝'] }] }
   },
 })
@@ -855,6 +859,10 @@ try {
     assert.equal(value.files, 1)
     const name = await raw('tab.evaluate', { expression: 'document.getElementById("file").files[0]?.name ?? null' })
     assert.equal(name.value, 'upload.txt')
+    const confirm = confirmations.find((entry) => entry.header === '上传本机文件')
+    assert.ok(confirm && confirm.approve, `upload did not ask a hard confirmation: ${JSON.stringify(confirmations)}`)
+    assert.ok(confirm.question.includes(uploadPath), `confirmation did not name the full file path: ${confirm.question}`)
+    assert.ok(confirm.question.includes(BASE), `confirmation did not name the target site: ${confirm.question}`)
   })
 
   await expectError('chrome_upload rejects a missing file before reaching the browser', () => run('chrome_upload', { selector: '#file', files: [path.join(home, 'nope.txt')] }), {
@@ -995,6 +1003,13 @@ try {
   await expectError('chrome_tabs close rejects a tab this session does not own', () => run('chrome_tabs', { op: 'close', tabId: 999999 }), {
     code: 'TAB_NOT_FOUND',
     match: /not owned by this session/,
+  })
+
+  // R-05: the tool layer rejects non-http(s) destinations before the driver is
+  // asked to create a target (the headless driver checks again).
+  await expectError('chrome_tabs new rejects file:// at the tool layer', () => run('chrome_tabs', { op: 'new', url: 'file:///etc/hosts' }), {
+    code: 'PROTECTED_PAGE',
+    match: /only http\(s\) URLs/,
   })
 
   await expectError('headless driver rejects an unknown tab id with TAB_NOT_FOUND', () => raw('tab.snapshot', { tabId: 999999 }), {
@@ -1187,6 +1202,8 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 250))
   if (previousHome === undefined) delete process.env.DSH_HOME
   else process.env.DSH_HOME = previousHome
+  if (previousUploadRoots === undefined) delete process.env.DSH_CHROME_UPLOAD_ROOTS
+  else process.env.DSH_CHROME_UPLOAD_ROOTS = previousUploadRoots
   try {
     fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   } catch {

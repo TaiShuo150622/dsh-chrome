@@ -125,8 +125,12 @@ const chrome = {
       if (!tab) throw new Error(`no tab ${tabId}`)
       return tab
     },
-    async query() {
-      return [...tabs.values()]
+    async query(queryInfo = {}) {
+      let list = [...tabs.values()]
+      // claimTab() picks the active tab; honour `active` so an unowned active
+      // tab can be claimed without touching another session's tabs (R-12).
+      if (queryInfo?.active === true) list = list.filter((tab) => tab.active)
+      return list
     },
     async create({ url }) {
       const tab = { id: ++nextTabId, url: url || 'about:blank', title: '', active: false, status: 'complete', windowId: 1 }
@@ -421,6 +425,25 @@ check('tab.tabs new creates a background tab', Number.isFinite(tabNew?.tabId) &&
 const tabClose = await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'close', tabId: tabNew.tabId, owner: 's1' }, id: 'tabs-close' })
 check('tab.tabs close removes the tab', tabClose?.closed === tabNew.tabId)
 
+// R-05: file:// and other non-http(s) schemes never reach chrome.tabs.create /
+// chrome.tabs.update, so they cannot become a local-file read primitive.
+const tabsSizeBeforeScheme = tabs.size
+let fileNewError = null
+try {
+  await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'new', url: 'file:///etc/hosts', owner: 's1' }, id: 'tabs-new-file' })
+} catch (error) {
+  fileNewError = error
+}
+check('tab.tabs new refuses file:// URLs', fileNewError?.code === 'PROTECTED_PAGE', String(fileNewError?.message || ''))
+let fileGotoError = null
+try {
+  await sandbox.handleRequest({ method: 'tab.goto', params: { url: 'file:///etc/hosts', owner: 's1' }, id: 'goto-file' })
+} catch (error) {
+  fileGotoError = error
+}
+check('tab.goto refuses file:// URLs', fileGotoError?.code === 'PROTECTED_PAGE', String(fileGotoError?.message || ''))
+check('a refused scheme creates no tab', tabs.size === tabsSizeBeforeScheme)
+
 const history = await sandbox.handleRequest({ method: 'tab.history', params: { op: 'reload', owner: 's1' }, id: 'history' })
 check('tab.history reload returns tab state', history?.tabId === 7)
 
@@ -459,11 +482,60 @@ const highlightedShot = await sandbox.handleRequest({
 })
 check('tab.screenshot highlight still returns base64 data', typeof highlightedShot?.dataBase64 === 'string')
 
-const claim = await sandbox.handleRequest({ method: 'tab.claim', params: { owner: 's2' }, id: 'claim' })
-check('tab.claim claims the active tab', claim?.claimed === true && tabs.get(claim.tabId) != null)
+// R-12: a tab tracked by another session cannot be claimed.
+let foreignClaimError = null
+try {
+  await sandbox.handleRequest({ method: 'tab.claim', params: { owner: 's2', tabId: 7 }, id: 'claim-foreign' })
+} catch (error) {
+  foreignClaimError = error
+}
+check('tab.claim rejects a tab owned by another session', foreignClaimError?.code === 'TAB_NOT_FOUND', String(foreignClaimError?.message || ''))
 
-const claimViaTabs = await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'claim', owner: 's3' }, id: 'tabs-claim' })
-check('tab.tabs op=claim routes to claim', claimViaTabs?.claimed === true)
+// An untracked user tab stays claimable, including via tabs op=claim.
+tabs.set(108, { id: 108, url: 'https://foreign.example/', title: 'Foreign', active: true, status: 'complete', windowId: 1 })
+tabs.get(7).active = false
+const claim = await sandbox.handleRequest({ method: 'tab.claim', params: { owner: 's2' }, id: 'claim' })
+check('tab.claim claims an unowned active tab', claim?.claimed === true && claim.tabId === 108)
+tabs.get(7).active = true
+tabs.get(108).active = false
+
+tabs.set(109, { id: 109, url: 'https://foreign2.example/', title: 'Foreign 2', active: false, status: 'complete', windowId: 1 })
+const foreignSite = await sandbox.handleRequest({
+  method: 'browser.site',
+  params: { owner: 's1', tabId: 109, allowForeign: true },
+  id: 'site-foreign',
+})
+check(
+  'browser.site resolves a not-yet-owned tab when allowForeign is set (claim guard)',
+  foreignSite?.origin === 'https://foreign2.example' && foreignSite?.tabId === 109,
+  JSON.stringify(foreignSite),
+)
+let foreignSiteDenied = null
+try {
+  await sandbox.handleRequest({ method: 'browser.site', params: { owner: 's1', tabId: 109 }, id: 'site-foreign-denied' })
+} catch (error) {
+  foreignSiteDenied = error
+}
+check('browser.site keeps the owned-tab check without allowForeign', foreignSiteDenied?.code === 'TAB_NOT_FOUND')
+
+// claim without tabId targets the active (possibly foreign) tab.
+tabs.get(7).active = false
+tabs.get(109).active = true
+const activeForeignSite = await sandbox.handleRequest({
+  method: 'browser.site',
+  params: { owner: 's1', allowForeign: true },
+  id: 'site-foreign-active',
+})
+check(
+  'browser.site resolves the active tab for claim when allowForeign is set',
+  activeForeignSite?.origin === 'https://foreign2.example' && activeForeignSite?.tabId === 109,
+  JSON.stringify(activeForeignSite),
+)
+tabs.get(109).active = false
+tabs.get(7).active = true
+
+const claimViaTabs = await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'claim', tabId: 109, owner: 's3' }, id: 'tabs-claim' })
+check('tab.tabs op=claim routes to claim', claimViaTabs?.claimed === true && claimViaTabs.tabId === 109)
 
 const downloads = await sandbox.handleRequest({ method: 'browser.downloads', params: { limit: 5 }, id: 'downloads' })
 check('browser.downloads lists items', downloads?.items?.[0]?.filename === '/tmp/report.pdf')
@@ -546,7 +618,15 @@ const labelled = await sandbox.handleRequest({
   params: { op: 'new', url: 'https://example.com/', owner: 's9', ownerLabel: 'demo-project' },
   id: 'tabs-label',
 })
-check('new tab uses a readable group label', labelled?.tabId != null && tabGroupUpdates.some((update) => update.title === 'DSH · demo-project'))
+check(
+  'new tab uses an owner-disambiguated group label',
+  labelled?.tabId != null && tabGroupUpdates.some((update) => /^DSH · demo-project · /.test(String(update.title))),
+)
+await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'new', url: 'https://example.com/', owner: 's10', ownerLabel: 'demo-project' }, id: 'tabs-label-2' })
+const demoTitles = new Set(
+  tabGroupUpdates.map((update) => String(update.title)).filter((title) => title.startsWith('DSH · demo-project')),
+)
+check('two sessions with the same cwd label get distinct group titles', demoTitles.size >= 2, JSON.stringify([...demoTitles]))
 
 // frameRef dispatch: snapshot builds the registry, click resolves it
 await sandbox.handleRequest({ method: 'tab.snapshot', params: { owner: 's1' }, id: 'snapshot-frames' })
@@ -746,6 +826,10 @@ check(
 for (const listener of eventListeners) {
   listener({ tabId: 7 }, 'Page.screencastFrame', { sessionId: 's1', data: 'AA==', metadata: { timestamp: 1 } })
 }
+check(
+  'screencast frame events carry the owning session (R-06)',
+  fakeNativePort.posted.some((message) => message.type === 'screencast-frame' && message.owner === 's1'),
+)
 const castStatus = await sandbox.handleRequest({ method: 'tab.screencast_status', params: { owner: 's1' }, id: 'cast-status' })
 check('tab.screencast_status counts frames', castStatus?.active === true && castStatus?.frames === 1)
 check(
