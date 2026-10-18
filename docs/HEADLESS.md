@@ -701,6 +701,68 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 
 **回归**：`node test/headless.mjs` 3 次 PASS（没加新断言——改的只是启动参数，行为由既有 e2e 覆盖，含 tab 生命周期、截图/帧流、capture、screencast、downloads）；`npm test` exit 0（含 `HEADLESS TEST: PASS`、`EXTENSION LOGIC TEST: PASS`、`13 checks passed, 0 failed`）。
 
+### 4.1.11 2026-10-18 第十二轮：bench 真实负载（mixed 节奏 / 空闲采样 / snapshot 字节）（Ralph 循环第 9 轮）
+
+**为什么改**：第 7 轮的空闲 CPU/写盘是手工用 `ps` 采的、第 8 轮的 snapshot 字节/延迟是 `/tmp` 一次性探针测的——两个数都不在 bench 里，下一轮想复查得重写探针。本轮只动测量工具：新增场景与指标，**不改任何现有场景与指标的定义**。
+
+**改了什么**（`scripts/headless-bench.mjs`，新增实现 + `test/bench-scenario.mjs`）：
+
+- `--mixed`：每轮 = snapshot → 轮转执行 `type`（改 DOM）/ `click`（`#go`，真重绘）/ 只读 `evaluate` / `noopClick`（`#noop`，不重绘）/ `scroll` → screenshot；轮间间隔是确定性的 **150–400ms**（`150 + (i*97) % 251`，均值 275ms），模拟真实工具调用节奏而不是背靠背最坏情况。显式 `--gap-ms` 覆盖节奏。
+- `--idle-seconds N`：活跃循环结束后再采 N 秒 Chrome 进程树，输出 `idle.cpuPercent / rssMb / processes / streamFrames`。`--idle-settle-seconds N` 先等 N 秒再采；每条 idle 报告都带 `browserUptimeSeconds`。
+- 每次运行都输出 `snapshot.maxChars / calls / bytesMean / bytesMax`：`tab.snapshot` 返回值的 JSON 字节（driver 层，`maxChars=2000`），在计时桶之外测，不影响 `perActionMs.snapshot`。这是「快照正文预算」类回归在 bench 里的可见指标。
+- `gapMs` 顶层字段改为**实际生效**的轮间间隔：非 mixed 场景仍是 `--gap-ms` 的值（默认 0，与旧输出一致），mixed 场景是最新节奏均值（旧输出会显示 0，与实际 275ms 矛盾）。
+
+**mixed 基线**（3 次 10s 跑；同机 1-min load 3.5–4.0；Chrome 155；每次 35 轮、3.43–3.46 轮/s，节奏均值 275.3ms / 实测 156–396ms）：
+
+| 指标 | 中位 |
+|---|---|
+| snapshot | 1.33 ms |
+| type | 1.06 ms |
+| evaluate（只读） | 1.38 ms |
+| click（`#go`，真重绘） | 2.00 ms |
+| scroll | 0.66 ms |
+| screenshot | 9.72 ms |
+| 每轮合计 | 12.60 ms |
+| snapshot 响应字节 | 691 B/次（`maxChars=2000`） |
+| RSS / 进程 | 1024–1046 MB / 9（短跑仍带启动期多出的 renderer；40s 跑稳定到 758 MB / 7） |
+
+`cpuPercent` 37.6–41.3、`cpuMsPerAction` 110–119 在这类短跑里**主要是 Chrome 自己的启动尾巴加 275ms 轮间空闲**，不能和背靠背标准场景的每动作 CPU 横比；mixed 场景看 `perActionMs`，CPU 只在同长度、同节奏的两次运行之间比。
+
+**空闲基线**（同一工具连续测，`idle.cpuPercent`；窗口起点 = 空闲窗口开始时的浏览器 uptime）：
+
+| 空闲窗口起点 | 窗口 | CPU | RSS | 进程 | 空闲期帧数 |
+|---|---|---|---|---|---|
+| 活跃 5s 后（uptime 13.1s） | 1s | 23.93% | 932 MB | 9 | — |
+| 活跃 40s 后（uptime 42s） | 15s | 1.53% | 736 MB | 7 | — |
+| `--idle-settle-seconds 45`（uptime 62.6s） | 10s | **0.60–0.70%** | **730–733 MB** | **7** | **0** |
+
+结论：**稳态空闲 0.6–0.7% CPU / ~730MB / 7 进程**（一个 tab + 截图帧流），空闲期 0 帧——这 0.6% 不是帧编码。要量稳态必须越过 Chrome 启动尾巴（§4.1.10 的 raw 探针：前 20s ≈40%、第二个 20s ≈13%、之后 0.1–1.3%），短跑后直接采会得到 20–70% 的尾巴数；`browserUptimeSeconds` 就是用来判断这一点的。
+
+**现有场景不回归**（`git archive HEAD` 原 bench vs 本轮，各 3 次交替，`--seconds 10`，load 3.5–4.0）：
+
+| 场景 | 改前（中位） | 改后（中位） |
+|---|---|---|
+| 动作数 | 592（553–597） | 594（588–595） |
+| screenshot | 15.18 ms（15.01–15.22） | 14.89 ms（14.73–15.27） |
+| 每轮合计 | 16.90 ms（16.75–18.09） | 16.84 ms（16.81–17.01） |
+| 每动作 CPU | 16.99 ms（16.45–17.88） | 17.24 ms（15.64–17.29） |
+| RSS | 1035 MB（1000–1068） | 1038 MB（1018–1048） |
+| snapshot 响应字节 | —（旧 bench 不测） | 695 B/次 |
+
+全部在噪声带内；新增的 `snapshot` 字节测量在计时桶之外，没有抬高 `perActionMs.snapshot`（0.60–0.74 ms，与改前 0.58–0.99 ms 同带）。
+
+**复跑**：
+
+```bash
+cd /Users/taishuo/projects/dsh-chrome
+node scripts/headless-bench.mjs --seconds 10 --mixed
+node scripts/headless-bench.mjs --seconds 10 --mixed --idle-seconds 10 --idle-settle-seconds 45
+node scripts/headless-bench.mjs --seconds 10            # 旧场景输出不变（多了 snapshot 字节字段）
+node test/bench-scenario.mjs                            # 契约测试（npm test 里也跑）
+```
+
+**没做/没采纳**：不把 idle 默认自动 settle 到 uptime≈45s（会让 `--idle-seconds` 悄悄多花 45s；改成显式开关 + 报告 uptime）；不按轮逐次采样 CPU（35–139 轮会让 `ps` 进程数翻倍，测出来的是探针自己的开销）；不把启动尾巴预热加进默认路径（10s 跑会变成 50s+，还会改变既有基线）；mixed 不新增「纯动作 CPU」指标（短跑里启动尾巴不可分，硬拆会得到假数）。
+
 ## 5. 下一步（H1）
 
 1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
@@ -722,7 +784,8 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 | `host/host.mjs` | Chrome native messaging host：扩展 ↔ provider 的 JSON 帧中继、discovery 文件重连、viewer 帧落盘（节流，§4.1.6）与扩展热更新监听 |
 | `src/backend.js` | BackendRouter + AsyncLocalStorage + `wrapToolsForBackend`（给 39 个工具加 `backend` 参数） |
 | `index.js` | 创建 HeadlessDriver/Router，包装工具，卸载时关闭 |
-| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4，PNG 驱动裁剪 / JPEG 页面裁剪 §4.1.9）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）、`--noop-click` 普通 click + 截图场景（§4.1.8）；输出里带 `screenshotStream` 计数器（served/cropped/jpegCropped/fallbacks）；动作上限 `ACTIONS*50`（短路场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
+| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4，PNG 驱动裁剪 / JPEG 页面裁剪 §4.1.9）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）、`--noop-click` 普通 click + 截图场景（§4.1.8）、`--mixed` 真实节奏混合场景（§4.1.11）、`--idle-seconds` / `--idle-settle-seconds` 空闲采样（§4.1.11）；输出里带 `screenshotStream` 计数器（served/cropped/jpegCropped/fallbacks）、`snapshot` 响应字节、mixed 轮转/节奏统计、`idle` 块；动作上限 `ACTIONS*50`（短路场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
 | `test/backend-router.mjs` | 路由/参数剥离/默认桌面回归 |
 | `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、JPEG clip/ref 的 SOI/EOI 与像素尺寸、同页字节复用与改页新鲜性、主世界覆盖 `toDataURL` 后 isolated-world 裁剪仍正确、viewer 帧落盘产物断言、只读 evaluate/边界 scroll/合成 click/hover 的视觉探针短路与陈旧帧断言） |
+| `test/bench-scenario.mjs` | bench 的 `--mixed` / `--idle-seconds` 契约：真起一次 Chrome 跑 5s 混合场景 + 1s 空闲，断言轮转覆盖五种动作、确定性 150–400ms 节奏、`snapshot` 字节与既有指标字段都在，且 idle 窗口真的等满（§4.1.11） |
 | `test/host-reconnect.mjs` | native host 持久化（provider 重启后重连）+ viewer 帧落盘/节流 trailing flush 断言（§4.1.6） |

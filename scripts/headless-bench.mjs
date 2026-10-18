@@ -21,7 +21,8 @@
  *   node scripts/headless-bench.mjs [--seconds 10] [--actions 20]
  *                                   [--shot-format png|jpeg] [--shot-quality 60]
  *                                   [--no-optimize] [--gap-ms 0] [--static]
- *                                   [--readonly-eval] [--noop-click]
+ *                                   [--readonly-eval] [--noop-click] [--mixed]
+ *                                   [--idle-seconds 0] [--idle-settle-seconds 0]
  *
  * Both formats are served from the tab's screenshot frame stream (PNG or JPEG
  * screencast). The PNG path defaults to Chrome's fast PNG encoder
@@ -48,6 +49,26 @@
  * repaint window for click (docs/HEADLESS.md §4.1.8). The action cap is
  * ACTIONS*50 (ACTIONS*2000 for the shortcut scenarios) so the default 10s run
  * is time-bound rather than cap-bound.
+ *
+ * `--mixed` is the realistic-cadence scenario (docs/HEADLESS.md §4.1.11): each
+ * round takes a snapshot, performs the next action kind in the rotation
+ * (type / click / read-only evaluate / no-op click / scroll), then screenshots —
+ * and the gap between rounds is a deterministic 150-400ms instead of the
+ * back-to-back worst case. `--gap-ms` overrides that cadence when given.
+ * `--idle-seconds N` samples the Chrome process tree for N seconds after the
+ * active loop and reports idle CPU percent / RSS / processes, so "what does the
+ * browser cost while no tool call is in flight" is reproducible instead of hand
+ * sampled with `ps` (docs/PERF-LOOP.md §5/§6). Chrome's own launch tail keeps a
+ * short-lived process tree busy for tens of seconds after `ensureStarted`
+ * (docs/HEADLESS.md §4.1.10), so an idle window that starts right after a short
+ * run measures that tail; `--idle-settle-seconds N` waits N seconds first and
+ * every idle report carries `browserUptimeSeconds`, so a settled number can be
+ * told apart from a tail-contaminated one. Every run also reports the
+ * driver-level snapshot response size (`snapshot.bytesMean`/`bytesMax` at
+ * `snapshot.maxChars`): the JSON a snapshot returns is the payload that crosses
+ * CDP and reaches the model, so its bytes are the leading indicator for a text
+ * budget regression (docs/PERF-LOOP.md §6). Bytes are measured after the timed
+ * call, so they never inflate `perActionMs.snapshot`.
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -65,9 +86,15 @@ const argValue = (name, fallback) => {
 const hasFlag = (name) => args.includes(name)
 const ACTIONS = Math.max(5, Math.min(200, argValue('--actions', 20)))
 const DURATION = Math.max(5, Math.min(60, argValue('--seconds', 10)))
+const IDLE_SECONDS = Math.max(0, Math.min(120, argValue('--idle-seconds', 0)))
+const IDLE_SETTLE_SECONDS = Math.max(0, Math.min(300, argValue('--idle-settle-seconds', 0)))
+const SNAPSHOT_MAX_CHARS = 2000
 const SHOT_FORMAT = hasFlag('--shot-format') && args[args.indexOf('--shot-format') + 1] === 'jpeg' ? 'jpeg' : 'png'
 const SHOT_QUALITY = Math.max(1, Math.min(100, argValue('--shot-quality', 60)))
 const SHOT_OPTIMIZE = !hasFlag('--no-optimize')
+// Explicit `--gap-ms 0` must stay a fixed zero gap (the back-to-back worst
+// case), which is why presence is tracked separately from the value.
+const GAP_SET = args.includes('--gap-ms')
 const GAP_MS = Math.max(0, Math.min(30000, argValue('--gap-ms', 0)))
 const STATIC = hasFlag('--static')
 // Read-only evaluate scenario (§4.1.7): snapshot + evaluate + screenshot, with
@@ -78,6 +105,12 @@ const READONLY_EXPRESSION = 'document.getElementById("out").textContent'
 // The div has no handler and is not focusable, so the click cannot paint; the
 // screenshot must reuse the cached frame instead of paying the repaint window.
 const NOOP_CLICK = hasFlag('--noop-click')
+// Mixed scenario (§4.1.11): round-robin over the action kinds an agent actually
+// issues, with a realistic 150-400ms cadence. The cadence step is coprime to the
+// 251-wide range, so the sequence covers the whole window before repeating.
+const MIXED = hasFlag('--mixed')
+const MIXED_KINDS = ['type', 'click', 'evaluate', 'noopClick', 'scroll']
+const mixedGapMs = (index) => 150 + ((index * 97) % 251)
 // Element/region screenshot scenarios. Clip coordinates are CSS px like the
 // `clip` tool parameter; ref mode uses the input control from the same snapshot
 // the round already takes, so it measures ref resolution + crop end to end.
@@ -208,6 +241,7 @@ function shotStreamDiag() {
 
 try {
   await driver.ensureStarted()
+  const browserStartedAt = Date.now()
   await driver.request('tab.goto', { owner: 'bench', url: `http://127.0.0.1:${port}/` })
   await driver.request('tab.snapshot', { owner: 'bench', maxChars: 5000 })
 
@@ -218,11 +252,44 @@ try {
     optimizeForSpeed: SHOT_OPTIMIZE,
     ...(SHOT_CLIP ? { clip: SHOT_CLIP } : {}),
   }
-  const runRound = async (timer, index) => {
+  // Snapshot response bytes: this is the JSON that crosses CDP (and, at the tool
+  // layer, the bulk of what reaches the model). Measured after the timed call so
+  // serializing it never inflates perActionMs.snapshot.
+  const payloadStats = { calls: 0, bytes: 0, maxBytes: 0 }
+  const recordSnapshotBytes = (snap) => {
+    const bytes = Buffer.byteLength(JSON.stringify(snap))
+    payloadStats.calls += 1
+    payloadStats.bytes += bytes
+    if (bytes > payloadStats.maxBytes) payloadStats.maxBytes = bytes
+  }
+  const mixedStats = {
+    kinds: Object.fromEntries(MIXED_KINDS.map((kind) => [kind, 0])),
+    gap: { samples: 0, sum: 0, min: Infinity, max: 0 },
+  }
+  const mixedKindFor = (index) => MIXED_KINDS[((index % MIXED_KINDS.length) + MIXED_KINDS.length) % MIXED_KINDS.length]
+  const runRound = async (timer, index, measured) => {
     const timed = timer ? (kind, fn) => timer.time(kind, fn) : (kind, fn) => fn()
-    const snap = await timed('snapshot', () => driver.request('tab.snapshot', { owner: 'bench', maxChars: 2000 }))
+    const snap = await timed('snapshot', () => driver.request('tab.snapshot', { owner: 'bench', maxChars: SNAPSHOT_MAX_CHARS }))
+    if (measured) recordSnapshotBytes(snap)
     const input = snap.controls.find((control) => control.tag === 'input')
-    if (NOOP_CLICK) {
+    if (MIXED) {
+      const kind = mixedKindFor(index)
+      if (measured) mixedStats.kinds[kind] += 1
+      if (kind === 'type' && input) {
+        await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${index}`, replace: true }))
+      } else if (kind === 'click') {
+        // `#go` writes #out from its onclick, so this click really repaints; the
+        // no-op click is its own rotation slot rather than a stand-in.
+        await timed('click', () => driver.request('tab.click', { owner: 'bench', selector: '#go' }))
+      } else if (kind === 'evaluate') {
+        await timed('evaluate', () => driver.request('tab.evaluate', { owner: 'bench', expression: READONLY_EXPRESSION }))
+      } else if (kind === 'scroll') {
+        await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: 200 }))
+      } else {
+        // 'noopClick' (plus the theoretical missing-input fallback for 'type').
+        await timed('click', () => driver.request('tab.click', { owner: 'bench', selector: '#noop' }))
+      }
+    } else if (NOOP_CLICK) {
       await timed('click', () => driver.request('tab.click', { owner: 'bench', selector: '#noop' }))
     } else if (READONLY_EVAL) {
       await timed('evaluate', () => driver.request('tab.evaluate', { owner: 'bench', expression: READONLY_EXPRESSION }))
@@ -235,14 +302,14 @@ try {
     // viewport offset, otherwise half the rounds would fall back to capture
     // because the element left the viewport (the honest off-screen case, but
     // not what this scenario is measuring).
-    if (!STATIC && !READONLY_EVAL && !NOOP_CLICK) {
+    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK) {
       await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: SHOT_REF ? 60 : 200 }))
     }
   }
 
   // One untimed warm-up round keeps the first screenshot (cold compositor) out
   // of the measurement.
-  await runRound(null, -1)
+  await runRound(null, -1, false)
 
   const before = processStats()
   const t0 = Date.now()
@@ -256,9 +323,18 @@ try {
   // cheaper per round, so they need a much higher cap to stay time-bound.
   const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK ? 2000 : 50)
   while (Date.now() < until && actions < ACTION_CAP) {
-    await runRound(timer, actions)
+    await runRound(timer, actions, true)
     actions += 1
-    if (GAP_MS > 0) await new Promise((resolve) => setTimeout(resolve, GAP_MS))
+    // An explicit `--gap-ms` always wins; the mixed scenario otherwise uses its
+    // own deterministic 150-400ms agent-like cadence.
+    const gap = GAP_SET ? GAP_MS : MIXED ? mixedGapMs(actions) : 0
+    if (MIXED) {
+      mixedStats.gap.samples += 1
+      mixedStats.gap.sum += gap
+      mixedStats.gap.min = Math.min(mixedStats.gap.min, gap)
+      mixedStats.gap.max = Math.max(mixedStats.gap.max, gap)
+    }
+    if (gap > 0) await new Promise((resolve) => setTimeout(resolve, gap))
   }
   const elapsed = (Date.now() - t0) / 1000
   const after = processStats()
@@ -275,23 +351,65 @@ try {
   )
   const roundsPerSecond = round(actions / elapsed, 2)
   const rssMb = Math.round(after.rssKb / 1024)
+  // Frame-stream counters describe the active loop; snapshot them before the
+  // idle window so frames produced during idle cannot leak into active numbers.
+  const streamDiag = shotStreamDiag()
+  // Optional idle window: the browser is left exactly as the last round left it
+  // (the input may keep focus and blink a caret), which is the honest "no tool
+  // call in flight" state for a user who is reading the result.
+  let idle = null
+  if (IDLE_SECONDS > 0) {
+    // Clear Chrome's own launch tail when asked, so the sampled number is
+    // steady-state idle rather than browser startup work.
+    if (IDLE_SETTLE_SECONDS > 0) await new Promise((resolve) => setTimeout(resolve, IDLE_SETTLE_SECONDS * 1000))
+    const streamBeforeIdle = shotStreamDiag()
+    const idleBefore = processStats()
+    const idleStartedAt = Date.now()
+    await new Promise((resolve) => setTimeout(resolve, IDLE_SECONDS * 1000))
+    const idleElapsed = (Date.now() - idleStartedAt) / 1000
+    const idleAfter = processStats()
+    const streamAfterIdle = shotStreamDiag()
+    idle = {
+      requestedSeconds: IDLE_SECONDS,
+      settleSeconds: IDLE_SETTLE_SECONDS,
+      // Below ~45s this window still contains Chrome's launch tail; the field
+      // lets a reader tell a settled number from a contaminated one.
+      browserUptimeSeconds: round((idleStartedAt - browserStartedAt) / 1000, 1),
+      seconds: round(idleElapsed, 1),
+      // macOS `ps` CPU time has centisecond resolution, so a 10s window is good
+      // to ~0.1%; use --idle-seconds 60+ for sub-percent idle numbers.
+      cpuPercent: round(((idleAfter.cpuSeconds - idleBefore.cpuSeconds) / idleElapsed) * 100, 2),
+      rssMb: Math.round(idleAfter.rssKb / 1024),
+      processes: idleAfter.processes,
+      // Frames the screencast produced while nobody called a tool: 0 means the
+      // idle cost is not frame encoding.
+      streamFrames: streamAfterIdle && streamBeforeIdle ? Math.max(0, streamAfterIdle.frames - streamBeforeIdle.frames) : 0,
+    }
+  }
   console.log(
     JSON.stringify(
       {
-        scenario: `headless active: ${actions} ${SHOT_FORMAT} ${
-          NOOP_CLICK
-            ? 'snapshot/click(noop div)/screenshot (page never repaints)'
-            : READONLY_EVAL
-              ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)'
-              : STATIC
-                ? 'snapshot/screenshot (static page)'
-                : 'snapshot/type/screenshot/scroll'
-        } rounds${SHOT_MODE === 'viewport' ? '' : ` (${SHOT_MODE} screenshot)`}`,
+        scenario: MIXED
+          ? `headless mixed: ${actions} rounds (snapshot/${MIXED_KINDS.join('/')}/screenshot, ${
+              GAP_SET ? `${GAP_MS}ms fixed gap` : '150-400ms cadence'
+            })${SHOT_MODE === 'viewport' ? '' : ` (${SHOT_MODE} screenshot)`}`
+          : `headless active: ${actions} ${SHOT_FORMAT} ${
+              NOOP_CLICK
+                ? 'snapshot/click(noop div)/screenshot (page never repaints)'
+                : READONLY_EVAL
+                  ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)'
+                  : STATIC
+                    ? 'snapshot/screenshot (static page)'
+                    : 'snapshot/type/screenshot/scroll'
+            } rounds${SHOT_MODE === 'viewport' ? '' : ` (${SHOT_MODE} screenshot)`}`,
         elapsedSeconds: round(elapsed, 1),
-        gapMs: GAP_MS,
+        // The effective inter-round gap: the fixed `--gap-ms` value, or the
+        // mixed scenario's realized cadence mean (0 for every other scenario).
+        gapMs: MIXED && mixedStats.gap.samples ? round(mixedStats.gap.sum / mixedStats.gap.samples, 1) : GAP_MS,
         staticMode: STATIC,
         readonlyEval: READONLY_EVAL,
         noopClick: NOOP_CLICK,
+        mixedMode: MIXED,
         shotMode: SHOT_MODE,
         ...(SHOT_CLIP ? { shotClip: SHOT_CLIP } : {}),
         actions,
@@ -302,11 +420,32 @@ try {
         cpuSeconds,
         cpuMsPerAction,
         perActionMs: { ...perActionMs, roundTotal: roundTotalMs },
+        snapshot: {
+          maxChars: SNAPSHOT_MAX_CHARS,
+          calls: payloadStats.calls,
+          bytesMean: payloadStats.calls ? Math.round(payloadStats.bytes / payloadStats.calls) : 0,
+          bytesMax: payloadStats.maxBytes,
+        },
+        ...(MIXED
+          ? {
+              mixed: {
+                kinds: mixedStats.kinds,
+                gapMode: GAP_SET ? 'fixed' : 'cadence-150-400',
+                gapMs: {
+                  mean: mixedStats.gap.samples ? round(mixedStats.gap.sum / mixedStats.gap.samples, 1) : 0,
+                  min: mixedStats.gap.samples ? mixedStats.gap.min : 0,
+                  max: mixedStats.gap.samples ? mixedStats.gap.max : 0,
+                  samples: mixedStats.gap.samples,
+                },
+              },
+            }
+          : {}),
+        ...(idle ? { idle } : {}),
         screenshot: {
           format: SHOT_FORMAT,
           ...(SHOT_FORMAT === 'jpeg' ? { quality: SHOT_QUALITY } : { optimizeForSpeed: SHOT_OPTIMIZE }),
         },
-        screenshotStream: shotStreamDiag(),
+        screenshotStream: streamDiag,
         baseline: BASELINE,
         delta: {
           actionsPercent: percentDelta(actions, BASELINE.actions),
