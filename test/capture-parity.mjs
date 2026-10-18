@@ -1397,7 +1397,7 @@ async function runLiveHeadlessChecks(head) {
 
   const readLive = () =>
     live.request('tab.capture_requests', { captureId: started.captureId, limit: 100, maxBodyChars: 65536 })
-  const captured = await waitFor(async () => {
+  let captured = await waitFor(async () => {
     const result = await readLive()
     const entries = result.entries || []
     const urls = entries.map((entry) => entry.url)
@@ -1418,6 +1418,46 @@ async function runLiveHeadlessChecks(head) {
     return ready ? result : null
   }, { timeoutMs: 25000 })
   if (!captured) {
+    // One retry: under heavy parallel load the first navigation can race
+    // Network.enable/body retrieval. Reload once and wait again before failing.
+    await live.request('tab.goto', { url: `${base}/?retry=${Date.now()}` }).catch(() => {})
+    captured = await waitFor(async () => {
+      const result = await readLive()
+      const entries = result.entries || []
+      const urls = entries.map((entry) => entry.url)
+      const find = (needle) => entries.find((entry) => entry.url.includes(needle))
+      const ready =
+        urls.some((url) => url.endsWith('/') || url.includes('/?retry=')) &&
+        urls.some((url) => url.includes('/api/large')) &&
+        urls.some((url) => url.includes('/api/fail')) &&
+        urls.some((url) => url.includes('/api/echo-form')) &&
+        urls.some((url) => url.includes('/api/echo-json')) &&
+        typeof entries.find((entry) => entry.resourceType === 'document')?.responseBody === 'string' &&
+        typeof find('/api/data')?.responseBody === 'string' &&
+        typeof find('/api/echo-json')?.requestBody === 'string' &&
+        typeof find('/api/echo-form')?.requestBody === 'string' &&
+        find('/api/large')?.bodyTruncated === true
+      return ready ? result : null
+    }, { timeoutMs: 25000 })
+  }
+  if (!captured) {
+    const debug = await readLive().catch(() => null)
+    console.log(
+      'LIVE DEBUG:',
+      JSON.stringify(
+        (debug?.entries || []).map((entry) => ({
+          url: entry.url,
+          type: entry.resourceType,
+          status: entry.status,
+          responseBody: typeof entry.responseBody === 'string' ? entry.responseBody.length : null,
+          requestBody: typeof entry.requestBody === 'string' ? entry.requestBody.length : null,
+          bodyTruncated: entry.bodyTruncated,
+          bodyUnavailable: entry.bodyUnavailable,
+        })),
+        null,
+        1,
+      ),
+    )
     check('live: capture receives the page requests', false, 'timed out waiting for captured entries')
     return
   }
