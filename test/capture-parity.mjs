@@ -1416,7 +1416,7 @@ async function runLiveHeadlessChecks(head) {
       typeof find('/api/echo-form')?.requestBody === 'string' &&
       find('/api/large')?.bodyTruncated === true
     return ready ? result : null
-  })
+  }, { timeoutMs: 25000 })
   if (!captured) {
     check('live: capture receives the page requests', false, 'timed out waiting for captured entries')
     return
