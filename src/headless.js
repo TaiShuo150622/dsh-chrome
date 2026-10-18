@@ -512,9 +512,10 @@ function pageCall(name, args) {
 
 // ------------------------------------------------------------------ driver
 export class HeadlessDriver {
-  constructor({ home, logger } = {}) {
+  constructor({ home, logger, spawnImpl = spawn } = {}) {
     this.home = home
     this.logger = logger
+    this.spawnImpl = spawnImpl
     this.chrome = null
     this.cdp = null
     this.browserVersion = null
@@ -531,6 +532,8 @@ export class HeadlessDriver {
     this.downloadByGuid = new Map()
     this.idleTimer = null
     this.lastActivity = Date.now()
+    this.loginProcess = null
+    this.loginProfile = path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'profile')
     this.captures = new Map()
     this.captureByTab = new Map()
     this.nextCaptureSeq = 1
@@ -541,6 +544,9 @@ export class HeadlessDriver {
   }
 
   async ensureStarted() {
+    if (this.loginProcess) {
+      throw error('HEADLESS_LOGIN_OPEN', 'an interactive login window is open; finish it before using the headless backend')
+    }
     if (this.cdp) return this
     if (this.startPromise) return this.startPromise
     this.startPromise = (async () => {
@@ -1448,7 +1454,66 @@ export class HeadlessDriver {
     throw error('INVALID_ARGUMENT', `unknown tabs op: ${op}`)
   }
 
+  async loginStart({ url } = {}) {
+    if (this.loginProcess) {
+      return { running: true, alreadyRunning: true, pid: this.loginProcess.pid ?? null, profile: this.loginProfile }
+    }
+    if (this.tabs.size > 0) {
+      throw error('HEADLESS_BUSY', 'close headless tabs (chrome_close_session {backend:"headless"}) before opening the login window')
+    }
+    if (this.chrome || this.cdp) await this.close()
+    const executable = chromeExecutable()
+    if (!executable) throw error('UNSUPPORTED_BACKEND', 'no Chrome/Chromium executable found (set DSH_HEADLESS_CHROME)')
+    const target = url && /^https?:\/\//i.test(String(url)) ? String(url) : 'about:blank'
+    await fsp.mkdir(this.loginProfile, { recursive: true })
+    const child = this.spawnImpl(
+      executable,
+      [
+        `--user-data-dir=${this.loginProfile}`,
+        '--new-window',
+        target,
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-sync',
+      ],
+      { stdio: 'ignore' },
+    )
+    this.loginProcess = child
+    child.once?.('exit', () => {
+      if (this.loginProcess === child) this.loginProcess = null
+    })
+    this.logger?.info?.('headless login window opened (pid=%s)', child.pid)
+    return { running: true, alreadyRunning: false, pid: child.pid ?? null, profile: this.loginProfile, url: target }
+  }
+
+  loginStatus() {
+    return {
+      running: Boolean(this.loginProcess),
+      pid: this.loginProcess?.pid ?? null,
+      profile: this.loginProfile,
+    }
+  }
+
+  loginFinish() {
+    const child = this.loginProcess
+    if (!child) return { running: false, stopped: false, profile: this.loginProfile }
+    try {
+      child.kill('SIGTERM')
+    } catch {
+      // already gone
+    }
+    this.loginProcess = null
+    this.logger?.info?.('headless login window closed')
+    return { running: false, stopped: true, profile: this.loginProfile }
+  }
+
   async close() {
+    try {
+      this.loginProcess?.kill?.('SIGTERM')
+    } catch {
+      // ignore
+    }
+    this.loginProcess = null
     try {
       await this.cdp?.send('Browser.close')
     } catch {

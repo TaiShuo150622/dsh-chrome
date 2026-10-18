@@ -13,6 +13,14 @@
 
 ## [Unreleased]
 
+### Added（一次性登录 profile）
+
+- 新工具 `chrome_headless_login`（第 40 个）：op=start/status/finish
+  - start 硬确认后关闭 headless Chrome，打开**可见的专用 Chrome 窗口**（同一 profile），用户登录后 finish
+  - cookie 仅落在 headless profile；登录窗口打开期间 headless 请求返回 `HEADLESS_LOGIN_OPEN`
+- `chrome_status` 显示 login window 状态
+- provider 0.1.87；测试 `test/headless-login.mjs`
+
 ### Added（headless 工具面对齐 38/39）
 
 - headless 补 `chrome_select` / `chrome_drag` / `chrome_storage` / `chrome_emulate` / `chrome_find` / `chrome_get_text`

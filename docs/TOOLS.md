@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：39
+> 工具数量：40
 
 ### `chrome_status`
 
@@ -223,13 +223,22 @@ Read the recent site-policy audit log (~/.dsh/cache/dsh-chrome/audit.jsonl): tim
 | `limit` | number | no | Max entries returned (default 20, max 100). |
 | `origin` | string | no | Only entries for this origin. |
 
-### `chrome_screencast`
+### `chrome_headless_login`
 
-Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image, op="stop" ends the stream; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.
+Open a visible, dedicated Chrome window so the user can log in once; its cookies persist in the headless profile and are reused by backend:"headless" sessions. op="start" requires hard confirmation and closes the running headless browser first; op="finish" closes the login window; op="status" reports it.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `op` | enum(start | stop | status | diag) | yes |  |
+| `op` | enum(start | status | finish) | yes |  |
+| `url` | string | no | start: URL to open in the login window (default about:blank). |
+
+### `chrome_screencast`
+
+Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image, op="stop" ends the stream; op="viewer" returns the loopback live-view URL; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `op` | enum(start | stop | status | diag | viewer) | yes |  |
 | `format` | enum(jpeg | png) | no | start: frame format (default jpeg). |
 | `quality` | number | no | start: JPEG quality 1-100 (default 60). |
 | `everyNthFrame` | number | no | start: deliver every Nth frame, 1-10 (default 2). |

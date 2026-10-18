@@ -1,6 +1,6 @@
 # 后台浏览器（headless Chromium）H0/H1
 
-> 2026-10-17 · provider 0.1.80 · 扩展 0.1.85 · 工具面仍 39（未加新工具）
+> 2026-10-17 · provider 0.1.87 · 扩展 0.1.86 · 工具面 40（新增 `chrome_headless_login`）
 > 目标：不显示在桌面上也能调用浏览器，同时保留前台可见的 Chrome 登录态。
 
 ## 1. 为什么是「另起一个浏览器」
@@ -82,6 +82,23 @@ chrome_status                              → desktop 仍 CONNECTED；headless 
 
 证据截图：[headless-test-page.png](records/2026-10-17-code-headless/attachments/headless-test-page.png)（1440×813，headless 截图；桌面没有窗口）。
 
+## 2.2 一次性登录（持久 profile）
+
+headless profile 默认不导入用户 Chrome 的 cookie；需要访问登录站点时用：
+
+```text
+chrome_headless_login {op:"start", url:"https://example.com/login"}
+  → 关闭正在跑的 headless Chrome（如有），打开一个**可见的专用 Chrome 窗口**（同一 profile）
+  → 用户手动登录
+chrome_headless_login {op:"finish"}
+  → 关闭登录窗口；cookie 留在 profile 里，之后 backend:"headless" 复用
+chrome_headless_login {op:"status"}
+```
+
+- `start` 每次都要 **硬确认**；detail 里写明 cookie 会落到 headless profile；
+- 登录窗口打开期间 headless backend 会拒绝请求（`HEADLESS_LOGIN_OPEN`）；
+- 这是唯一会把登录态写入 headless profile 的入口，日常 Chrome 不受影响。
+
 ## 3. 暂不支持（会返回 `UNSUPPORTED_BACKEND`）
 
 | 工具/方法 | 原因 | H1 计划 |
@@ -89,7 +106,7 @@ chrome_status                              → desktop 仍 CONNECTED；headless 
 | `chrome_pick` | 无"鼠标点页面"的用户交互语义（headless 没有真人点击） | 明确返回 `UNSUPPORTED_BACKEND`；可选用 selector 流程 |
 | `chrome_pause` | 前台概念（headless 无暂停语义，`chrome_resume` no-op） | 不需要 |
 
-> 覆盖：39 个工具里 headless 支持 38 个（除 `chrome_pick` 外全部），provider 本地工具（status/config/policy/audit/shots）与 backend 无关，照常可用。
+> 覆盖：40 个工具里 headless 支持 38 个 chrome 工具（除 `chrome_pick` 外全部），加上 `chrome_headless_login`；provider 本地工具（status/config/policy/audit/shots）与 backend 无关，照常可用。
 | `chrome_shots` / `chrome_audit` / `chrome_policy` / `chrome_config` | provider 本地工具，与 backend 无关，照常工作 | — |
 
 ## 4. 安全与资源
@@ -116,9 +133,9 @@ headless 无 tab、无请求，60s `ps` 时间差：
 
 ## 5. 下一步（H1）
 
-1. 「一次性登录」：headless 持久 profile，可选有头模式打开登录页（登录后关窗口继续 headless，需要用户拍安全边界）；
-2. `chrome_pick` / `chrome_screencast` 的 headless 语义（pick 可返回 selector 流程；screencast 可 provider 侧写帧）；
-3. CPU/内存基线 + 空闲回收实测（见 §4）。
+1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
+2. capture 引擎与扩展共享（两套行为一致性）；
+3. CPU/内存活跃基线 + viewer 无查看者自动停止实测（见 §4）。
 
 ## 6. 代码
 

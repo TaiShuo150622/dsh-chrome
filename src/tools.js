@@ -12,7 +12,8 @@ import path from 'node:path'
 
 import { BridgeError } from './bridge.js'
 import { appendAudit, dshHome, loadPolicy, originOf, policyPath, readAudit, readProviderConfig, resolvePolicy } from './policy.js'
-import { getLiveViewUrl } from './liveview.js'
+import { getLiveViewUrl, getLiveViewInfo, getViewerActivity } from './liveview.js'
+import { createScreencastGuard } from './screencast-guard.js'
 
 const MUTATION_TIMEOUT_MS = 45000
 
@@ -308,7 +309,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           `Browser backend: ${value.backend || 'desktop'} — ${value.connected ? 'CONNECTED' : 'NOT CONNECTED'}`,
           ...(value.headless
             ? [
-                `headless: ${value.headless.supported ? 'available' : 'unavailable'}${value.headless.running ? ` (running ${value.headless.browserVersion || ''})` : ''}`,
+                `headless: ${value.headless.supported ? 'available' : 'unavailable'}${value.headless.running ? ` (running ${value.headless.browserVersion || ''})` : ''}${value.headless.loginOpen ? ` (login window open, pid ${value.headless.loginPid ?? '?'})` : ''}`,
               ]
             : []),
           `Chrome bridge: ${value.connected ? 'CONNECTED' : 'NOT CONNECTED'}`,
@@ -1343,6 +1344,66 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   })
 
+  const screencastGuards = new Map()
+
+  // ------------------------------------------- 4i-2. headless login profile
+  list.push({
+    name: 'chrome_headless_login',
+    description:
+      'Open a visible, dedicated Chrome window so the user can log in once; its cookies persist in the headless profile and are reused by backend:"headless" sessions. op="start" requires hard confirmation and closes the running headless browser first; op="finish" closes the login window; op="status" reports it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['start', 'status', 'finish'] },
+        url: { type: 'string', description: 'start: URL to open in the login window (default about:blank).' },
+      },
+      required: ['op'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        running: { type: 'boolean' },
+        alreadyRunning: { type: 'boolean' },
+        stopped: { type: 'boolean' },
+        pid: {},
+        profile: { type: 'string' },
+        url: { type: 'string' },
+      }),
+      render: (args, value) => {
+        if (args?.op === 'start' && value.running) {
+          return renderText(
+            `Login window opened (pid ${value.pid ?? '?'}); log in there, then call chrome_headless_login {op:"finish"}.\nprofile: ${value.profile}\nThis window is visible on purpose; cookies persist in the headless profile only.`,
+          )
+        }
+        if (args?.op === 'finish') {
+          return renderText(value.stopped ? 'Login window closed.' : 'No login window was open.')
+        }
+        return renderText(`Login window: ${value.running ? `open (pid ${value.pid ?? '?'})` : 'closed'}\nprofile: ${value.profile}`)
+      },
+    },
+    async execute(args, exec) {
+      const driver = bridge.headless
+      if (!driver || typeof driver.loginStart !== 'function') {
+        throw new BridgeError('UNSUPPORTED_BACKEND', 'this provider has no headless driver (headless is unavailable)')
+      }
+      const op = String(args?.op || 'status')
+      if (op === 'start') {
+        await hardConfirmAsk(exec, 'chrome_headless_login', {
+          header: '打开可见 Chrome 登录窗口（持久 profile）',
+          question: '允许打开一个可见的专用 Chrome 窗口用于一次性登录吗？',
+          detail:
+            '登录窗口使用 headless 专用 profile（' +
+            (driver.loginProfile || '~/.dsh/cache/dsh-chrome/headless/profile') +
+            '），cookie/登录态会落在这个 profile 里，之后 backend:"headless" 会复用它；不影响你日常 Chrome。完成登录后务必调用 op:"finish" 关掉窗口。',
+          timeoutMs: evaluateConfirmTimeoutMs,
+        })
+        return driver.loginStart({ url: args?.url })
+      }
+      if (op === 'finish') return driver.loginFinish()
+      return driver.loginStatus()
+    },
+  })
+
   // ----------------------------------------------------- 4j. screencast
   list.push({
     name: 'chrome_screencast',
@@ -1421,9 +1482,28 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           },
           30000,
         )
+        const mode = bridge.backend || 'desktop'
+        const previous = screencastGuards.get(owner)
+        if (previous) previous.disarm()
+        if (getLiveViewInfo().enabled) {
+          const guard = createScreencastGuard({
+            lastViewerAt: () => getViewerActivity().lastFrameAt,
+            stop: () => {
+              const stopCall = () => bridge.call('tab.screencast_stop', { owner }, 15000)
+              return typeof bridge.runWithBackend === 'function' ? bridge.runWithBackend(mode, stopCall) : stopCall()
+            },
+          })
+          guard.arm()
+          screencastGuards.set(owner, guard)
+        }
         return { ...started, path: screencastLatestPath() }
       }
       if (op === 'stop') {
+        const guard = screencastGuards.get(owner)
+        if (guard) {
+          guard.disarm()
+          screencastGuards.delete(owner)
+        }
         return call('tab.screencast_stop', { owner }, 30000)
       }
       if (op === 'diag') {
