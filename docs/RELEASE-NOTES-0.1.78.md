@@ -37,9 +37,9 @@
 ## 验证状态
 
 - `npm test` 10 条全过；工作树干净；
-- 桌面 Chrome 真机：A 批全部、C 批（C0 回归/evaluate 超时/抓包）、D1/D4；
-- Chrome for Testing 真机：B 批、D2/D3（跨源 iframe、pick、pause）；
-- **遗留**：D2/D3 桌面实例复验待扩展重连；真实站点 gate（iframe 支付/Web Components/Canvas/JSON API）待用户提供站点。
+- 桌面 Chrome 真机：A 批全部、C 批（C0 回归/evaluate 超时/抓包）、D1–D4（pick/pause 已复验）；
+- Chrome for Testing 真机：B 批、D2/D3 交叉验证（跨源 iframe、pick、pause）；
+- **遗留**：真实站点 gate（iframe 支付/Web Components/Canvas/JSON API）待用户提供站点；D2 真实用户点击可作为可选补验。
 
 ## 升级/恢复
 
