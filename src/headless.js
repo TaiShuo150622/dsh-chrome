@@ -112,6 +112,61 @@ const SHOT_STREAM_KEEPALIVE = process.env.DSH_HEADLESS_SHOT_STREAM_KEEPALIVE !==
 const SHOT_STREAM_FAILURES_BEFORE_BACKOFF = 2
 const SHOT_STREAM_BACKOFF_MS = 5000
 
+// Page-side visual-change probe (docs/HEADLESS.md §4.1.7). The repaint window
+// above is a blind wait for a composited frame, so an action that cannot have
+// painted anything (a read-only evaluate, a scroll that does not move the
+// viewport) still pays it in full. The driver installs this tracker in every
+// document and snapshots it around such an action; only a clean verdict keeps
+// the previous change marker, which turns the next screenshot into a frame
+// cache hit instead of a ~40ms wait. Anything the tracker cannot see (canvas
+// pixels, same-origin subframe documents, asynchronous effects) keeps the
+// conservative wait, and `DSH_HEADLESS_VISUAL_PROBE=0` disables the shortcut.
+const VISUAL_PROBE_ENABLED = process.env.DSH_HEADLESS_VISUAL_PROBE !== '0'
+const VISUAL_TRACKER_SCRIPT = `(() => {
+  if (window.__dshVisual) return true
+  const state = { mutations: 0, scrolls: 0, focus: 0, broken: false }
+  const docId = Math.random().toString(36).slice(2)
+  try {
+    new MutationObserver((records) => { state.mutations += records.length })
+      .observe(document, { subtree: true, childList: true, attributes: true, characterData: true })
+  } catch { state.broken = true }
+  try {
+    addEventListener('scroll', () => { state.scrolls += 1 }, true)
+    addEventListener('focusin', () => { state.focus += 1 }, true)
+    addEventListener('focusout', () => { state.focus += 1 }, true)
+  } catch { state.broken = true }
+  // A same-origin subframe document can be mutated by an evaluate but is not
+  // covered by the observer above (different node tree), so its presence keeps
+  // the conservative wait; cross-origin frames are unreachable from the page and
+  // their own async paints are out of scope for this probe.
+  const sameOriginFrame = () => {
+    try {
+      for (const frame of document.querySelectorAll('iframe, frame')) {
+        try { if (frame.contentDocument) return true } catch { /* cross-origin access */ }
+      }
+      return false
+    } catch { return true }
+  }
+  window.__dshVisual = {
+    snapshot() {
+      return {
+        doc: docId,
+        url: location.href,
+        readyState: document.readyState,
+        mutations: state.mutations,
+        scrolls: state.scrolls,
+        focus: state.focus,
+        animations: typeof document.getAnimations === 'function' ? document.getAnimations().length : -1,
+        scroll: [window.scrollX, window.scrollY],
+        canvas: Boolean(document.querySelector('canvas')),
+        frames: sameOriginFrame(),
+        broken: Boolean(state.broken),
+      }
+    },
+  }
+  return true
+})()`
+
 // Viewer screencast materialization (docs/HEADLESS.md §4.1.6): the live viewer
 // polls `/live/frame` every 300ms, so decoding and rewriting latest.<ext> +
 // meta.json for every screencast frame (up to 30/s) is wasted work. Keep only
@@ -1218,7 +1273,7 @@ export class HeadlessDriver {
     if (this.tabs.size >= MAX_TABS) {
       throw error('RESOURCE_LIMIT', `headless tab limit reached (${MAX_TABS}); close a tab first`)
     }
-    const tab = { tabId, targetId, sessionId, url: url || 'about:blank', title: '', renderChangeAt: 0, shotStream: null }
+    const tab = { tabId, targetId, sessionId, url: url || 'about:blank', title: '', renderChangeAt: 0, shotStream: null, visualTracker: false, visualSkips: 0 }
     this.bySession.set(sessionId, tab)
     this.consoleBuffers.set(tabId, [])
     this.tabs.set(tabId, tab)
@@ -1230,6 +1285,7 @@ export class HeadlessDriver {
       this.cdp.send('Page.enable', {}, sessionId).catch(() => {}),
       this.cdp.send('Runtime.enable', {}, sessionId).catch(() => {}),
     ])
+    await this.installVisualTracker(tab)
     return tab
   }
 
@@ -1307,6 +1363,104 @@ export class HeadlessDriver {
     } catch {
       return false
     }
+  }
+
+  // ------------------------------------------------- page-side visual probe
+  // Installed once per tab: the script is registered for every future document
+  // (including subframes) and evaluated once into the document that already
+  // exists at attach time. A failure just leaves the tab without a probe, so
+  // every action keeps the conservative repaint window.
+  async installVisualTracker(tab) {
+    if (!VISUAL_PROBE_ENABLED) return false
+    try {
+      // The registered script covers future documents (including subframes);
+      // the direct evaluate installs the same tracker into the document that
+      // already exists at attach time. They are independent round trips.
+      await Promise.all([
+        this.cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: VISUAL_TRACKER_SCRIPT }, tab.sessionId),
+        this.evalOn(tab, VISUAL_TRACKER_SCRIPT),
+      ])
+      tab.visualTracker = true
+    } catch {
+      tab.visualTracker = false
+    }
+    return tab.visualTracker
+  }
+
+  async visualSnapshot(tab) {
+    if (!VISUAL_PROBE_ENABLED || !tab.visualTracker) return null
+    try {
+      return await this.evalOn(tab, 'window.__dshVisual ? window.__dshVisual.snapshot() : null')
+    } catch {
+      return null
+    }
+  }
+
+  // Anything but a well-formed snapshot pair is treated as "cannot prove
+  // anything": a page that shadows `window.__dshVisual` must not silently turn
+  // the shortcut on.
+  visualSnapshotShape(value) {
+    return (
+      Boolean(value) &&
+      typeof value === 'object' &&
+      typeof value.doc === 'string' &&
+      typeof value.url === 'string' &&
+      Number.isFinite(value.mutations) &&
+      Number.isFinite(value.scrolls) &&
+      Number.isFinite(value.focus) &&
+      Number.isFinite(value.animations) &&
+      Array.isArray(value.scroll) &&
+      Number.isFinite(value.scroll[0]) &&
+      Number.isFinite(value.scroll[1])
+    )
+  }
+
+  // A snapshot pair only proves "painted nothing" when every surface the
+  // tracker cannot observe is absent, the document did not change, and no
+  // counter moved.
+  visualProbeVerdict(before, after) {
+    if (!this.visualSnapshotShape(before) || !this.visualSnapshotShape(after)) return 'unknown'
+    if (before.broken || before.canvas || before.frames) return 'unknown'
+    if (before.doc !== after.doc || before.url !== after.url || before.readyState !== after.readyState) return 'unknown'
+    if (before.mutations !== after.mutations) return 'unknown'
+    if (before.scrolls !== after.scrolls) return 'unknown'
+    if (before.focus !== after.focus) return 'unknown'
+    // -1 means the page has no Web Animations API: an animation could have
+    // started unseen, so keep the conservative wait.
+    if (before.animations < 0) return 'unknown'
+    if (before.animations !== after.animations) return 'unknown'
+    if (before.scroll[0] !== after.scroll[0] || before.scroll[1] !== after.scroll[1]) return 'unknown'
+    return 'clean'
+  }
+
+  // Runs `action` between two tracker snapshots. A clean verdict keeps the
+  // previous change marker (`tab.skipRenderChange`), so the next screenshot
+  // reuses the cached frame instead of waiting for a frame that cannot come.
+  async visualProbeAction(tab, action) {
+    const before = await this.visualSnapshot(tab)
+    let value
+    let failure = null
+    try {
+      value = await action()
+    } catch (error) {
+      failure = error
+    }
+    if (!before) {
+      if (failure) throw failure
+      return value
+    }
+    const after = await this.visualSnapshot(tab)
+    if (!failure) {
+      let verdict = 'unknown'
+      try {
+        verdict = this.visualProbeVerdict(before, after)
+      } catch {
+        verdict = 'unknown'
+      }
+      if (verdict === 'clean') tab.skipRenderChange = true
+    }
+    if (failure) throw failure
+    return value
   }
 
   // ---------------------------------------------------- screenshot frame stream
@@ -1670,10 +1824,22 @@ export class HeadlessDriver {
   }
 
   async request(method, params = {}) {
+    // A previous request that proved itself paint-free leaves the flag clear
+    // before dispatching, so only a verdict from *this* action can skip the
+    // change marker (`tab.evaluate` / `tab.scroll` set it inside dispatch).
+    const before = this.tabForParams(params)
+    if (before) before.skipRenderChange = false
     const result = await this.dispatch(method, params)
     if (SHOT_STREAM_METHODS.has(method)) {
       const tab = this.tabForParams(params)
-      if (tab) tab.renderChangeAt = Date.now() / 1000
+      if (tab) {
+        if (tab.skipRenderChange) {
+          tab.skipRenderChange = false
+          tab.visualSkips = (tab.visualSkips || 0) + 1
+        } else {
+          tab.renderChangeAt = Date.now() / 1000
+        }
+      }
     }
     return result
   }
@@ -1827,12 +1993,28 @@ export class HeadlessDriver {
         const tab = await this.ensureTab(owner, params.tabId)
         const amount = Number(params.amount || 600)
         const direction = String(params.direction || 'down')
-        // Scroll and read the resulting position in a single evaluate.
-        const expression =
+        // Scroll and read the resulting position in a single evaluate. `moved`
+        // lets the driver keep the previous change marker when the viewport did
+        // not actually move (already at the boundary): such a scroll cannot have
+        // repainted anything, so the next screenshot is a frame cache hit
+        // instead of a repaint-window wait (docs/HEADLESS.md §4.1.7). Smooth
+        // scrolling animates after this evaluate returns, so it keeps the
+        // conservative marker.
+        const scrollCall =
           direction === 'top' || direction === 'bottom'
-            ? `(window.scrollTo(0, ${direction === 'top' ? 0 : 'document.body.scrollHeight'}), { x: window.scrollX, y: window.scrollY })`
-            : `(window.scrollBy(0, ${direction === 'up' ? -amount : amount}), { x: window.scrollX, y: window.scrollY })`
+            ? `window.scrollTo(0, ${direction === 'top' ? 0 : 'document.body.scrollHeight'})`
+            : `window.scrollBy(0, ${direction === 'up' ? -amount : amount})`
+        const expression = `(() => {
+          const smooth = [document.documentElement, document.body].some((el) => el && getComputedStyle(el).scrollBehavior === 'smooth')
+          const beforeX = window.scrollX
+          const beforeY = window.scrollY
+          ${scrollCall}
+          const x = window.scrollX
+          const y = window.scrollY
+          return { x, y, moved: x !== beforeX || y !== beforeY, smooth }
+        })()`
         const pos = await this.evalOn(tab, expression)
+        if (pos && pos.moved === false && pos.smooth === false) tab.skipRenderChange = true
         return { ok: true, tabId: tab.tabId, x: pos?.x ?? 0, y: pos?.y ?? 0 }
       }
       case 'tab.press': {
@@ -1925,7 +2107,13 @@ export class HeadlessDriver {
       }
       case 'tab.evaluate': {
         const tab = await this.ensureTab(owner, params.tabId)
-        const value = await this.evalOn(tab, String(params.expression || 'undefined'), { awaitPromise: true })
+        // A read-only evaluate paints nothing, so the visual probe keeps the
+        // previous change marker and the next screenshot is a cache hit
+        // (docs/HEADLESS.md §4.1.7). Semantics of the expression are unchanged:
+        // the probe only wraps it in two snapshot round trips.
+        const value = await this.visualProbeAction(tab, () =>
+          this.evalOn(tab, String(params.expression || 'undefined'), { awaitPromise: true }),
+        )
         return { ok: true, value }
       }
       case 'tab.wait': {
@@ -2245,6 +2433,11 @@ export class HeadlessDriver {
             const stream = tab.shotStream
             return {
               tabId: tab.tabId,
+              // Page-side visual probe (docs/HEADLESS.md §4.1.7): whether the
+              // tracker is installed, and how many page-changing actions were
+              // proven paint-free and therefore kept the previous frame marker.
+              visualTracker: Boolean(tab.visualTracker),
+              visualSkips: tab.visualSkips || 0,
               screenshotStream: stream
                 ? {
                     active: stream.active,

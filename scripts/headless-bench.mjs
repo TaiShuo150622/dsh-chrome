@@ -21,6 +21,7 @@
  *   node scripts/headless-bench.mjs [--seconds 10] [--actions 20]
  *                                   [--shot-format png|jpeg] [--shot-quality 60]
  *                                   [--no-optimize] [--gap-ms 0] [--static]
+ *                                   [--readonly-eval]
  *
  * Both formats are served from the tab's screenshot frame stream (PNG or JPEG
  * screencast). The PNG path defaults to Chrome's fast PNG encoder
@@ -36,8 +37,12 @@
  * DSH_HEADLESS_SHOT_STREAM_IDLE_MS to exercise a stream restart). `--static`
  * drops the page-changing type/scroll actions: every round then screenshots an
  * unchanged page, which measures the cached-frame/idle-stream path (combine it
- * with `--gap-ms` to measure the idle window). The action cap is ACTIONS*50 so
- * the default 10s run is time-bound rather than cap-bound.
+ * with `--gap-ms` to measure the idle window). `--readonly-eval` replaces the
+ * page-changing type/scroll actions with a read-only `tab.evaluate`: the page
+ * never repaints, so every round measures the repaint window a screenshot pays
+ * after an action that provably painted nothing (docs/HEADLESS.md §4.1.7). The
+ * action cap is ACTIONS*50 (ACTIONS*2000 for the shortcut scenario) so the
+ * default 10s run is time-bound rather than cap-bound.
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -60,6 +65,10 @@ const SHOT_QUALITY = Math.max(1, Math.min(100, argValue('--shot-quality', 60)))
 const SHOT_OPTIMIZE = !hasFlag('--no-optimize')
 const GAP_MS = Math.max(0, Math.min(30000, argValue('--gap-ms', 0)))
 const STATIC = hasFlag('--static')
+// Read-only evaluate scenario (§4.1.7): snapshot + evaluate + screenshot, with
+// no page-changing action, so the screenshot must reuse the cached frame.
+const READONLY_EVAL = hasFlag('--readonly-eval')
+const READONLY_EXPRESSION = 'document.getElementById("out").textContent'
 // Element/region screenshot scenarios. Clip coordinates are CSS px like the
 // `clip` tool parameter; ref mode uses the input control from the same snapshot
 // the round already takes, so it measures ref resolution + crop end to end.
@@ -143,8 +152,8 @@ function processStats() {
 // Wall-clock accumulator per action kind; Chrome CPU is sampled only around the
 // whole loop, but wall time isolates which request dominates a round.
 function createTimer() {
-  const buckets = { snapshot: 0, type: 0, screenshot: 0, scroll: 0 }
-  const counts = { snapshot: 0, type: 0, screenshot: 0, scroll: 0 }
+  const buckets = { snapshot: 0, type: 0, evaluate: 0, screenshot: 0, scroll: 0 }
+  const counts = { snapshot: 0, type: 0, evaluate: 0, screenshot: 0, scroll: 0 }
   return {
     buckets,
     counts,
@@ -181,14 +190,20 @@ try {
     const timed = timer ? (kind, fn) => timer.time(kind, fn) : (kind, fn) => fn()
     const snap = await timed('snapshot', () => driver.request('tab.snapshot', { owner: 'bench', maxChars: 2000 }))
     const input = snap.controls.find((control) => control.tag === 'input')
-    if (input && !STATIC) await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${index}`, replace: true }))
+    if (READONLY_EVAL) {
+      await timed('evaluate', () => driver.request('tab.evaluate', { owner: 'bench', expression: READONLY_EXPRESSION }))
+    } else if (input && !STATIC) {
+      await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${index}`, replace: true }))
+    }
     const params = SHOT_REF && input ? { ...shotParams, ref: input.ref } : shotParams
     await timed('screenshot', () => driver.request('tab.screenshot', params))
     // Ref mode keeps the element in view: it scrolls less than the input's
     // viewport offset, otherwise half the rounds would fall back to capture
     // because the element left the viewport (the honest off-screen case, but
     // not what this scenario is measuring).
-    if (!STATIC) await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: SHOT_REF ? 60 : 200 }))
+    if (!STATIC && !READONLY_EVAL) {
+      await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: SHOT_REF ? 60 : 200 }))
+    }
   }
 
   // One untimed warm-up round keeps the first screenshot (cold compositor) out
@@ -203,7 +218,10 @@ try {
   // Hard cap so a stuck fast path cannot loop forever; high enough that the
   // default 10s run is time-bound (the screenshot frame stream made 58+ rounds
   // per second possible, which used to hit the old ACTIONS*20=400 cap early).
-  while (Date.now() < until && actions < ACTIONS * 50) {
+  // The read-only evaluate scenario is orders of magnitude cheaper per round, so
+  // it needs a much higher cap to stay time-bound.
+  const ACTION_CAP = ACTIONS * (READONLY_EVAL ? 2000 : 50)
+  while (Date.now() < until && actions < ACTION_CAP) {
     await runRound(timer, actions)
     actions += 1
     if (GAP_MS > 0) await new Promise((resolve) => setTimeout(resolve, GAP_MS))
@@ -216,16 +234,23 @@ try {
   // rises whenever a faster path simply completes more rounds in the same 10s.
   const cpuMsPerAction = round((cpuSeconds * 1000) / Math.max(1, actions), 2)
   const perActionMs = timer.averages()
-  const roundTotalMs = round((timer.buckets.snapshot + timer.buckets.type + timer.buckets.screenshot + timer.buckets.scroll) / Math.max(1, actions), 2)
+  const roundTotalMs = round(
+    (timer.buckets.snapshot + timer.buckets.type + timer.buckets.evaluate + timer.buckets.screenshot + timer.buckets.scroll) /
+      Math.max(1, actions),
+    2,
+  )
   const roundsPerSecond = round(actions / elapsed, 2)
   const rssMb = Math.round(after.rssKb / 1024)
   console.log(
     JSON.stringify(
       {
-        scenario: `headless active: ${actions} ${SHOT_FORMAT} ${STATIC ? 'snapshot/screenshot (static page)' : 'snapshot/type/screenshot/scroll'} rounds${SHOT_MODE === 'viewport' ? '' : ` (${SHOT_MODE} screenshot)`}`,
+        scenario: `headless active: ${actions} ${SHOT_FORMAT} ${
+          READONLY_EVAL ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)' : STATIC ? 'snapshot/screenshot (static page)' : 'snapshot/type/screenshot/scroll'
+        } rounds${SHOT_MODE === 'viewport' ? '' : ` (${SHOT_MODE} screenshot)`}`,
         elapsedSeconds: round(elapsed, 1),
         gapMs: GAP_MS,
         staticMode: STATIC,
+        readonlyEval: READONLY_EVAL,
         shotMode: SHOT_MODE,
         ...(SHOT_CLIP ? { shotClip: SHOT_CLIP } : {}),
         actions,

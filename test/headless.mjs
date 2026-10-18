@@ -188,6 +188,128 @@ try {
     'empty clip must be rejected like the desktop backend',
   )
 
+  // Page-side visual probe (docs/HEADLESS.md §4.1.7): an action that provably
+  // painted nothing (read-only evaluate, scroll that does not move the
+  // viewport) keeps the previous change marker, so the next screenshot reuses
+  // the cached frame instead of paying the ~40ms repaint window. Anything that
+  // can paint (DOM mutation, scroll, focus, canvas pixels) must keep waiting.
+  const tabDiag = async () => (await driver.request('tab.debug_diag')).tabs.find((tab) => tab.tabId === gone.tabId)
+  // A repaint can land as two composited frames; settle before taking a
+  // reference frame so a late second frame cannot race the cache-hit compare.
+  const settle = (ms = 150) => new Promise((resolve) => setTimeout(resolve, ms))
+  const probeBase = await tabDiag()
+  assert.equal(probeBase.visualTracker, true, `visual probe not installed: ${JSON.stringify(probeBase)}`)
+  // Blur first: a focused input blinks a caret, and those frames would land
+  // between the cache-hit comparisons below (the same reason the keep-alive
+  // check further down blurs first).
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const cachedShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const cachedBytes = fs.readFileSync(cachedShot.path)
+  const readonlySkipBefore = await tabDiag()
+  const readonlyValue = await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("out").textContent' })
+  assert.equal(readonlyValue.value, 'clip-freshness', 'evaluate must keep returning the page value')
+  const readonlyShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const readonlySkipAfter = await tabDiag()
+  assert.equal(
+    readonlySkipAfter.screenshotStream.frames,
+    readonlySkipBefore.screenshotStream.frames,
+    'read-only evaluate must not wait for a new frame',
+  )
+  assert.equal(
+    readonlySkipAfter.visualSkips,
+    readonlySkipBefore.visualSkips + 1,
+    `read-only evaluate did not skip the repaint window: ${JSON.stringify({ before: readonlySkipBefore.visualSkips, after: readonlySkipAfter.visualSkips })}`,
+  )
+  assert.equal(
+    readonlySkipAfter.screenshotStream.repaintMisses,
+    readonlySkipBefore.screenshotStream.repaintMisses,
+    'read-only evaluate waited for a frame that cannot come',
+  )
+  assert.deepEqual(fs.readFileSync(readonlyShot.path), cachedBytes, 'read-only evaluate must reuse the cached frame')
+  // A DOM mutation is a paint source: the next screenshot must be fresh.
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("out").textContent = "probe-mutation"' })
+  const mutatedShot = await driver.request('tab.screenshot', { owner: 's1' })
+  assert.notDeepEqual(fs.readFileSync(mutatedShot.path), cachedBytes, 'DOM mutation after the probe must not be stale')
+  // Give the page room to scroll, then check the three scroll cases: moving is
+  // dirty, and a scroll at the boundary is paint-free.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: 'document.body.insertAdjacentHTML("beforeend", \'<div style="height:3000px">scroll filler</div>\')',
+  })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  const atTopShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const atTopBytes = fs.readFileSync(atTopShot.path)
+  const movingBefore = await tabDiag()
+  const scrolledDown = await driver.request('tab.scroll', { owner: 's1', direction: 'down', amount: 400 })
+  assert.ok(scrolledDown.y > 0, `scroll down did not move the page: ${JSON.stringify(scrolledDown)}`)
+  const downShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const movingAfter = await tabDiag()
+  assert.equal(movingAfter.visualSkips, movingBefore.visualSkips, 'a moving scroll must keep the conservative wait')
+  assert.notDeepEqual(fs.readFileSync(downShot.path), atTopBytes, 'a moving scroll must not be stale')
+  await driver.request('tab.scroll', { owner: 's1', direction: 'top' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const backTopShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const backTopBytes = fs.readFileSync(backTopShot.path)
+  const boundaryBefore = await tabDiag()
+  const boundaryScroll = await driver.request('tab.scroll', { owner: 's1', direction: 'top' })
+  assert.equal(boundaryScroll.y, 0)
+  const boundaryShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const boundaryAfter = await tabDiag()
+  assert.equal(
+    boundaryAfter.visualSkips,
+    boundaryBefore.visualSkips + 1,
+    `boundary scroll did not skip the repaint window: ${JSON.stringify({ before: boundaryBefore.visualSkips, after: boundaryAfter.visualSkips })}`,
+  )
+  assert.deepEqual(fs.readFileSync(boundaryShot.path), backTopBytes, 'boundary scroll must reuse the cached frame')
+  // Scrolling via evaluate is not a DOM mutation but changes the pixels.
+  const scrollProbeBefore = await tabDiag()
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'window.scrollTo(0, 400)' })
+  const scrolledShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const scrollProbeAfter = await tabDiag()
+  assert.equal(scrollProbeAfter.visualSkips, scrollProbeBefore.visualSkips, 'scroll via evaluate must keep the conservative wait')
+  assert.notDeepEqual(fs.readFileSync(scrolledShot.path), backTopBytes, 'scroll via evaluate must not be stale')
+  // Focus changes are not DOM mutations either (focus ring repaint).
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  const focusProbeBefore = await tabDiag()
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("name").focus()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  const focusProbeAfter = await tabDiag()
+  assert.equal(focusProbeAfter.visualSkips, focusProbeBefore.visualSkips, 'focus change must keep the conservative wait')
+  // Blur again so the caret cannot add frames between the canvas cache hits.
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  // Canvas pixels are invisible to the probe: a canvas in the document disables
+  // the shortcut, so painting it cannot return the old frame.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: '(() => { const el = document.createElement("canvas"); el.id = "probe-canvas"; el.width = 600; el.height = 120; el.style.position = "fixed"; el.style.top = "0"; el.style.left = "0"; el.style.background = "#111"; document.body.append(el); return "canvas-added" })()',
+  })
+  const canvasBase = await driver.request('tab.screenshot', { owner: 's1' })
+  const canvasProbeBefore = await tabDiag()
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: '(() => { const ctx = document.getElementById("probe-canvas").getContext("2d"); ctx.fillStyle = "#e00"; ctx.fillRect(0, 0, 300, 60); return "painted" })()',
+  })
+  const canvasShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const canvasProbeAfter = await tabDiag()
+  assert.equal(canvasProbeAfter.visualSkips, canvasProbeBefore.visualSkips, 'canvas draw must keep the conservative wait')
+  assert.notDeepEqual(fs.readFileSync(canvasShot.path), fs.readFileSync(canvasBase.path), 'canvas draw must not be stale')
+  // Removing the canvas restores the shortcut for a read-only evaluate.
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("probe-canvas").remove()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const restoredBase = await driver.request('tab.screenshot', { owner: 's1' })
+  const restoredBefore = await tabDiag()
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.title' })
+  const restoredShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const restoredAfter = await tabDiag()
+  assert.equal(restoredAfter.visualSkips, restoredBefore.visualSkips + 1, 'shortcut did not come back after removing the canvas')
+  assert.deepEqual(fs.readFileSync(restoredShot.path), fs.readFileSync(restoredBase.path), 'read-only evaluate after canvas removal must reuse the cached frame')
+
   const tabs = await driver.request('tab.tabs', { owner: 's1', op: 'list' })
   assert.equal(tabs.tabs.length, 1)
   assert.equal(tabs.activeTabId, gone.tabId)

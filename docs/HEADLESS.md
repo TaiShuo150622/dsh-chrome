@@ -476,13 +476,71 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 
 **回归**：`node test/headless.mjs` PASS（新增断言：stop 后 `latest.jpg` 是合法 JPEG、`meta.json.bytes` 与文件大小一致、`frames` 不超过流计数、`updatedAt` 新鲜）；`node test/host-reconnect.mjs` PASS（新增断言：连发两帧后磁盘上是**第二帧**——trailing flush 生效——且 meta 的 `frames`/`bytes` 与文件一致）；`node test/liveview.mjs`、`node test/extension-logic.mjs`、`npm test` PASS。标准截图 bench（`node scripts/headless-bench.mjs --seconds 10`）不受影响：591 动作/10s、`screenshot` 14.93ms、每轮 16.91ms、每动作 CPU 16.35ms（改前同命令 575 动作、14.84ms、17.39ms、19.30ms——同分布/负载波动内）。
 
+### 4.1.7 2026-10-17 第八轮：只读 evaluate / 空滚动的重绘窗（Ralph 循环第 3 轮）
+
+背景：截图帧流的新鲜度规则是 `renderChangeAt` + 帧 `metadata.timestamp` + 40ms 重绘窗（§4.1.1）。页面**没重绘**时（只读 evaluate、已经在边界上的 scroll），这一窗必然走满：实测截图 42.0–43.2ms，而静态页缓存命中只要 0.14–0.18ms。§5 当时留的待办正是「需要可靠的『没有重绘』信号」。
+
+**先给结论**：`Page` 没有 damage/sequence 信号，本轮探针也确认 `document.timeline.currentTime` 在静态页上照样每 ~33–50ms 前进（合成器一直有 BeginFrame，只有 screencast 的**发帧**按 damage 触发），所以「没重绘」只能从**页面侧**证明：driver 在每个文档里装一个视觉变更追踪器，在动作前后各取一次快照，两次快照完全一致时才跳过重绘窗。
+
+**实现**（`src/headless.js`）：
+
+1. `attachTab` 时 `Page.addScriptToEvaluateOnNewDocument`（覆盖后续文档，含子 frame）+ 直接 `Runtime.evaluate` 一次（覆盖当前文档），装 `window.__dshVisual`；装失败就整条短路回退。
+2. 追踪器累计 `MutationObserver`（subtree/childList/attributes/characterData）条数、`scroll`、`focusin/focusout` 事件数；快照再带 `document.getAnimations().length`、`scrollX/Y`、文档 token、URL、readyState，以及两个「追踪器看不见的面」：页面里有没有 `<canvas>`（画布像素不产生 DOM 变更）、有没有**同源** subframe 文档（它的 DOM 不在主文档 observer 里）。
+3. `tab.evaluate` 用 `visualProbeAction()` 包起来：动作前/后各一次快照，所有字段一致 → `tab.skipRenderChange = true`；`request()` 据此**不推进** `renderChangeAt`，下一张截图直接命中缓存帧。快照形状不对（页面自己占了 `window.__dshVisual`）、`getAnimations` 不可用、有 canvas/同源 subframe → 一律保守。
+4. `tab.scroll` 把「是否真的移动」和「是否 `scroll-behavior: smooth`」放进同一次 evaluate 的返回值：没移动且不是平滑滚动 → 同样跳过；平滑滚动会在 evaluate 返回后继续动，保持保守。
+5. `tab.debug_diag` 新增 `visualTracker`、`visualSkips`（被证明无重绘的动作数）。
+6. `DSH_HEADLESS_VISUAL_PROBE=0` 一键回到旧行为。
+
+**A/B（同机交替，`git archive 83435f6` 导出原树 vs 本轮；探针在 `/tmp`；每侧 3 次取中位）**：
+
+| 截图前的动作 | 改前 | 改后 | 说明 |
+|---|---|---|---|
+| 只读 evaluate | **43.23 ms**（25/25 走满窗口，0 帧） | **0.26 ms**（25/25 命中缓存） | −99.4% |
+| 已在边界的 scroll（到底再向下 / 已在顶端再 `top`） | 42.15 ms（11–12/20 走满） | **0.22 ms**（20/20 命中） | −99.5% |
+| 改 DOM 的 evaluate | 16.14 ms | 15.38 ms | 不变 |
+| type | 15.77 ms | 15.83 ms | 不变 |
+| 合成 click（无视觉变化） | 43.09 ms | 43.17 ms | 未覆盖，仍走满 |
+| press（Shift） | 43.10 ms | 42.82 ms | 未覆盖，仍走满 |
+| 无动作（纯缓存） | 0.18 ms | 0.14 ms | 不变 |
+
+`node scripts/headless-bench.mjs --seconds 10 --readonly-eval`（新场景：snapshot + 只读 evaluate + 截图，页面全程不重绘）：
+
+| 指标 | 改前（83435f6） | 改后 |
+|---|---|---|
+| 动作/10s | 231 / 231 / 231 | 6756 / 7020 / 7576 |
+| 轮/s | 23.00–23.08 | 675.5–757.6 |
+| `screenshot` | 42.16 / 42.26 / 42.20 ms | 0.50 / 0.46 / 0.42 ms（中位 −98.9%） |
+| 每轮合计 | 43.31–43.45 ms | 1.32–1.48 ms |
+| 每动作 CPU | 13.20–14.55 ms | 1.15–1.24 ms |
+| RSS | 1095–1119 MB | 1007–1026 MB |
+
+标准场景（页面每轮都变）不回归：改前 587/592 动作、`screenshot` 15.26/14.96 ms、每轮 17.03/16.91 ms、每动作 CPU 17.34/16.55 ms；改后 583/601 动作、14.85/14.90 ms、17.14/16.65 ms、16.79/16.34 ms。
+
+**代价**：`tab.evaluate` 多两次页面快照往返。300 次只读 evaluate 的中位：改前 0.262–0.293 ms → 改后 0.616–0.826 ms（+0.35–0.53 ms/次）；`DSH_HEADLESS_VISUAL_PROBE=0` 时 0.225–0.270 ms（追踪器本身在页面里没有可测开销）。一次「只读 evaluate → 截图」省 43 ms，所以只有「截图紧跟 evaluate」才需要它；若截图从不跟随 evaluate，这 0.4ms 是纯成本——相对一次工具调用的秒级节奏可忽略。
+
+**正确性（不返回陈旧帧）**：9 项检查在改后 3/3 次探针里全为真，改前树对应的 3 项为假（它没有短路）：
+
+- 只读 evaluate → 截图字节与上一帧相同、帧计数不变、没有走满窗口；
+- 改 DOM / 页面内 `window.scrollTo` / `focus()` → 截图字节必须变化（分别由 mutation / scroll 事件 / focus 事件判定为 dirty）；
+- 页里存在 `<canvas>` 时往画布上画 → 必须等新帧（画布像素对追踪器不可见，所以有 canvas 就整条回退保守路径）；移除 canvas 后只读 evaluate 又能命中缓存；
+- 边界 scroll → 命中缓存。
+
+`node test/headless.mjs` 新增上述断言（追踪器已装、只读 evaluate 与边界 scroll 的 `visualSkips`/帧计数/字节、DOM/页面内 scroll/focus/canvas 四类新鲜性、canvas 移除后恢复；参考帧前加 150ms settle，避免一次重绘落成两帧时竞态），连跑 8 次 PASS。
+
+**边界与取舍（明确不覆盖的类）**：
+
+- **异步/间接重绘**：evaluate 里 `setTimeout`/`fetch().then`/跨源 iframe `postMessage` 等，在快照之后才画。此时截图反映「动作完成那一刻」的页面，而不是再等 40ms 后的样子；旧实现也只是 best-effort（40ms 之后的重绘同样会漏）。这是与旧行为唯一的语义差别。
+- 有 `<canvas>`、有同源 subframe 文档、`getAnimations` 不可用、快照形状不对 → 一律保守。
+- 合成 click 与 `Input.*` 系动作（press / clickAt / hover / drag）仍走满窗口：它们可能改变焦点轮廓、`:active`、真实输入状态，本轮不覆盖（下一轮候选）。
+- **为什么不用更省事的替代**（都量过，别再试）：`Page.captureScreenshot` 空闲表面 15.6 ms、有未提交重绘 45–47 ms、负载下 34.5 ms；`Page.stopScreencast`+`startScreencast` 取首帧在静态页 14.7–15.0 ms，但刚改过页面后 17.6–23 ms、连续重启时偶发 ~200 ms；`document.timeline.currentTime` 在静态页上也一直前进（见上）。所以「等一帧再 capture」「重启流取首帧」都不比 40ms 窗口稳，而且会把已改页面的截图拖慢到 30–65 ms。
+
 ## 5. 下一步（H1）
 
 1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
 2. capture 引擎与扩展共享（两套行为一致性）；
 3. 截图性能：PNG/JPEG 帧流（§4.1.1、§4.1.2）、静态页空闲保活（§4.1.3）、`clip`/`ref` 从帧缓存裁剪（§4.1.4）都已落地；整视口「页面变了」的下限仍是合成器帧间隔 ~15–16ms。本轮之后剩余的方向：
    - `clip` 的 JPEG 请求仍走 capture（driver 里没有 JPEG 解码），~45ms；如要补，需要 JPEG 帧流 + 一个能裁剪 JPEG 的路径（或让调用方接受 PNG）。
-   - 只读 evaluate 后的 40ms 重绘窗：需要可靠的「没有重绘」信号（`Page` 无 damage/sequence），暂未找到不返回陈旧帧的做法；有信号后这段可从 40ms 压到 ~1ms。
+   - ~~只读 evaluate 后的 40ms 重绘窗~~ ✅ **已落地（§4.1.7）**：页面侧视觉变更追踪器证明「没重绘」时不再推进 change marker，只读 evaluate → 截图 43.2 → 0.26 ms、边界 scroll 42.2 → 0.22 ms；有 canvas / 同源 subframe / 异步重绘时保持保守。剩余同类项：合成 click 与 `Input.*` 动作（press / clickAt / hover / drag）仍走满窗口。
    - viewer 分支每帧的 base64+磁盘写已节流（§4.1.6）：headless 落盘 15.0→10.0 帧/s、fs 同步耗时中位 −31%、node CPU −13%；桌面 host 落盘 29.7→10.4 帧/s、fs 同步耗时 −55%。
    - 冷启动剩下的 ~750ms 在 Chrome 进程启动与 CDP 端口就绪（§4.1.5），Node 侧不可控；不建议预热进程（空闲即 672MB RSS）。
 4. 启动参数在帧流路径上扫过（§4.1.3），没有净收益；`--disable-frame-rate-limit` 仍是否掉的（每动作 CPU +41%）。
@@ -491,11 +549,11 @@ DSH_HEADLESS_SHOT_STREAM_KEEPALIVE=0 node scripts/headless-bench.mjs --seconds 2
 
 | 文件 | 内容 |
 |---|---|
-| `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6） |
+| `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7） |
 | `host/host.mjs` | Chrome native messaging host：扩展 ↔ provider 的 JSON 帧中继、discovery 文件重连、viewer 帧落盘（节流，§4.1.6）与扩展热更新监听 |
 | `src/backend.js` | BackendRouter + AsyncLocalStorage + `wrapToolsForBackend`（给 39 个工具加 `backend` 参数） |
 | `index.js` | 创建 HeadlessDriver/Router，包装工具，卸载时关闭 |
-| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4）；动作上限 `ACTIONS*50`，保证 `--seconds` 跑满 |
+| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）；动作上限 `ACTIONS*50`（只读场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
 | `test/backend-router.mjs` | 路由/参数剥离/默认桌面回归 |
 | `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、viewer 帧落盘产物断言） |
 | `test/host-reconnect.mjs` | native host 持久化（provider 重启后重连）+ viewer 帧落盘/节流 trailing flush 断言（§4.1.6） |
