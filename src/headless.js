@@ -1557,7 +1557,18 @@ export class HeadlessDriver {
     if (this.tabs.size >= MAX_TABS) {
       throw error('RESOURCE_LIMIT', `headless tab limit reached (${MAX_TABS}); close a tab first`)
     }
-    const tab = { tabId, targetId, sessionId, url: url || 'about:blank', title: '', renderChangeAt: 0, shotStream: null, visualTracker: false, visualSkips: 0 }
+    const tab = {
+      tabId,
+      targetId,
+      sessionId,
+      url: url || 'about:blank',
+      title: '',
+      renderChangeAt: 0,
+      shotStream: null,
+      visualTracker: false,
+      visualSkips: 0,
+      renderChangeRetires: 0,
+    }
     this.bySession.set(sessionId, tab)
     this.consoleBuffers.set(tabId, [])
     this.tabs.set(tabId, tab)
@@ -2241,6 +2252,28 @@ export class HeadlessDriver {
     return null
   }
 
+  // A change marker is a *promise* that a paint is owed: `tab.screenshot` waits
+  // up to SHOT_STREAM_FRAME_TIMEOUT_MS for a frame composed at or after it.
+  // Two independent pieces of evidence can retire that promise once the marker
+  // is already older than the wait the driver grants: (a) the wait expired with
+  // no frame (see screenshotFromStream), and (b) a probe proved the following
+  // action paint-free. Without retirement the marker stays in the future
+  // forever, so *every* later screenshot re-pays the full window for a paint
+  // that is already known not to come — one conservative no-op could poison
+  // all screenshot latency that follows it. Lowering the marker to the newest
+  // painted frame is safe for a late paint: a frame that composes afterwards
+  // still updates `state.last` and is served by the freshness check, so only
+  // the repeated wait is dropped, never a frame that has arrived.
+  retireRenderChange(tab) {
+    const last = tab.shotStream?.last
+    const marker = tab.renderChangeAt || 0
+    if (!last || !Number.isFinite(last.composedAt)) return false
+    if (last.composedAt >= marker) return false
+    tab.renderChangeAt = last.composedAt
+    tab.renderChangeRetires = (tab.renderChangeRetires || 0) + 1
+    return true
+  }
+
   // Returns a PNG buffer for the current viewport (or for the requested `clip`
   // region), or null when no frame is available at all (caller falls back to
   // Page.captureScreenshot).
@@ -2252,7 +2285,9 @@ export class HeadlessDriver {
   // latest painted frame is returned — that is still what the page looks like,
   // and a capture would force a repaint just to show the same pixels. The wait
   // is longer for the very first frame of a new stream (Chrome has to start the
-  // capture pipeline), where there is no cached frame to fall back on.
+  // capture pipeline), where there is no cached frame to fall back on. A miss
+  // also retires the marker (see retireRenderChange): the window was granted
+  // once for that change, so screenshots issued later must not grant it again.
   //
   // JPEG + clip is the one case that does not wait for a first frame: nothing
   // is cached yet on a just-started stream, and taking the capture right away
@@ -2287,6 +2322,11 @@ export class HeadlessDriver {
         state.repaintMisses += 1
         repaintMiss = true
         frame = state.last
+        // The window has been paid for this marker and it produced no frame:
+        // retire it, otherwise this same wait is re-paid by every screenshot
+        // that follows (measured: one conservative no-op made all later shots
+        // cost ~43ms instead of ~1ms, docs/HEADLESS.md §4.1.14).
+        this.retireRenderChange(tab)
       }
     }
     if (!frame) {
@@ -2378,6 +2418,15 @@ export class HeadlessDriver {
         if (tab.skipRenderChange) {
           tab.skipRenderChange = false
           tab.visualSkips = (tab.visualSkips || 0) + 1
+          // A proven paint-free action also retires an older marker, but only
+          // once that marker is older than the repaint window the driver grants
+          // anyway: a paint requested moments ago can still be in flight, and
+          // this proof says nothing about it. Waiting out the window first means
+          // this path never shortens a wait — it only stops granting it twice
+          // (docs/HEADLESS.md §4.1.14).
+          if (Date.now() / 1000 - (tab.renderChangeAt || 0) > SHOT_STREAM_FRAME_TIMEOUT_MS / 1000) {
+            this.retireRenderChange(tab)
+          }
         } else {
           tab.renderChangeAt = Date.now() / 1000
         }
@@ -3053,6 +3102,10 @@ export class HeadlessDriver {
               // proven paint-free and therefore kept the previous frame marker.
               visualTracker: Boolean(tab.visualTracker),
               visualSkips: tab.visualSkips || 0,
+              // Markers retired after a repaint-window miss (or a proven
+              // paint-free action past the window): how often the driver
+              // stopped re-waiting for a change it already knew had no paint.
+              renderChangeRetires: tab.renderChangeRetires || 0,
               screenshotStream: stream
                 ? {
                     active: stream.active,

@@ -109,4 +109,46 @@ assert.ok(
 )
 assert.equal(clickAt.screenshotStream.repaintMisses, 0, `click-at rounds paid the repaint window: ${JSON.stringify(clickAt.screenshotStream)}`)
 
+// `--shot-chain` (docs/HEADLESS.md §4.1.14): one conservative paint-free pointer
+// move followed by three screenshots. The first screenshot has to pay the
+// repaint window (the click cannot be proven paint-free, so the marker is
+// pending), and the miss retires the marker: the next two screenshots must be
+// frame-cache hits. A driver without retirement re-pays the window on every
+// screenshot, so its miss count is three per round instead of one.
+const shotChainRun = spawnSync(
+  process.execPath,
+  [path.join(root, 'scripts', 'headless-bench.mjs'), '--seconds', '4', '--shot-chain'],
+  { cwd: root, encoding: 'utf8', timeout: 120000 },
+)
+assert.equal(shotChainRun.status, 0, `shot-chain bench exited ${shotChainRun.status}\nstdout: ${shotChainRun.stdout}\nstderr: ${shotChainRun.stderr}`)
+const shotChain = JSON.parse(shotChainRun.stdout)
+assert.equal(shotChain.shotChainMode, true)
+assert.ok(shotChain.scenario.includes('snapshot/clickAt(hover move)/screenshot x3'), `unexpected shot-chain scenario: ${shotChain.scenario}`)
+assert.equal(shotChain.shotChain.shotsPerRound, 3)
+assert.ok(
+  shotChain.shotChain.points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y)),
+  `shot-chain points missing: ${JSON.stringify(shotChain.shotChain)}`,
+)
+assert.ok(shotChain.actions >= 30, `too few shot-chain rounds: ${shotChain.actions}`)
+assert.ok(shotChain.perActionMs.clickAt > 0 && shotChain.perActionMs.screenshot > 0, `shot-chain timings missing: ${JSON.stringify(shotChain.perActionMs)}`)
+// One repaint window per round, not three: this is the retirement contract.
+assert.ok(
+  shotChain.screenshotStream.repaintMisses >= shotChain.actions - 1 &&
+    shotChain.screenshotStream.repaintMisses <= shotChain.actions + 2,
+  `chained screenshots paid the repaint window more than once per round: ${JSON.stringify({
+    repaintMisses: shotChain.screenshotStream.repaintMisses,
+    actions: shotChain.actions,
+  })}`,
+)
+// The average over the three shots is one window / three + two cache hits.
+assert.ok(
+  shotChain.perActionMs.screenshot < 20,
+  `chained screenshots still pay the repaint window: ${shotChain.perActionMs.screenshot}ms`,
+)
+// Every round left a marker behind and every miss retired it.
+assert.ok(
+  shotChain.visualRetires >= shotChain.actions,
+  `chained screenshots did not retire the change marker: ${JSON.stringify({ visualRetires: shotChain.visualRetires, actions: shotChain.actions })}`,
+)
+
 console.log('BENCH SCENARIO TEST: PASS')

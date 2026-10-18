@@ -894,7 +894,77 @@ node test/headless.mjs && node test/bench-scenario.mjs
 - 不放宽 `active === body` 的要求（焦点在普通 div 上时点击不会失焦，这是可做的方向，但要先证明「点击非可聚焦元素不动焦点」）。
 - 不跳过重复位置的那次 `mouseMoved`（指针没动，真实的鼠标也不会发事件）：这会改变事件语义——页面 DOM 变化后浏览器会在下一次移动时重算 hover，跳过就等于让 hover 永久停在旧状态。
 - 不合并三次 `Input.dispatchMouseEvent`（顺序必须保持；`mouseMoved` 单次 2.4–16.2ms 是 Chrome 侧等待，留给下一轮量）。
-- 不修「保守动作把变更标记推到未来、之后每次截图都白等 40ms」这个**先前就存在**的放大效应（探针里实测：一次被否决的无重绘点击之后，连短路点击的截图也会 miss）——第 12 轮候选。
+- 不修「保守动作把变更标记推到未来、之后每次截图都白等 40ms」这个**先前就存在**的放大效应（探针里实测：一次被否决的无重绘点击之后，连短路点击的截图也会 miss）——第 12 轮候选（已落地，见 §4.1.14）。
+
+### 4.1.14 2026-10-18 第十五轮：重绘标记的退休（Ralph 循环第 12 轮）
+
+**为什么改**：§4.1.7/§4.1.12/§4.1.13 的短路都建立在「变更标记（`tab.renderChangeAt`）由动作推进」上，但标记只会前进、不会后退：只要有一次动作无法被证明无重绘（hover 链变化、未被探针覆盖的按键、hazard 目标……），标记就停在缓存帧之后；截图等满一个窗后返回旧帧，**标记却留在未来**，于是之后*每一张*截图都继续白等同一个 40ms 窗——一次保守动作会污染它之后的所有截图延迟。第 11 轮已实测到这个放大效应（「被否决的无重绘 clickAt 之后，紧跟的短路 clickAt 截图仍 miss」），当时为不扩大改动面，bench 与测试都绕开了它。
+
+本轮先用 `/tmp` 探针把放大效应单独量清楚（同页、body 焦点、无选区；两棵树各跑 3 次，下表给中位与极差）：
+
+| 序列 | 改前 | 改后 |
+|---|---|---|
+| 一次保守的无重绘 clickAt（指针换位，hover 链变化）后连拍 4 张截图 | **41.25–43.88 ms，4 张全都 miss**（每张 `repaintMiss +1`） | 第 1 张 **43.06**（42.29–43.24）、之后 **0.66 / 0.43 / 0.45**（0.20–1.48）；只有第 1 张 miss |
+| 保守 clickAt → 等 150ms → 只读 evaluate（干净判定）→ 截图 | **43.13**（41.85–43.16）ms，miss +1 | **0.49**（0.30–1.35）ms，miss +0 |
+| 对照：真实重绘（DOM 写入）后连拍 2 张 | 10.63（10.16–11.24）/ 1.57（1.04–1.69）ms | 10.14（9.70–22.08）/ 0.94（0.77–1.14）ms（同量级；这条路径本轮不动） |
+
+**改了什么**（`src/headless.js`）：
+
+- 新增 `retireRenderChange(tab)`：把标记降到**当前已画出**的最新帧的 `composedAt`（只在「标记比缓存帧新」时生效），并累加 `renderChangeRetires`（`tab.debug_diag` 与 bench 报告里可见）。语义：标记是一张「欠一次绘制」的欠条，欠条只被授予一次 40ms 窗；过期没有帧到就作废，之后的截图不再为它付第二次。
+- 两个退休点，都必须满足「窗口已经过完」：
+  1. **截图 miss**：`screenshotFromStream` 等满 `SHOT_STREAM_FRAME_TIMEOUT_MS` 仍没有帧 → 返回旧帧的同时退休标记（本轮的主修复）；
+  2. **干净判定**：`request()` 消费 `skipRenderChange` 时，若标记已经比窗口更老（`now - marker > 40ms`）→ 退休。这样「保守动作 → 只读/短路动作 → 截图」也不必再白等一次；窗口还没过完时**不**退（可能真有绘制在路上），所以这条路径从不缩短已经授予的等待，只是不再重复授予。
+- 为什么对迟到的绘制安全：`state.last` 由 screencast 帧持续更新，晚到的帧只要 `composedAt >= 已退休的标记` 仍会被新鲜性检查服务——退休丢掉的只是「重复等待」，不是「已经到达的帧」。代价：若某次真实绘制的合成时间超过 40ms，第一次 miss 之后、该帧到达之前的那张截图可能拿到旧的（像素与 miss 自己返回的相同）。这是「窗口过期即视为没画」这条既有断言的直接延伸。
+- 追踪器/探针语义未变：没有新增页面侧字段，也没有放宽任何短路条件。
+
+**A/B（同机 3+3 交替，`--seconds 10 --shot-chain`，load 5.16–6.73；旧侧 = `git archive HEAD` 旧驱动 + 同一份新 bench）**
+
+新场景 `--shot-chain`：每轮 = 真实 `clickAt` 在两个普通 div 之间交替（指针移动 → hover 链变化 → 探针必须保守）+ **3 张截图**。
+
+| 指标 | 改前 | 改后 |
+|---|---|---|
+| 每轮 | **132.04–132.64 ms** | **50.45–51.21 ms**（−61.6%） |
+| 截图（每张均摊） | 43.13–43.24 ms | **14.79–15.19 ms**（1 张付窗 + 2 张 ~0.3ms） |
+| 轮/秒 | 7.54–7.57 | **19.52–19.81**（2.6×） |
+| repaint 超时 | **228 = 3×76**（每轮 3 次） | **196/199/197 = 1× 轮数**（每轮 1 次） |
+| `renderChangeRetires` | 0 | **196/199/197**（＝每轮一次） |
+| 动作数/10s | 76/76/76 | 196/199/197 |
+
+改前每轮 132ms = 快照 ~0.9 + clickAt ~2 + 截图 3×43.2；改后 50.8ms = 快照 ~0.7 + clickAt ~5 + 截图 43 + 2×0.3。`clickAt` 桶两边的差（1.9–2.1 → 4.8–5.8ms）是队列效应、不是动作变慢：`/tmp` 单独量 40 次换位点击，两棵树的中位都 16.5–16.8ms（旧 16.52/16.79、新 16.69/16.75）；旧侧的 clickAt 恰好夹在两次 40ms 空闲之间。
+
+**不回归**：
+
+- `--click-at` 3 对（同一份 bench，warm-up 未改）：每轮 16.60/16.73/16.62 → **16.60/16.61/16.66 ms**，截图 0.93/0.66/0.64 → 1.01/0.83/1.06 ms，`repaintMisses` 都 0，`visualSkips` 600–604 对 602–604。第 11 轮的 16.68–16.76ms 基线保持。
+- `--mixed` 10 对（load 4.0–10.9，交替）：成对差 −1.14/−0.78/−0.51/+0.09/+0.23/+0.53/+0.58/+0.61/+0.87/+1.03 ms，中位 **+0.38**、均值 +0.15；`repaintMisses` 10 对都 3、`visualSkips` 都 18、`retires` 都 3。与第 11 轮 mixed 的成对中位 +0.20ms、极差 ±0.86 同带；mixed 每轮只有一张截图，本轮改的是「同一标记的第二次及以后」，这里本就不该有系统性变化。
+
+**正确性证据**：
+
+- 正对照（变异体各自跑真测试，`/tmp` 里复制新树后只改一处）：
+  - 去掉两处 `retireRenderChange` 调用 → FAIL：`a repaint-window miss did not retire the change marker`（`0 !== 1`，1 次）；
+  - 只去掉 miss 那一处 → FAIL 在同一条（3/3 次）；
+  - 保留计数器但**不降标记** → FAIL：`the retired change marker made the next screenshot pay the repaint window again (amplification)`（3/3）——证明「放大效应」那条断言本身有效，不是被计数器带过的；
+  - 只去掉「干净判定」那一处 → FAIL：`a proven paint-free action did not retire the stale change marker` / `a proven paint-free action past the repaint window still waited for a frame`（2/3 次，另一次先撞上既有环境 flake）。
+- `test/headless.mjs` 新增 11 处断言（同一段落，并把视口内检查扩到 `#out`）：保守指针移动后第 1 张截图必须恰好 miss 一次且 `renderChangeRetires +1`；第 2 张必须命中（`repaintMisses` 不变、<15ms、字节等于 retire 后的缓存帧）；「保守动作 → 等过窗 → 只读 evaluate → 截图」必须 `repaintMisses` 不变、`retires` 增加、<15ms；退休之后的一次 DOM 写入仍必须产生**新帧**（不能因为标记被降过就返回旧帧）；随后同点重复点击的缓存命中/字节相等断言全部保持。所有字节比较前先 `stableFrameBytes()`（连续两张截图相同）。
+- `test/bench-scenario.mjs` 新增 `--shot-chain` 契约：`repaintMisses ∈ [actions-1, actions+2]`（改前是 3×）、`perActionMs.screenshot < 20`、`visualRetires >= actions`；同一份测试跑旧驱动 → FAIL（`{"repaintMisses":114,"actions":38}`，正好 3×）。
+- `node test/headless.mjs` 改完后连跑 5 次：4 次 PASS、1 次停在既有的 key-handler 新鲜性 flake（见下）；`node test/bench-scenario.mjs` PASS；`node test/operation-log.mjs` 13 checks、`node test/extension-logic.mjs` PASS、`npm test` exit 0。
+
+**已知环境噪声**：本机 load 4.5–6.7 时，既有的「必须是新帧」断言（`a DOM-mutating key handler must not be stale` / `canvas draw must not be stale`）仍偶发失败。本轮用 `press → 截图` 的独立探针在同负载下对比两棵树：旧树 **6/160** 次 miss（3.75%）、新树 **3/160**（1.9%），中位延迟同为 ~18ms——**不是本轮引入的**；撞上就重跑，不要放宽断言。
+
+**复跑**：
+
+```bash
+cd /Users/taishuo/projects/dsh-chrome
+node scripts/headless-bench.mjs --seconds 10 --shot-chain   # 每轮 ~50.8ms、repaintMisses ≈ 轮数、retires ≈ 轮数
+node scripts/headless-bench.mjs --seconds 10 --mixed        # 不回归
+node scripts/headless-bench.mjs --seconds 10 --click-at     # 不回归（16.6ms/轮）
+node test/headless.mjs && node test/bench-scenario.mjs
+```
+
+**本轮没做**：
+
+- 不用「miss 后第二次等待减半」之类的重试窗：仍然会周期性白等，且无法区分「慢绘制」与「根本不会画」；退休 + 新帧到达即服务更简单，也更符合既有「窗口过期 = 没画」的断言。
+- 不让干净判定**无条件**退休（不检查标记是否已过窗）：那会把「刚刚发出、可能还在路上的绘制」的授予窗一起取消，等于缩短保守等待。
+- 没有处理 `drag`（28.5ms/次的同类缺口）与 `type` 同值重输，见 `docs/PERF-LOOP.md` §10 的下一步。
 
 ## 5. 下一步（H1）
 
@@ -913,12 +983,12 @@ node test/headless.mjs && node test/bench-scenario.mjs
 
 | 文件 | 内容 |
 |---|---|
-| `src/headless.js` | headless Chromium 启动（`--no-startup-window`：只有 tab 才建窗口，§4.1.10）、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7）、合成 click/hover 的 hazard 判定与 change/toggle 计数（§4.1.8）、JPEG `clip`/`ref` 的 isolated-world 页面裁剪与 screencast 帧几何过滤（§4.1.9）、键盘 press 的重绘窗探针与键位策略（§4.1.12）、真实鼠标 clickAt 的 hover 链/命中 hazard 判定（§4.1.13） |
+| `src/headless.js` | headless Chromium 启动（`--no-startup-window`：只有 tab 才建窗口，§4.1.10）、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7）、合成 click/hover 的 hazard 判定与 change/toggle 计数（§4.1.8）、JPEG `clip`/`ref` 的 isolated-world 页面裁剪与 screencast 帧几何过滤（§4.1.9）、键盘 press 的重绘窗探针与键位策略（§4.1.12）、真实鼠标 clickAt 的 hover 链/命中 hazard 判定（§4.1.13）、重绘标记的退休（miss 后与过窗后的干净判定，`renderChangeRetires`，§4.1.14） |
 | `host/host.mjs` | Chrome native messaging host：扩展 ↔ provider 的 JSON 帧中继、discovery 文件重连、viewer 帧落盘（节流，§4.1.6）与扩展热更新监听 |
 | `src/backend.js` | BackendRouter + AsyncLocalStorage + `wrapToolsForBackend`（给 39 个工具加 `backend` 参数） |
 | `index.js` | 创建 HeadlessDriver/Router，包装工具，卸载时关闭 |
-| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4，PNG 驱动裁剪 / JPEG 页面裁剪 §4.1.9）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）、`--noop-click` 普通 click + 截图场景（§4.1.8）、`--mixed` 真实节奏混合场景（§4.1.11）、`--press` 无效果按键 + 截图场景（§4.1.12）、`--click-at` 同点重复点击 + 截图场景（§4.1.13）、`--idle-seconds` / `--idle-settle-seconds` 空闲采样（§4.1.11）；输出里带 `screenshotStream` 计数器（served/cropped/jpegCropped/fallbacks）、`snapshot` 响应字节、mixed 轮转/节奏统计、`idle` 块；动作上限 `ACTIONS*50`（短路场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
+| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4，PNG 驱动裁剪 / JPEG 页面裁剪 §4.1.9）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）、`--noop-click` 普通 click + 截图场景（§4.1.8）、`--mixed` 真实节奏混合场景（§4.1.11）、`--press` 无效果按键 + 截图场景（§4.1.12）、`--click-at` 同点重复点击 + 截图场景（§4.1.13）、`--shot-chain` 保守指针移动 + 3 张截图场景（§4.1.14）、`--idle-seconds` / `--idle-settle-seconds` 空闲采样（§4.1.11）；输出里带 `screenshotStream` 计数器（served/cropped/jpegCropped/fallbacks）、`snapshot` 响应字节、mixed 轮转/节奏统计、`idle` 块、`visualSkips`/`visualRetires`；动作上限 `ACTIONS*50`（短路场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
 | `test/backend-router.mjs` | 路由/参数剥离/默认桌面回归 |
-| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、JPEG clip/ref 的 SOI/EOI 与像素尺寸、同页字节复用与改页新鲜性、主世界覆盖 `toDataURL` 后 isolated-world 裁剪仍正确、viewer 帧落盘产物断言、只读 evaluate/边界 scroll/合成 click/hover/无可效果按键的视觉探针短路与陈旧帧断言，含 editable/选区/open+closed shadow root/modal dialog/keydown handler 的反例；真实鼠标 clickAt 的同点短路与按钮/链接/input/tabindex/双击/指针移动/聚焦/选区/hover 改样式反例，§4.1.13） |
-| `test/bench-scenario.mjs` | bench 的 `--mixed` / `--idle-seconds` / `--press` 契约：真起 Chrome 跑 5s 混合场景 + 1s 空闲，断言轮转覆盖五种动作、确定性 150–400ms 节奏、`snapshot` 字节与既有指标字段都在、idle 窗口真的等满（§4.1.11）；再跑 4s `--press`，断言每轮都短路（`visualSkips === actions + 1`）、`repaintMisses === 0`、截图桶 <5ms（§4.1.12）；再跑 4s `--click-at`，断言 `clickAtMode`/点位、每轮都短路、`repaintMisses === 0`、截图桶 <5ms（§4.1.13） |
+| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、JPEG clip/ref 的 SOI/EOI 与像素尺寸、同页字节复用与改页新鲜性、主世界覆盖 `toDataURL` 后 isolated-world 裁剪仍正确、viewer 帧落盘产物断言、只读 evaluate/边界 scroll/合成 click/hover/无可效果按键的视觉探针短路与陈旧帧断言，含 editable/选区/open+closed shadow root/modal dialog/keydown handler 的反例；真实鼠标 clickAt 的同点短路与按钮/链接/input/tabindex/双击/指针移动/聚焦/选区/hover 改样式反例，§4.1.13；重绘标记退休：miss 一次后第 2 张截图必须命中、过窗后的干净判定必须退休、退休后 DOM 写入仍是新帧，§4.1.14) |
+| `test/bench-scenario.mjs` | bench 的 `--mixed` / `--idle-seconds` / `--press` 契约：真起 Chrome 跑 5s 混合场景 + 1s 空闲，断言轮转覆盖五种动作、确定性 150–400ms 节奏、`snapshot` 字节与既有指标字段都在、idle 窗口真的等满（§4.1.11）；再跑 4s `--press`，断言每轮都短路（`visualSkips === actions + 1`）、`repaintMisses === 0`、截图桶 <5ms（§4.1.12）；再跑 4s `--click-at`，断言 `clickAtMode`/点位、每轮都短路、`repaintMisses === 0`、截图桶 <5ms（§4.1.13）；再跑 4s `--shot-chain`，断言每轮 3 张截图只付 1 个重绘窗（`repaintMisses ∈ [actions-1, actions+2]`、`visualRetires >= actions`、截图桶 <20ms）（§4.1.14） |
 | `test/host-reconnect.mjs` | native host 持久化（provider 重启后重连）+ viewer 帧落盘/节流 trailing flush 断言（§4.1.6） |

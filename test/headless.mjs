@@ -720,14 +720,15 @@ try {
       })
     ).value
   const noopCentre = await rectOf('#noop')
+  const outCentre = await rectOf('#out')
   const buttonCentre = await rectOf('#go')
   const linkCentre = await rectOf('#download')
   const fieldCentre = await rectOf('#name')
   const tabindexCentre = await rectOf('#drag-src')
   const hoverStyleCentre = await rectOf('#hover-probe')
   assert.ok(
-    noopCentre.inside && buttonCentre.inside && linkCentre.inside && fieldCentre.inside && tabindexCentre.inside && hoverStyleCentre.inside,
-    `clickAt probe targets left the viewport: ${JSON.stringify({ noopCentre, buttonCentre, linkCentre, fieldCentre, tabindexCentre, hoverStyleCentre })}`,
+    noopCentre.inside && outCentre.inside && buttonCentre.inside && linkCentre.inside && fieldCentre.inside && tabindexCentre.inside && hoverStyleCentre.inside,
+    `clickAt probe targets left the viewport: ${JSON.stringify({ noopCentre, outCentre, buttonCentre, linkCentre, fieldCentre, tabindexCentre, hoverStyleCentre })}`,
   )
   // A pending compose from an earlier action can land at any time; wait until
   // two consecutive screenshots agree, so a byte comparison measures the click
@@ -743,18 +744,82 @@ try {
     throw new Error('the page never settled: consecutive screenshots keep changing')
   }
   // Parking the pointer on #noop changes the hover chain, so that click keeps
-  // the conservative wait.
+  // the conservative wait. Settle the earlier paints first: a frame that is
+  // still in flight when the click lands would satisfy its marker, and this
+  // block needs the marker to be genuinely pending.
+  const parkBaseBytes = await stableFrameBytes()
   const clickAtParkBase = await tabDiag()
   await driver.request('tab.clickAt', { owner: 's1', x: noopCentre.x, y: noopCentre.y })
   const clickAtParkDiag = await tabDiag()
   assert.equal(clickAtParkDiag.visualSkips, clickAtParkBase.visualSkips, 'the click that moves the pointer must keep the conservative wait')
-  // A conservative click bumps the change marker without painting; one DOM
-  // write plus a screenshot settles the marker, so the cache-hit assertions
-  // below compare against a valid cached frame instead of inheriting a pending
-  // repaint window.
-  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("out").textContent = "clickat-settled"' })
+  // That conservative click bumped the change marker without painting, so the
+  // next screenshot has to pay the repaint window — but only once. The miss
+  // retires the marker (docs/HEADLESS.md §4.1.14); the screenshots after it must
+  // reuse the frame the miss served instead of paying the same window again.
+  const parkMissBefore = clickAtParkBase.screenshotStream.repaintMisses
+  const parkRetireBefore = clickAtParkBase.renderChangeRetires
+  assert.ok(
+    Number.isFinite(parkRetireBefore),
+    `the driver does not report retired change markers: ${JSON.stringify(clickAtParkBase)}`,
+  )
   await driver.request('tab.screenshot', { owner: 's1' })
+  const parkShot1Diag = await tabDiag()
+  assert.equal(
+    parkShot1Diag.screenshotStream.repaintMisses,
+    parkMissBefore + 1,
+    'the conservative paint-free click did not pay the repaint window once',
+  )
+  assert.equal(parkShot1Diag.renderChangeRetires, parkRetireBefore + 1, 'a repaint-window miss did not retire the change marker')
+  const parkShot2StartedAt = performance.now()
+  const parkShot2 = await driver.request('tab.screenshot', { owner: 's1' })
+  const parkShot2Ms = performance.now() - parkShot2StartedAt
+  const parkShot2Diag = await tabDiag()
+  assert.equal(
+    parkShot2Diag.screenshotStream.repaintMisses,
+    parkShot1Diag.screenshotStream.repaintMisses,
+    'the retired change marker made the next screenshot pay the repaint window again (amplification)',
+  )
+  assert.ok(parkShot2Ms < 15, `a screenshot after a retired marker paid the repaint window (${parkShot2Ms.toFixed(1)}ms)`)
+  assert.deepEqual(fs.readFileSync(parkShot2.path), parkBaseBytes, 'a screenshot after a retired marker returned a different frame')
+  // A proven paint-free action retires an older marker too, once that marker is
+  // older than the window the driver grants anyway: move the pointer onto
+  // #out with a conservative click (new pending marker), wait past the window,
+  // then run a read-only evaluate. Its clean verdict must let the screenshot
+  // hit the cache instead of waiting for a frame the marker cannot produce.
+  await driver.request('tab.clickAt', { owner: 's1', x: outCentre.x, y: outCentre.y })
   await settle()
+  const cleanRetireBase = await tabDiag()
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("out").textContent' })
+  const cleanShotStartedAt = performance.now()
+  const cleanShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const cleanShotMs = performance.now() - cleanShotStartedAt
+  const cleanShotDiag = await tabDiag()
+  assert.equal(
+    cleanShotDiag.screenshotStream.repaintMisses,
+    cleanRetireBase.screenshotStream.repaintMisses,
+    'a proven paint-free action past the repaint window still waited for a frame',
+  )
+  assert.ok(
+    cleanShotDiag.renderChangeRetires > cleanRetireBase.renderChangeRetires,
+    'a proven paint-free action did not retire the stale change marker',
+  )
+  assert.ok(cleanShotMs < 15, `the screenshot after a clean action paid the repaint window (${cleanShotMs.toFixed(1)}ms)`)
+  assert.ok(fs.readFileSync(cleanShot.path).length > 128, 'the screenshot after a clean action returned no frame')
+  // A DOM mutation after a retirement still owns the marker: the screenshot
+  // must wait for and return the new paint, not the retired frame.
+  const retiredFrameBytes = fs.readFileSync(cleanShot.path)
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("out").textContent = "post-retire"' })
+  const afterRetireMutationShot = await driver.request('tab.screenshot', { owner: 's1' })
+  assert.notDeepEqual(
+    fs.readFileSync(afterRetireMutationShot.path),
+    retiredFrameBytes,
+    'a DOM mutation after a marker retirement was served stale',
+  )
+  // Back to #noop for the cache-hit assertions below: that pointer move is
+  // conservative again, so one screenshot pays the window and retires it.
+  await driver.request('tab.clickAt', { owner: 's1', x: noopCentre.x, y: noopCentre.y })
+  await settle()
+  await driver.request('tab.screenshot', { owner: 's1' })
   const clickAtBaseBytes = await stableFrameBytes()
   const clickAtBaseDiag = await tabDiag()
   const clickAtStartedAt = performance.now()

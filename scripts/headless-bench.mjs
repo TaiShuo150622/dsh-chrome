@@ -22,7 +22,7 @@
  *                                   [--shot-format png|jpeg] [--shot-quality 60]
  *                                   [--no-optimize] [--gap-ms 0] [--static]
  *                                   [--readonly-eval] [--noop-click] [--press]
- *                                   [--click-at]
+ *                                   [--click-at] [--shot-chain]
  *                                   [--mixed]
  *                                   [--idle-seconds 0] [--idle-settle-seconds 0]
  *
@@ -60,8 +60,18 @@
  * (docs/HEADLESS.md §4.1.13; the hazards that keep the conservative wait —
  * hover-chain moves, focus, selection, buttons/links/form controls — are
  * covered by test/headless.mjs). The report's `visualSkips` counts the actions
- * proven paint-free, so a run where the shortcut did not fire is visible. The
- * action cap is
+ * proven paint-free, so a run where the shortcut did not fire is visible.
+ * `--shot-chain` is the change-marker scenario (docs/HEADLESS.md §4.1.14): one
+ * conservative paint-free action followed by THREE screenshots per round. The
+ * action is a real `tab.clickAt` alternating between two plain divs, which
+ * moves the pointer and changes the CSS `:hover` chain — the one paint source
+ * no tracker counter records — so the probe keeps the conservative wait even
+ * though this page paints nothing. The first screenshot then has to wait the
+ * repaint window; the two after it must reuse the frame the first one served,
+ * so a driver that does not retire the change marker pays the window three
+ * times per round instead of once. The report's `screenshotStream.repaintMisses`
+ * is the contract: about one per round after the fix, about three before it.
+ * The action cap is
  * ACTIONS*50 (ACTIONS*2000 for the shortcut scenarios) so the default 10s run
  * is time-bound rather than cap-bound.
  *
@@ -143,6 +153,17 @@ const CLICK_AT = hasFlag('--click-at')
 // Set after the page loads: the `#noop` div centre, i.e. a target with no
 // handler, no focusability and no UA default action.
 let clickAtPoint = null
+// Change-marker scenario (docs/HEADLESS.md §4.1.14): a conservative paint-free
+// pointer move followed by three screenshots per round. Alternating the click
+// between two plain divs changes the `:hover` chain on every round, so the
+// clickAt probe cannot prove the round paint-free (that is the point: it leaves
+// a change marker behind), while the page still has nothing to paint. The first
+// screenshot pays the repaint window once; the next two must reuse its frame
+// because the marker was retired on the miss. Without retirement every
+// screenshot in the chain re-pays the window.
+const SHOT_CHAIN = hasFlag('--shot-chain')
+const SHOT_CHAIN_SHOTS = 3
+let shotChainPoints = null
 // Element/region screenshot scenarios. Clip coordinates are CSS px like the
 // `clip` tool parameter; ref mode uses the input control from the same snapshot
 // the round already takes, so it measures ref resolution + crop end to end.
@@ -315,11 +336,23 @@ try {
     // without painting, and the marker stays unsatisfied until something does
     // paint. One DOM write + screenshot settles the marker so the measured
     // rounds start from a valid cached frame instead of inheriting a pending
-    // repaint window (the "a conservative no-op poisons the next screenshot"
-    // behaviour is pre-existing and unrelated to the pointer shortcut).
+    // repaint window. A miss now retires that marker as well (docs/HEADLESS.md
+    // §4.1.14), but the write keeps this warm-up independent of the retirement
+    // path and identical to the round-11 baseline.
     await driver.request('tab.clickAt', { owner: 'bench', x: clickAtPoint.x, y: clickAtPoint.y })
     await driver.request('tab.evaluate', { owner: 'bench', expression: 'document.getElementById("out").textContent = "settled"' })
     await driver.request('tab.screenshot', { owner: 'bench' })
+  }
+  if (SHOT_CHAIN) {
+    // Both points are plain, handler-free divs; alternating between them is what
+    // makes every round move the pointer (and therefore keep the conservative
+    // wait) while the page still paints nothing.
+    const rects = await driver.request('tab.evaluate', {
+      owner: 'bench',
+      expression:
+        '(() => { const box = (id) => { const b = document.getElementById(id).getBoundingClientRect(); return { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) } }; return { noop: box("noop"), out: box("out") } })()',
+    })
+    shotChainPoints = [rects?.value?.noop ?? rects?.noop, rects?.value?.out ?? rects?.out]
   }
   const runRound = async (timer, index, measured) => {
     const timed = timer ? (kind, fn) => timer.time(kind, fn) : (kind, fn) => fn()
@@ -355,16 +388,25 @@ try {
       await timed('press', () => driver.request('tab.press', { owner: 'bench', key }))
     } else if (CLICK_AT) {
       await timed('clickAt', () => driver.request('tab.clickAt', { owner: 'bench', x: clickAtPoint.x, y: clickAtPoint.y }))
+    } else if (SHOT_CHAIN) {
+      // Move the pointer to the other plain div: the hover chain changes, so the
+      // click keeps the conservative wait even though nothing paints.
+      const point = shotChainPoints[((index % 2) + 2) % 2]
+      await timed('clickAt', () => driver.request('tab.clickAt', { owner: 'bench', x: point.x, y: point.y }))
     } else if (input && !STATIC) {
       await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${index}`, replace: true }))
     }
     const params = SHOT_REF && input ? { ...shotParams, ref: input.ref } : shotParams
-    await timed('screenshot', () => driver.request('tab.screenshot', params))
+    // The chained scenario takes SHOT_CHAIN_SHOTS screenshots back to back to
+    // measure the same change marker more than once (docs/HEADLESS.md §4.1.14).
+    for (let repeat = 0; repeat < (SHOT_CHAIN ? SHOT_CHAIN_SHOTS : 1); repeat += 1) {
+      await timed('screenshot', () => driver.request('tab.screenshot', params))
+    }
     // Ref mode keeps the element in view: it scrolls less than the input's
     // viewport offset, otherwise half the rounds would fall back to capture
     // because the element left the viewport (the honest off-screen case, but
     // not what this scenario is measuring).
-    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK && !PRESS && !CLICK_AT) {
+    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK && !PRESS && !CLICK_AT && !SHOT_CHAIN) {
       await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: SHOT_REF ? 60 : 200 }))
     }
   }
@@ -381,10 +423,10 @@ try {
   // Hard cap so a stuck fast path cannot loop forever; high enough that the
   // default 10s run is time-bound (the screenshot frame stream made 58+ rounds
   // per second possible, which used to hit the old ACTIONS*20=400 cap early).
-  // The read-only evaluate, no-op click and pointer scenarios are orders of
-  // magnitude cheaper per round, so they need a much higher cap to stay
-  // time-bound.
-  const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK || PRESS || CLICK_AT ? 2000 : 50)
+  // The read-only evaluate, no-op click, pointer and chained-screenshot
+  // scenarios are orders of magnitude cheaper per round, so they need a much
+  // higher cap to stay time-bound.
+  const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK || PRESS || CLICK_AT || SHOT_CHAIN ? 2000 : 50)
   while (Date.now() < until && actions < ACTION_CAP) {
     await runRound(timer, actions, true)
     actions += 1
@@ -418,6 +460,10 @@ try {
   // idle window so frames produced during idle cannot leak into active numbers.
   const streamDiag = shotStreamDiag()
   const visualSkips = [...driver.tabs.values()].reduce((sum, tab) => sum + (tab.visualSkips || 0), 0)
+  // Retired change markers (docs/HEADLESS.md §4.1.14): how often the driver
+  // stopped re-waiting for a paint it already knew was not coming, either after
+  // the repaint window expired or after a proven paint-free action.
+  const visualRetires = [...driver.tabs.values()].reduce((sum, tab) => sum + (tab.renderChangeRetires || 0), 0)
   // Optional idle window: the browser is left exactly as the last round left it
   // (the input may keep focus and blink a caret), which is the honest "no tool
   // call in flight" state for a user who is reading the result.
@@ -460,15 +506,17 @@ try {
           : `headless active: ${actions} ${SHOT_FORMAT} ${
               NOOP_CLICK
                 ? 'snapshot/click(noop div)/screenshot (page never repaints)'
-                : CLICK_AT
-                  ? 'snapshot/clickAt(noop div center)/screenshot (pointer rests there, page never repaints)'
-                  : PRESS
-                    ? 'snapshot/press(Escape,k)/screenshot (no editable focus, page never repaints)'
-                    : READONLY_EVAL
-                      ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)'
-                      : STATIC
-                      ? 'snapshot/screenshot (static page)'
-                      : 'snapshot/type/screenshot/scroll'
+                : SHOT_CHAIN
+                  ? `snapshot/clickAt(hover move)/screenshot x${SHOT_CHAIN_SHOTS} (page never repaints)`
+                  : CLICK_AT
+                    ? 'snapshot/clickAt(noop div center)/screenshot (pointer rests there, page never repaints)'
+                    : PRESS
+                      ? 'snapshot/press(Escape,k)/screenshot (no editable focus, page never repaints)'
+                      : READONLY_EVAL
+                        ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)'
+                        : STATIC
+                          ? 'snapshot/screenshot (static page)'
+                          : 'snapshot/type/screenshot/scroll'
             } rounds${SHOT_MODE === 'viewport' ? '' : ` (${SHOT_MODE} screenshot)`}`,
         elapsedSeconds: round(elapsed, 1),
         // The effective inter-round gap: the fixed `--gap-ms` value, or the
@@ -480,6 +528,10 @@ try {
         pressMode: PRESS,
         clickAtMode: CLICK_AT,
         ...(CLICK_AT && clickAtPoint ? { clickAtPoint } : {}),
+        shotChainMode: SHOT_CHAIN,
+        ...(SHOT_CHAIN && shotChainPoints
+          ? { shotChain: { shotsPerRound: SHOT_CHAIN_SHOTS, points: shotChainPoints } }
+          : {}),
         mixedMode: MIXED,
         shotMode: SHOT_MODE,
         ...(SHOT_CLIP ? { shotClip: SHOT_CLIP } : {}),
@@ -501,6 +553,11 @@ try {
         // paint-free and kept the previous frame marker. The press scenario's
         // whole point is that this equals the round count.
         visualSkips,
+        // Retirement coverage: markers lowered after the repaint window expired
+        // with no paint, so later screenshots stopped paying for them. The
+        // chained-screenshot scenario's whole point is that this equals the
+        // round count.
+        visualRetires,
         ...(PRESS ? { press: { keys: pressStats.keys } } : {}),
         ...(MIXED
           ? {
