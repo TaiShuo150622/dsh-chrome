@@ -11,6 +11,24 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.76] - 2026-10-17
+
+### Added（批次 D3：切页 pause / follow）
+
+- 扩展监听 `tabs.onActivated`：会话标签曾被激活、用户切到别的 tab 时置 `paused`（记录 pausedUrl）；回到会话标签或 `chrome_tabs {op:"focus"}` / `claim` 自动清除
+- 11 个变更动作（goto/click/clickAt/type/press/scroll/select/hover/drag/upload/history）在 paused 时返回 `USER_SWITCHED`，不静默作用到其他页面；只读动作不受影响
+- 新工具 `chrome_resume`（工具面 35→36）
+
+## [0.1.75] - 2026-10-17
+
+### Added（批次 D2：元素拾取）
+
+- 新工具 `chrome_pick`（工具面 34→35）：进入拾取模式（覆盖层 + 高亮框 + Esc 取消），用户点击元素后返回 `ref/selector/text/tag/box`，ref 可直接用于 click/type
+- 扩展 `tab.pick_start/pick_status/pick_cancel`；provider 轮询状态（默认 60s），超时 `PICK_TIMEOUT`、取消 `PICK_CANCELED`
+- extension-logic 覆盖 pick 三个入口分发；p2 覆盖成功返回 ref 与 cancel 路径
+
+> 说明：这两版在桌面 Chrome 断连期间落地（自动重载竞态），pick 的"真实用户点击"与 pause 的"真实切页"只做了单元验证，真机验证待扩展重连后补。
+
 ## [0.1.74] - 2026-10-17
 
 ### Added（批次 D1：站点信任 + 持久审批 + 审计）

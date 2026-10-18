@@ -74,6 +74,10 @@ host.stdout.on(
       'tab.upload': { ok: true, ref: 5, files: 1 },
       'browser.downloads': { items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z' }] },
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
+      'tab.resume': { ok: true, tabId: 7 },
+      'tab.pick_start': { started: true, alreadyActive: false, tabId: 7 },
+      'tab.pick_status': { available: true, active: false, done: true, canceled: false, result: { ref: 3, selector: '#greet', text: 'Greet', tag: 'button', box: [1, 2, 3, 4] } },
+      'tab.pick_cancel': { ok: true, wasActive: false },
       'tab.capture_start': { captureId: 'cap-1', tabId: 7, startedAt: '2026-10-17T10:00:00.000Z', active: true, maxEntries: 300, resourceTypes: ['xhr', 'fetch', 'document'] },
       'tab.capture_stop': { captureId: 'cap-1', tabId: 7, startedAt: '2026-10-17T10:00:00.000Z', endedAt: '2026-10-17T10:00:12.000Z', durationMs: 12000, requests: 1, dropped: 0, bodiesDropped: 0, active: false, endedReason: 'stopped' },
       'tab.capture_requests': { available: true, lost: false, active: true, captureId: 'cap-1', tabId: 7, entries: [{ id: 'r1', method: 'POST', url: 'https://api.test/x?access_token=«redacted»', status: 200, mimeType: 'application/json', resourceType: 'Fetch', durationMs: 5, requestBody: '{"token":"«redacted»"}', responseBody: '{"token":"«redacted»"}', redacted: true }], total: 1, truncated: false, dropped: 0, bodiesDropped: 0 },
@@ -119,7 +123,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('thirty-four tools registered', tools.length === 34, tools.map((t) => t.name).join(', '))
+check('thirty-six tools registered', tools.length === 36, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -229,6 +233,20 @@ check('network status is returned', networkValue.entries?.[0]?.status === 200)
 check('chrome_network executes', networkValue.entries?.[0]?.url === 'https://example.com/a.js')
 check('network filter reaches the extension', requests.at(-1)?.params?.filter === 'a.js')
 
+// D3: chrome_resume dispatches to the extension
+const resumeValue = await byName.chrome_resume.execute({}, exec())
+check('chrome_resume resumes the session', resumeValue?.ok === true && resumeValue?.tabId === 7)
+check('resume reaches the extension', requests.at(-1)?.method === 'tab.resume')
+
+// D2: chrome_pick returns a usable ref and can be canceled
+const pickValue = await byName.chrome_pick.execute({ timeoutMs: 3000 }, exec())
+check('chrome_pick returns ref/selector/text', pickValue?.ref === 3 && pickValue?.selector === '#greet' && pickValue?.text === 'Greet')
+check('chrome_pick starts pick mode in the extension', requests.some((request) => request.method === 'tab.pick_start'))
+
+const cancelValue = await byName.chrome_pick.execute({ cancel: true }, exec())
+check('chrome_pick cancel returns canceled', cancelValue?.canceled === true)
+check('chrome_pick cancel reaches the extension', requests.at(-1)?.method === 'tab.pick_cancel')
+
 // D1: site policy allow/block + audit
 const policyDir = path.join(home, 'cache', 'dsh-chrome')
 await fsp.mkdir(policyDir, { recursive: true })
@@ -337,7 +355,7 @@ const allowTools = evalTools(
   { ask: async () => ({ answers: [{ id: 'confirm', selected: ['允许一次'] }] }) },
 )
 const allowByName = Object.fromEntries(allowTools.map((definition) => [definition.name, definition]))
-check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 35 && Boolean(allowByName.chrome_evaluate))
+check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 37 && Boolean(allowByName.chrome_evaluate))
 const evalValue = await allowByName.chrome_evaluate.execute({ expression: '1 + 1' }, exec())
 check('evaluate returns the CDP value', evalValue?.value === 2 && evalValue?.type === 'number')
 check('evaluate params reach the extension', requests.at(-1)?.method === 'tab.evaluate' && requests.at(-1)?.params?.expression === '1 + 1')

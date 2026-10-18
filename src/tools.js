@@ -1287,6 +1287,84 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   })
 
+  // ---------------------------------------------------------- 4h. resume
+  list.push({
+    name: 'chrome_resume',
+    description:
+      'Resume normal browser actions after a USER_SWITCHED pause. A pause is set when the user activates another tab while the DSH session tab was the active one; the next mutating action returns USER_SWITCHED until this tool (or chrome_tabs {op:"focus"}) clears it.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    output: {
+      schema: outputSchema({
+        ok: { type: 'boolean' },
+        tabId: {},
+      }),
+      render: (_args, value) => renderText(`Resumed browser session${value.tabId != null ? ` (tab ${value.tabId})` : ''}`),
+    },
+    async execute(_args, exec) {
+      return call('tab.resume', { owner: ownerOf(exec) }, 15000)
+    },
+  })
+
+  // ------------------------------------------------------------ 4g. pick
+  list.push({
+    name: 'chrome_pick',
+    description:
+      'Enter element-pick mode: an overlay appears; the user clicks one element and the tool returns {ref, selector, text, tag, box}. The returned ref can be used directly with chrome_click/chrome_type. Blocks until the pick completes, is canceled, or times out. Set cancel:true to abort an active pick.',
+    parameters: {
+      type: 'object',
+      properties: {
+        timeoutMs: { type: 'number', description: 'Pick timeout, 500-120000 ms (default 60000).' },
+        cancel: { type: 'boolean', description: 'Cancel the active pick instead of starting a new one.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        ref: { type: 'number' },
+        selector: { type: 'string' },
+        text: { type: 'string' },
+        tag: { type: 'string' },
+        box: { type: 'array', items: { type: 'number' } },
+        canceled: { type: 'boolean' },
+        tabId: { type: 'number' },
+      }),
+      render: (_args, value) => {
+        if (value.canceled) return renderText('Pick canceled')
+        return renderText(
+          `Picked <${value.tag || 'element'}> ref=${value.ref} ${JSON.stringify(value.text || '')}\nselector: ${value.selector || ''}\nbox: [${(value.box || []).join(',')}]`,
+        )
+      },
+    },
+    async execute(args, exec) {
+      const tabId = args?.tabId
+      const owner = ownerOf(exec)
+      if (args?.cancel) {
+        await call('tab.pick_cancel', { tabId, owner }, 15000)
+        return { canceled: true, tabId: tabId ?? null }
+      }
+      const timeoutMs = Number.isFinite(args?.timeoutMs)
+        ? Math.max(500, Math.min(120000, Number(args.timeoutMs)))
+        : 60000
+      await call('tab.pick_start', { tabId, owner }, 15000)
+      const started = Date.now()
+      while (Date.now() - started < timeoutMs) {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+        const status = await call('tab.pick_status', { tabId, owner }, 15000)
+        if (!status?.available) {
+          await call('tab.pick_cancel', { tabId, owner }, 15000).catch(() => {})
+          throw new BridgeError('PICK_CANCELED', 'pick mode was closed')
+        }
+        if (status.done) {
+          if (status.canceled || !status.result) throw new BridgeError('PICK_CANCELED', 'pick was canceled')
+          return { ...status.result, canceled: false, tabId: tabId ?? null }
+        }
+      }
+      await call('tab.pick_cancel', { tabId, owner }, 15000).catch(() => {})
+      throw new BridgeError('PICK_TIMEOUT', `no element picked within ${timeoutMs}ms`)
+    },
+  })
+
   // -------------------------------------------------------- 4e. evaluate (gated)
   if (allowEvaluate) {
     list.push({

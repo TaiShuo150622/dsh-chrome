@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：34
+> 工具数量：36
 
 ### `chrome_status`
 
@@ -216,6 +216,22 @@ Read the recent site-policy audit log (~/.dsh/cache/dsh-chrome/audit.jsonl): tim
 |---|---|---|---|
 | `limit` | number | no | Max entries returned (default 20, max 100). |
 | `origin` | string | no | Only entries for this origin. |
+
+### `chrome_resume`
+
+Resume normal browser actions after a USER_SWITCHED pause. A pause is set when the user activates another tab while the DSH session tab was the active one; the next mutating action returns USER_SWITCHED until this tool (or chrome_tabs {op:"focus"}) clears it.
+
+无参数。
+
+### `chrome_pick`
+
+Enter element-pick mode: an overlay appears; the user clicks one element and the tool returns {ref, selector, text, tag, box}. The returned ref can be used directly with chrome_click/chrome_type. Blocks until the pick completes, is canceled, or times out. Set cancel:true to abort an active pick.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `timeoutMs` | number | no | Pick timeout, 500-120000 ms (default 60000). |
+| `cancel` | boolean | no | Cancel the active pick instead of starting a new one. |
+| `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_capture_start`
 

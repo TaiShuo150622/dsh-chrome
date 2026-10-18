@@ -38,6 +38,7 @@ const runtimeMessageListeners = []
 const debuggerDetachListeners = []
 const tabRemovedListeners = []
 const tabGroupUpdates = []
+const tabActivatedListeners = []
 let connectNativeCalls = 0
 let runtimeReloads = 0
 const nativePortListeners = { message: [], disconnect: [] }
@@ -96,6 +97,11 @@ const chrome = {
     },
   },
   tabs: {
+    onActivated: {
+      addListener(listener) {
+        tabActivatedListeners.push(listener)
+      },
+    },
     async get(tabId) {
       const tab = tabs.get(tabId)
       if (!tab) throw new Error(`no tab ${tabId}`)
@@ -494,6 +500,17 @@ try {
 } catch (error) {
   unsupported = error?.code
 }
+// D2: pick dispatch (page-side state machine is exercised live)
+nextPageValue = { started: true, alreadyActive: false }
+const pickStarted = await sandbox.handleRequest({ method: 'tab.pick_start', params: { owner: 's1' }, id: 'pick-start' })
+check('tab.pick_start dispatches', pickStarted?.started === true)
+
+nextPageValue = { available: true, active: false, done: true, canceled: false, result: { ref: 7, selector: '#x', tag: 'button', text: 'X' } }
+const pickStatusValue = await sandbox.handleRequest({ method: 'tab.pick_status', params: { owner: 's1' }, id: 'pick-status' })
+check('tab.pick_status returns the pick result', pickStatusValue?.result?.ref === 7)
+const pickCancelValue = await sandbox.handleRequest({ method: 'tab.pick_cancel', params: { owner: 's1' }, id: 'pick-cancel' })
+check('tab.pick_cancel dispatches', Boolean(pickCancelValue))
+
 // C1: tab.evaluate uses the debugger session and returns a serialized value
 nextPageValue = 42
 const evalResult = await sandbox.handleRequest({
@@ -502,6 +519,22 @@ const evalResult = await sandbox.handleRequest({
   id: 'evaluate-basic',
 })
 check('tab.evaluate dispatches and returns the value', evalResult?.ok === true && evalResult?.value === 42)
+
+// D3: user switching away pauses mutations until chrome_resume
+for (const listener of tabActivatedListeners) await listener({ tabId: 7, windowId: 1 })
+for (const listener of tabActivatedListeners) await listener({ tabId: 8, windowId: 1 })
+nextPageValue = { ok: true, tag: 'button', label: 'Paused click' }
+let pausedClickError = null
+try {
+  await sandbox.handleRequest({ method: 'tab.click', params: { ref: 1, owner: 's1' }, id: 'paused-click' })
+} catch (error) {
+  pausedClickError = String(error?.code || error?.message || error)
+}
+check('user switch pauses mutating actions', /USER_SWITCHED/.test(pausedClickError || ''))
+const resumed = await sandbox.handleRequest({ method: 'tab.resume', params: { owner: 's1' }, id: 'resume' })
+check('tab.resume clears the pause', resumed?.ok === true)
+const afterResume = await sandbox.handleRequest({ method: 'tab.click', params: { ref: 1, owner: 's1' }, id: 'click-after-resume' })
+check('click works again after resume', afterResume?.ok === true)
 
 // C2a: capture metadata, pin, redaction and freeze
 const emitNetwork = (method, params) => {

@@ -99,7 +99,7 @@ async function getSessionEntry(owner) {
   const key = ownerKey(owner)
   let entry = sessions[key]
   if (!entry) {
-    entry = { tabIds: [], groupId: null, activeTabId: null }
+    entry = { tabIds: [], groupId: null, activeTabId: null, paused: false, pausedAt: null, pausedUrl: '' }
     sessions[key] = entry
   }
   if (!Array.isArray(entry.tabIds)) entry.tabIds = []
@@ -222,6 +222,10 @@ async function attachGroup(owner, entry, tabIds, label) {
 
 async function addTabToSession(owner, tab, { activate = true, label = null } = {}) {
   const entry = await getSessionEntry(owner)
+  entry.paused = false
+  entry.pausedAt = null
+  entry.pausedUrl = ''
+  expectedActivations.add(tab.id)
   if (!entry.tabIds.includes(tab.id)) entry.tabIds.push(tab.id)
   if (activate) entry.activeTabId = tab.id
   await attachGroup(owner, entry, [tab.id], label)
@@ -252,6 +256,64 @@ async function firstActiveTabId() {
     if (entry && entry.activeTabId != null) return entry.activeTabId
   }
   return null
+}
+
+const expectedActivations = new Set()
+const lastActiveByWindow = new Map()
+
+async function ensureNotPaused(owner) {
+  const entry = await getSessionEntry(owner)
+  if (entry.paused) {
+    throw bridgeError(
+      'USER_SWITCHED',
+      `user switched to ${entry.pausedUrl || 'another tab'}; call chrome_tabs {op:"focus"} or chrome_resume to continue`,
+    )
+  }
+}
+
+async function resumeSession(owner) {
+  const entry = await getSessionEntry(owner)
+  entry.paused = false
+  entry.pausedAt = null
+  entry.pausedUrl = ''
+  await saveSessions()
+  return { ok: true, tabId: entry.activeTabId }
+}
+
+async function onTabActivated(info) {
+  const tabId = Number(info?.tabId)
+  const windowId = Number(info?.windowId)
+  if (!Number.isFinite(tabId) || !Number.isFinite(windowId)) return
+  const sessions = await loadSessions()
+  const previous = lastActiveByWindow.get(windowId)
+  lastActiveByWindow.set(windowId, tabId)
+  const expected = expectedActivations.delete(tabId)
+  const ownerOfTab = Object.entries(sessions).find(([, entry]) => Array.isArray(entry?.tabIds) && entry.tabIds.includes(tabId))
+  if (ownerOfTab) {
+    const entry = ownerOfTab[1]
+    if (entry.paused) {
+      entry.paused = false
+      entry.pausedAt = null
+      entry.pausedUrl = ''
+      await saveSessions()
+    }
+    return
+  }
+  if (expected || previous == null || previous === tabId) return
+  const ownerOfPrevious = Object.entries(sessions).find(([, entry]) => entry?.activeTabId === previous)
+  if (!ownerOfPrevious) return
+  const entry = ownerOfPrevious[1]
+  if (Array.isArray(entry.tabIds) && entry.tabIds.includes(tabId)) return
+  entry.paused = true
+  entry.pausedAt = Date.now()
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    entry.pausedUrl = tab.url || ''
+  } catch {
+    entry.pausedUrl = ''
+  }
+  await saveSessions()
+  diag('user-switched', { owner: ownerShort(ownerOfPrevious[0]), pausedUrl: entry.pausedUrl })
 }
 
 async function closeSessionTabs(owner) {
@@ -496,6 +558,14 @@ async function handleRequest(message) {
       return evaluate(owner, params)
     case 'browser.site':
       return siteInfo(owner, params)
+    case 'tab.resume':
+      return resumeSession(owner)
+    case 'tab.pick_start':
+      return pickStartAgent(owner, params)
+    case 'tab.pick_status':
+      return pickStatusAgent(owner, params)
+    case 'tab.pick_cancel':
+      return pickCancelAgent(owner, params)
     case 'tab.capture_start':
       return startCapture(owner, params)
     case 'tab.capture_stop':
@@ -548,6 +618,7 @@ async function handleRequest(message) {
 }
 
 async function gotoUrl(owner, url, label = null) {
+  await ensureNotPaused(owner)
   if (!/^https?:\/\//i.test(url)) {
     throw bridgeError('PROTECTED_PAGE', 'Only http(s) URLs are allowed.')
   }
@@ -591,6 +662,9 @@ const PAGE_ACTIONS = {
   elementBox,
   html: outerHtml,
   selection: readSelection,
+  pickStart,
+  pickStatus,
+  pickCancel,
   overlay: drawRefOverlay,
   overlayRemove: removeRefOverlay,
   hasSelector,
@@ -1439,6 +1513,7 @@ async function find(owner, params) {
 }
 
 async function hover(owner, params) {
+  await ensureNotPaused(owner)
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
   const selector = params.selector ? String(params.selector) : ''
@@ -1464,6 +1539,7 @@ async function hover(owner, params) {
 }
 
 async function click(owner, params) {
+  await ensureNotPaused(owner)
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
   const selector = params.selector ? String(params.selector) : ''
@@ -1501,6 +1577,7 @@ async function click(owner, params) {
 }
 
 async function clickAt(owner, params) {
+  await ensureNotPaused(owner)
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const x = Number(params.x)
   const y = Number(params.y)
@@ -1797,6 +1874,23 @@ async function frames(owner, params) {
   })
 }
 
+async function pickStartAgent(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const result = await callInPage(tabId, 'pickStart', [], 15000)
+  if (!result?.started) throw bridgeError('INTERNAL', 'pick mode did not start')
+  return { ...result, tabId }
+}
+
+async function pickStatusAgent(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  return callInPage(tabId, 'pickStatus', [], 15000)
+}
+
+async function pickCancelAgent(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  return callInPage(tabId, 'pickCancel', [], 15000)
+}
+
 async function siteInfo(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params?.tabId)
   const tab = await chrome.tabs.get(tabId)
@@ -1865,6 +1959,7 @@ async function selection(owner, params) {
 }
 
 async function typeText(owner, params) {
+  await ensureNotPaused(owner)
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
   const selector = params.selector ? String(params.selector) : ''
@@ -1902,6 +1997,7 @@ async function typeText(owner, params) {
 }
 
 async function press(owner, params) {
+  await ensureNotPaused(owner)
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const key = String(params.key || '')
   if (!key) throw bridgeError('INTERNAL', 'key is required')
@@ -1910,6 +2006,7 @@ async function press(owner, params) {
 }
 
 async function scroll(owner, params) {
+  await ensureNotPaused(owner)
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const direction = String(params.direction || 'down')
   const amount = Number.isFinite(params.amount) ? Number(params.amount) : 600
@@ -1918,6 +2015,7 @@ async function scroll(owner, params) {
 }
 
 async function history(owner, params) {
+  await ensureNotPaused(owner)
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const op = String(params.op || 'reload')
   if (op === 'back') await chrome.tabs.goBack(tabId)
@@ -1981,7 +2079,13 @@ async function tabs(owner, params) {
   }
   if (op === 'focus') {
     const tabId = await resolveOwnedTabId(owner, params.tabId)
+    expectedActivations.add(tabId)
     await chrome.tabs.update(tabId, { active: true })
+    const entry = await getSessionEntry(owner)
+    entry.paused = false
+    entry.pausedAt = null
+    entry.pausedUrl = ''
+    await saveSessions()
     const tab = await chrome.tabs.get(tabId)
     return { tabId, url: tab.url || '', title: tab.title || '', focused: true }
   }
@@ -1989,6 +2093,7 @@ async function tabs(owner, params) {
 }
 
 async function selectAgent(owner, params) {
+  await ensureNotPaused(owner)
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
   const selector = params.selector ? String(params.selector) : ''
@@ -2019,6 +2124,7 @@ async function claimTab(owner, params) {
 }
 
 async function uploadFiles(owner, params) {
+  await ensureNotPaused(owner)
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
   const selector = params.selector ? String(params.selector) : ''
@@ -2117,6 +2223,7 @@ async function emulate(owner, params) {
 }
 
 async function drag(owner, params) {
+  await ensureNotPaused(owner)
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const fromRef = Number(params.fromRef)
   const toRef = Number(params.toRef)
@@ -3055,6 +3162,168 @@ function outerHtml(selector, mode, maxChars) {
   }
 }
 
+function pickStart() {
+  if (window.__dshPick?.active) return { started: true, alreadyActive: true }
+  const state = { active: true, done: false, canceled: false, result: null, cleanup: null }
+  window.__dshPick = state
+  const ensureRefSeq = () => {
+    if (window.__dshRefSeq) return
+    let max = 0
+    const scan = window.__dshDeep ? window.__dshDeep.all('[data-dsh-ref]') : document.querySelectorAll('[data-dsh-ref]')
+    for (const element of scan) {
+      const value = Number(element.getAttribute('data-dsh-ref'))
+      if (Number.isFinite(value) && value > max) max = value
+    }
+    window.__dshRefSeq = max + 1
+  }
+  const interactiveSelector =
+    'a[href],button,input,select,textarea,[role="button"],[role="link"],[role="checkbox"],[onclick],[contenteditable="true"]'
+  const targetFor = (element) => {
+    if (!element) return null
+    try {
+      return element.closest(interactiveSelector) || element
+    } catch {
+      return element
+    }
+  }
+  const selectorFor = (element) => {
+    if (!element) return ''
+    if (element.id) return `#${CSS.escape(element.id)}`
+    const parts = []
+    let current = element
+    while (current && current !== document.documentElement && parts.length < 3) {
+      let part = current.tagName.toLowerCase()
+      if (current.classList && current.classList.length > 0) {
+        part += '.' + [...current.classList].slice(0, 2).map((name) => CSS.escape(name)).join('.')
+      }
+      const parent = current.parentElement
+      if (parent) {
+        const siblings = [...parent.children].filter((child) => child.tagName === current.tagName)
+        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`
+      }
+      parts.unshift(part)
+      current = parent
+    }
+    return parts.join(' > ')
+  }
+  const overlay = document.createElement('div')
+  overlay.id = '__dsh_pick_overlay__'
+  overlay.style.cssText =
+    'position:fixed;inset:0;z-index:2147483646;pointer-events:none;background:rgba(0,122,255,.06);transition:background .1s'
+  const box = document.createElement('div')
+  box.style.cssText =
+    'position:fixed;border:2px solid rgba(0,122,255,.95);border-radius:3px;background:rgba(0,122,255,.10);display:none;z-index:2147483647;pointer-events:none;box-sizing:border-box'
+  const hint = document.createElement('div')
+  hint.textContent = 'DSH pick: click an element · Esc to cancel'
+  hint.style.cssText =
+    'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:rgba(10,10,10,.86);color:#fff;font:13px/1.4 -apple-system,sans-serif;padding:6px 12px;border-radius:6px;z-index:2147483647;pointer-events:none'
+  overlay.appendChild(box)
+  overlay.appendChild(hint)
+  document.documentElement.appendChild(overlay)
+
+  const highlight = (element) => {
+    if (!element) {
+      box.style.display = 'none'
+      return
+    }
+    const rect = element.getBoundingClientRect()
+    box.style.display = 'block'
+    box.style.left = `${Math.max(0, rect.left)}px`
+    box.style.top = `${Math.max(0, rect.top)}px`
+    box.style.width = `${Math.max(1, rect.width)}px`
+    box.style.height = `${Math.max(1, rect.height)}px`
+  }
+  const onMove = (event) => {
+    try {
+      highlight(targetFor(document.elementFromPoint(event.clientX, event.clientY)))
+    } catch {
+      highlight(null)
+    }
+  }
+  const finish = (canceled, result) => {
+    state.done = true
+    state.canceled = Boolean(canceled)
+    state.active = false
+    state.result = result || null
+    try {
+      cleanup()
+    } catch {}
+  }
+  const onClick = (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    try {
+      ensureRefSeq()
+      const raw = document.elementFromPoint(event.clientX, event.clientY) || event.target
+      const target = targetFor(raw)
+      if (!target) {
+        finish(true, null)
+        return
+      }
+      let ref = Number(target.getAttribute('data-dsh-ref')) || 0
+      if (!ref) {
+        ref = window.__dshRefSeq
+        window.__dshRefSeq += 1
+        try {
+          target.setAttribute('data-dsh-ref', String(ref))
+        } catch {}
+      }
+      const rect = target.getBoundingClientRect()
+      finish(false, {
+        ref,
+        selector: selectorFor(target),
+        text: (target.innerText || target.getAttribute('aria-label') || target.value || '').trim().slice(0, 160),
+        tag: target.tagName.toLowerCase(),
+        box: [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)],
+      })
+    } catch (error) {
+      finish(true, null)
+    }
+  }
+  const onKey = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      finish(true, null)
+    }
+  }
+  const cleanup = () => {
+    document.removeEventListener('mousemove', onMove, true)
+    document.removeEventListener('click', onClick, true)
+    document.removeEventListener('keydown', onKey, true)
+    overlay.remove()
+  }
+  state.cleanup = cleanup
+  document.addEventListener('mousemove', onMove, true)
+  document.addEventListener('click', onClick, true)
+  document.addEventListener('keydown', onKey, true)
+  return { started: true, alreadyActive: false }
+}
+
+function pickStatus() {
+  const state = window.__dshPick
+  if (!state) return { available: false, active: false, done: false, canceled: false, result: null }
+  return {
+    available: true,
+    active: Boolean(state.active),
+    done: Boolean(state.done),
+    canceled: Boolean(state.canceled),
+    result: state.result,
+  }
+}
+
+function pickCancel() {
+  const state = window.__dshPick
+  if (!state) return { ok: true, wasActive: false }
+  const wasActive = Boolean(state.active)
+  state.canceled = true
+  state.done = true
+  state.active = false
+  try {
+    state.cleanup?.()
+  } catch {}
+  return { ok: true, wasActive }
+}
+
 function readSelection(maxChars) {
   const limit = Number.isFinite(maxChars) ? Math.max(10, Math.min(20000, maxChars)) : 4000
   const active = document.activeElement
@@ -3239,6 +3508,9 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.runtime.onStartup.addListener(() => {
   ensureReconnectAlarm()
   ensurePort().catch(() => {})
+})
+chrome.tabs.onActivated.addListener((info) => {
+  onTabActivated(info).catch(() => {})
 })
 chrome.tabs.onUpdated.addListener(() => {
   if (!port) forceReconnect().catch(() => {})
