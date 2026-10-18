@@ -1037,6 +1037,96 @@ try {
   const dragged = await driver.request('tab.drag', { owner: 's1', fromRef: dragSrc.ref, toRef: dropTarget.ref })
   assert.equal(dragged.ok, true)
 
+  // Synthetic drag probe (docs/HEADLESS.md §4.1.15). `tab.drag` dispatches
+  // DragEvents only; the UA performs no drag-and-drop default action for
+  // untrusted events, so a drag whose handlers leave every tracker counter
+  // untouched cannot have painted and must keep the frame marker. The opposite
+  // cases are asserted right after it: a drop handler that mutates the DOM owes
+  // a new frame, and a canvas anywhere on the page disables the shortcut.
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const dragBaseBytes = await stableFrameBytes()
+  const dragBaseDiag = await tabDiag()
+  const dragSkipStartedAt = performance.now()
+  const dragSkip = await driver.request('tab.drag', { owner: 's1', fromRef: dragSrc.ref, toRef: dropTarget.ref })
+  assert.equal(dragSkip.ok, true)
+  const dragSkipShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const dragSkipMs = performance.now() - dragSkipStartedAt
+  const dragSkipDiag = await tabDiag()
+  assert.equal(
+    dragSkipDiag.visualSkips,
+    dragBaseDiag.visualSkips + 1,
+    `a handler-free drag did not skip the repaint window: ${JSON.stringify({ before: dragBaseDiag.visualSkips, after: dragSkipDiag.visualSkips })}`,
+  )
+  assert.equal(
+    dragSkipDiag.screenshotStream.repaintMisses,
+    dragBaseDiag.screenshotStream.repaintMisses,
+    'a handler-free drag ran into the repaint window',
+  )
+  assert.ok(dragSkipMs < 25, `a handler-free drag + screenshot paid the repaint window (${dragSkipMs.toFixed(1)}ms)`)
+  assert.deepEqual(fs.readFileSync(dragSkipShot.path), dragBaseBytes, 'a handler-free drag returned a different frame')
+
+  // Canvas pixels repaint with no DOM mutation, so the probe must veto the
+  // shortcut: the drag keeps the marker and the screenshot pays the window once.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression:
+      '(() => { const c = document.createElement("canvas"); c.id = "drag-probe-canvas"; c.width = 40; c.height = 10; document.body.appendChild(c); return true })()',
+  })
+  await settle()
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const canvasDragBaseDiag = await tabDiag()
+  await driver.request('tab.drag', { owner: 's1', fromRef: dragSrc.ref, toRef: dropTarget.ref })
+  const canvasDragDiag = await tabDiag()
+  assert.equal(
+    canvasDragDiag.visualSkips,
+    canvasDragBaseDiag.visualSkips,
+    'a page with a canvas must keep the conservative wait for drags',
+  )
+  await driver.request('tab.screenshot', { owner: 's1' })
+  const canvasDragShotDiag = await tabDiag()
+  assert.equal(
+    canvasDragShotDiag.screenshotStream.repaintMisses,
+    canvasDragBaseDiag.screenshotStream.repaintMisses + 1,
+    'the vetoed drag did not pay the repaint window once',
+  )
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("drag-probe-canvas").remove()' })
+  await settle()
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+
+  // A drop handler that mutates the DOM is a real paint: the drag must not
+  // short-cut and the screenshot must return the NEW frame.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: `(() => {
+      const target = document.getElementById('drop-target')
+      target.addEventListener('drop', (event) => {
+        event.preventDefault()
+        const row = document.createElement('span')
+        row.textContent = 'dropped'
+        target.appendChild(row)
+      })
+      return true
+    })()`,
+  })
+  const dragMutationBaseBytes = await stableFrameBytes()
+  const dragMutationBaseDiag = await tabDiag()
+  await driver.request('tab.drag', { owner: 's1', fromRef: dragSrc.ref, toRef: dropTarget.ref })
+  const dragMutationDiag = await tabDiag()
+  assert.equal(
+    dragMutationDiag.visualSkips,
+    dragMutationBaseDiag.visualSkips,
+    'a drag whose drop handler mutates the DOM must keep the conservative wait',
+  )
+  const dragMutationShot = await driver.request('tab.screenshot', { owner: 's1' })
+  assert.notDeepEqual(
+    fs.readFileSync(dragMutationShot.path),
+    dragMutationBaseBytes,
+    'a DOM-mutating drag was served a stale frame',
+  )
+
   // Frame-stream keep-alive (docs/HEADLESS.md §4.1.3): an unchanged visible
   // page that produced no frame for longer than the idle window must keep its
   // cached frame and its screencast instead of restarting, so the next

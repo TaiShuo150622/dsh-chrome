@@ -371,6 +371,22 @@ function clickAtProbeEligible(before, point) {
   return true
 }
 
+// `tab.drag` dispatches synthetic DragEvents (docs/HEADLESS.md §4.1.15). The UA
+// performs no drag-and-drop default action for untrusted events, so unlike a
+// real click there is no invisible navigation/focus/activation path to veto:
+// a focus/selection change a page handler makes synchronously is still caught
+// by the verdict's own active/selection comparison, and everything a handler
+// mutates is a tracker counter. What remains are the pages whose paints are
+// invisible to the tracker at all (canvas pixels, media surfaces, same-origin
+// subframes), a tab that is still loading, and a fullscreen document.
+function dragProbeEligible(before) {
+  if (!before) return false
+  if (before.readyState !== 'complete') return false
+  if (before.broken || before.canvas || before.media || before.frames) return false
+  if (before.fullscreen) return false
+  return true
+}
+
 // Every request that can change what the page renders bumps the owning tab's
 // change marker. `tab.screenshot` only reuses a streamed frame (or waits for a
 // new one) whose composition timestamp is at least this marker.
@@ -2495,7 +2511,15 @@ export class HeadlessDriver {
       }
       case 'tab.drag': {
         const tab = await this.ensureTab(owner, params.tabId)
-        const result = await this.pageAction(tab, 'dragPage', [params.fromRef, params.toRef])
+        // A synthetic drag that leaves every tracker counter untouched cannot
+        // have painted, so the next screenshot reuses the cached frame instead
+        // of paying the repaint window (docs/HEADLESS.md §4.1.15).
+        const result = await this.visualProbeAction(
+          tab,
+          () => this.pageAction(tab, 'dragPage', [params.fromRef, params.toRef]),
+          (value) => value?.ok === true,
+          (before) => dragProbeEligible(before),
+        )
         if (!result?.ok) throw error(result?.code || 'REF_NOT_FOUND', result?.message || 'drag failed')
         return result
       }

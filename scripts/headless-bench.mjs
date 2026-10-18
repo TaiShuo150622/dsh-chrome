@@ -22,7 +22,7 @@
  *                                   [--shot-format png|jpeg] [--shot-quality 60]
  *                                   [--no-optimize] [--gap-ms 0] [--static]
  *                                   [--readonly-eval] [--noop-click] [--press]
- *                                   [--click-at] [--shot-chain]
+ *                                   [--click-at] [--shot-chain] [--drag]
  *                                   [--mixed]
  *                                   [--idle-seconds 0] [--idle-settle-seconds 0]
  *
@@ -61,6 +61,14 @@
  * hover-chain moves, focus, selection, buttons/links/form controls — are
  * covered by test/headless.mjs). The report's `visualSkips` counts the actions
  * proven paint-free, so a run where the shortcut did not fire is visible.
+ * `--drag` replaces them with a synthetic `tab.drag` between two handler-free
+ * buttons: the driver fires DragEvents only (the UA performs no drag-and-drop
+ * default action for untrusted events), so a page whose handlers keep every
+ * tracker counter untouched cannot have painted and every round measures the
+ * repaint window the drag path used to pay (docs/HEADLESS.md §4.1.15; the
+ * pages that keep the conservative wait — canvas/media/subframe, still
+ * loading, fullscreen, or a handler that mutates — are covered by
+ * test/headless.mjs).
  * `--shot-chain` is the change-marker scenario (docs/HEADLESS.md §4.1.14): one
  * conservative paint-free action followed by THREE screenshots per round. The
  * action is a real `tab.clickAt` alternating between two plain divs, which
@@ -162,6 +170,12 @@ let clickAtPoint = null
 // because the marker was retired on the miss. Without retirement every
 // screenshot in the chain re-pays the window.
 const SHOT_CHAIN = hasFlag('--shot-chain')
+// Synthetic-drag scenario (docs/HEADLESS.md §4.1.15): snapshot + `tab.drag`
+// between two handler-free buttons + screenshot. The drag dispatches DragEvents
+// only and no UA default action runs for untrusted events, so the page never
+// repaints and the screenshot must reuse the cached frame.
+const DRAG = hasFlag('--drag')
+let dragRefs = null
 const SHOT_CHAIN_SHOTS = 3
 let shotChainPoints = null
 // Element/region screenshot scenarios. Clip coordinates are CSS px like the
@@ -192,6 +206,8 @@ const html = `<!doctype html><html><head><title>Headless Bench</title></head><bo
 <button id="go" onclick="document.getElementById('out').textContent=document.getElementById('q').value">Go</button>
 <div id="out">ready</div>
 <div id="noop" style="padding:6px;border:1px solid #999;width:120px">noop</div>
+<button id="drag-from" type="button">drag-from</button>
+<button id="drag-to" type="button">drag-to</button>
 <div id="bulk">${'<p>row</p>'.repeat(40)}</div>
 </body></html>`
 
@@ -248,8 +264,8 @@ function processStats() {
 // Wall-clock accumulator per action kind; Chrome CPU is sampled only around the
 // whole loop, but wall time isolates which request dominates a round.
 function createTimer() {
-  const buckets = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0, clickAt: 0 }
-  const counts = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0, clickAt: 0 }
+  const buckets = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0, clickAt: 0, drag: 0 }
+  const counts = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0, clickAt: 0, drag: 0 }
   return {
     buckets,
     counts,
@@ -296,7 +312,7 @@ try {
   await driver.ensureStarted()
   const browserStartedAt = Date.now()
   await driver.request('tab.goto', { owner: 'bench', url: `http://127.0.0.1:${port}/` })
-  await driver.request('tab.snapshot', { owner: 'bench', maxChars: 5000 })
+  const initialSnap = await driver.request('tab.snapshot', { owner: 'bench', maxChars: 5000 })
 
   const shotParams = {
     owner: 'bench',
@@ -354,6 +370,17 @@ try {
     })
     shotChainPoints = [rects?.value?.noop ?? rects?.noop, rects?.value?.out ?? rects?.out]
   }
+  if (DRAG) {
+    // Refs come from a real snapshot, exactly like a tool call would get them
+    // (snapshotPage assigns `data-dsh-ref` and keeps an existing number, so the
+    // pair is stable across rounds).
+    const dragFrom = initialSnap.controls.find((control) => control.label === 'drag-from')
+    const dragTo = initialSnap.controls.find((control) => control.label === 'drag-to')
+    if (!dragFrom || !dragTo) {
+      throw new Error(`drag scenario controls missing: ${JSON.stringify(initialSnap.controls)}`)
+    }
+    dragRefs = { from: dragFrom.ref, to: dragTo.ref }
+  }
   const runRound = async (timer, index, measured) => {
     const timed = timer ? (kind, fn) => timer.time(kind, fn) : (kind, fn) => fn()
     const snap = await timed('snapshot', () => driver.request('tab.snapshot', { owner: 'bench', maxChars: SNAPSHOT_MAX_CHARS }))
@@ -386,6 +413,8 @@ try {
       const key = index % 2 === 0 ? 'Escape' : 'k'
       pressStats.keys[key] += 1
       await timed('press', () => driver.request('tab.press', { owner: 'bench', key }))
+    } else if (DRAG) {
+      await timed('drag', () => driver.request('tab.drag', { owner: 'bench', fromRef: dragRefs.from, toRef: dragRefs.to }))
     } else if (CLICK_AT) {
       await timed('clickAt', () => driver.request('tab.clickAt', { owner: 'bench', x: clickAtPoint.x, y: clickAtPoint.y }))
     } else if (SHOT_CHAIN) {
@@ -406,7 +435,7 @@ try {
     // viewport offset, otherwise half the rounds would fall back to capture
     // because the element left the viewport (the honest off-screen case, but
     // not what this scenario is measuring).
-    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK && !PRESS && !CLICK_AT && !SHOT_CHAIN) {
+    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK && !PRESS && !CLICK_AT && !SHOT_CHAIN && !DRAG) {
       await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: SHOT_REF ? 60 : 200 }))
     }
   }
@@ -426,7 +455,7 @@ try {
   // The read-only evaluate, no-op click, pointer and chained-screenshot
   // scenarios are orders of magnitude cheaper per round, so they need a much
   // higher cap to stay time-bound.
-  const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK || PRESS || CLICK_AT || SHOT_CHAIN ? 2000 : 50)
+  const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK || PRESS || CLICK_AT || SHOT_CHAIN || DRAG ? 2000 : 50)
   while (Date.now() < until && actions < ACTION_CAP) {
     await runRound(timer, actions, true)
     actions += 1
@@ -450,7 +479,7 @@ try {
   const cpuMsPerAction = round((cpuSeconds * 1000) / Math.max(1, actions), 2)
   const perActionMs = timer.averages()
   const roundTotalMs = round(
-    (timer.buckets.snapshot + timer.buckets.type + timer.buckets.evaluate + timer.buckets.click + timer.buckets.screenshot + timer.buckets.scroll + timer.buckets.press + timer.buckets.clickAt) /
+    (timer.buckets.snapshot + timer.buckets.type + timer.buckets.evaluate + timer.buckets.click + timer.buckets.screenshot + timer.buckets.scroll + timer.buckets.press + timer.buckets.clickAt + timer.buckets.drag) /
       Math.max(1, actions),
     2,
   )
@@ -512,7 +541,9 @@ try {
                     ? 'snapshot/clickAt(noop div center)/screenshot (pointer rests there, page never repaints)'
                     : PRESS
                       ? 'snapshot/press(Escape,k)/screenshot (no editable focus, page never repaints)'
-                      : READONLY_EVAL
+                      : DRAG
+                        ? 'snapshot/drag(handler-free buttons)/screenshot (page never repaints)'
+                        : READONLY_EVAL
                         ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)'
                         : STATIC
                           ? 'snapshot/screenshot (static page)'
@@ -528,6 +559,8 @@ try {
         pressMode: PRESS,
         clickAtMode: CLICK_AT,
         ...(CLICK_AT && clickAtPoint ? { clickAtPoint } : {}),
+        dragMode: DRAG,
+        ...(DRAG && dragRefs ? { drag: { shotsPerRound: 1, refs: dragRefs } } : {}),
         shotChainMode: SHOT_CHAIN,
         ...(SHOT_CHAIN && shotChainPoints
           ? { shotChain: { shotsPerRound: SHOT_CHAIN_SHOTS, points: shotChainPoints } }

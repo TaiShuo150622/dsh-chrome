@@ -151,4 +151,30 @@ assert.ok(
   `chained screenshots did not retire the change marker: ${JSON.stringify({ visualRetires: shotChain.visualRetires, actions: shotChain.actions })}`,
 )
 
+// `--drag` (docs/HEADLESS.md §4.1.15): synthetic drag between two handler-free
+// buttons. The UA performs no drag-and-drop default action for untrusted
+// events, so every round must be proven paint-free; a driver without the drag
+// probe pays the ~40ms repaint window on every round instead.
+const dragRun = spawnSync(
+  process.execPath,
+  [path.join(root, 'scripts', 'headless-bench.mjs'), '--seconds', '4', '--drag'],
+  { cwd: root, encoding: 'utf8', timeout: 120000 },
+)
+assert.equal(dragRun.status, 0, `drag bench exited ${dragRun.status}\nstdout: ${dragRun.stdout}\nstderr: ${dragRun.stderr}`)
+const drag = JSON.parse(dragRun.stdout)
+assert.equal(drag.dragMode, true)
+assert.ok(drag.scenario.includes('snapshot/drag(handler-free buttons)'), `unexpected drag scenario: ${drag.scenario}`)
+assert.ok(
+  drag.drag && Number.isFinite(drag.drag.refs.from) && Number.isFinite(drag.drag.refs.to),
+  `drag refs missing: ${JSON.stringify(drag.drag)}`,
+)
+assert.ok(drag.actions >= 100, `too few drag rounds: ${drag.actions}`)
+assert.ok(drag.perActionMs.drag > 0 && drag.perActionMs.screenshot > 0, `drag timings missing: ${JSON.stringify(drag.perActionMs)}`)
+assert.ok(drag.perActionMs.screenshot < 5, `drag screenshots still pay the repaint window: ${drag.perActionMs.screenshot}ms`)
+assert.ok(
+  drag.visualSkips >= drag.actions,
+  `drag rounds were not proven paint-free: ${JSON.stringify({ visualSkips: drag.visualSkips, actions: drag.actions })}`,
+)
+assert.equal(drag.screenshotStream.repaintMisses, 0, `drag rounds paid the repaint window: ${JSON.stringify(drag.screenshotStream)}`)
+
 console.log('BENCH SCENARIO TEST: PASS')
