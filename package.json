@@ -39,6 +39,7 @@
     "package:extension": "node scripts/package-extension.mjs",
     "status": "node scripts/status.mjs",
     "cpu:sample": "node scripts/cpu-sample.mjs",
-    "watch:update": "node scripts/update-watch.mjs"
+    "watch:update": "node scripts/update-watch.mjs",
+    "bench:headless": "node scripts/headless-bench.mjs"
   }
 }

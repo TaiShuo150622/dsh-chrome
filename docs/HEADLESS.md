@@ -129,13 +129,29 @@ headless 无 tab、无请求，60s `ps` 时间差：
 | 内存 RSS | **672 MB** |
 | 进程数 | 7 |
 
-对比：桌面 Chrome 空闲在用户标签很多时是 5%+；headless 单进程组空闲约 1.3%，内存主要是一次性 Chrome 运行时开销。长期保留会占 ~0.7GB，所以空闲 5 分钟自动关是必要的。
+**活跃压测**（`node scripts/headless-bench.mjs --seconds 10`，同一 profile，10 个进程）：
+
+| 指标 | 值 |
+|---|---|
+| 动作 | 181 轮（每轮 snapshot + type + screenshot + scroll） |
+| CPU | **69.89%**（6.99s / 10s） |
+| 内存 RSS | **1113 MB** |
+| 进程 | 10 |
+
+对比：桌面 Chrome 空闲在用户标签很多时是 5%+；headless 空闲约 1.3%/672MB，活跃压测约 70%/1.1GB——成本主要来自高频截图与 CDP evaluate。真实 agent 动作间隔通常远大于此，但仍说明：**headless 只应在任务期间常驻，空闲 5 分钟回收是必要的**。
+
+复跑：
+
+```bash
+cd /Users/taishuo/projects/dsh-chrome
+node scripts/headless-bench.mjs --seconds 10
+```
 
 ## 5. 下一步（H1）
 
 1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
 2. capture 引擎与扩展共享（两套行为一致性）；
-3. CPU/内存活跃基线 + viewer 无查看者自动停止实测（见 §4）。
+3. CPU/内存活跃基线（已测，见 §4.1）与 capture 双后端一致性对比。
 
 ## 6. 代码
 

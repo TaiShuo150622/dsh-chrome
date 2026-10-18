@@ -13,6 +13,12 @@
 
 ## [Unreleased]
 
+### Added（headless 活跃基线）
+
+- `scripts/headless-bench.mjs`（`npm run bench:headless`）：10s 压测 181 轮 snapshot/type/screenshot/scroll
+- 结果：**69.89% CPU / 1113MB RSS / 10 进程**（空闲为 1.34% / 672MB）；证明空闲回收必要
+- docs/HEADLESS.md §4.1 更新
+
 ### Added（viewer 无查看者自动停止）
 
 - viewer 启用时，screencast start 会挂 5 分钟无帧请求自动停止守卫（`src/screencast-guard.js`）；stop 时解除
