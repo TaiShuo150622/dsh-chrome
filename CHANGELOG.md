@@ -11,6 +11,12 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.89] - 2026-10-18
+
+### Added/Fixed
+
+- Windows Node SEA native host + CI workflow；沙箱 QA 矩阵与 P1 修复；安全 Top5（policy 目标判定/fail-closed 审批/upload&file:// 边界/部分隔离）；见 docs/RELEASE-NOTES-0.1.89.md
+
 ## [0.1.88] - 2026-10-18
 
 ### Added（capability 门控 / 操作记录 / 优化 Round 2）

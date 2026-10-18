@@ -234,7 +234,7 @@ Open a visible, dedicated Chrome window so the user can log in once; its cookies
 
 ### `chrome_screencast`
 
-Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image, op="stop" ends the stream; op="viewer" returns the loopback live-view URL; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.
+Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image (only for the session that started an active stream), op="stop" ends the stream; op="viewer" returns the loopback live-view URL; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
@@ -246,7 +246,7 @@ Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG
 
 ### `chrome_shots`
 
-List or read screenshot history saved by this provider (desktop ~/.dsh/cache/dsh-chrome/screenshots and headless ~/.dsh/cache/dsh-chrome/headless/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under either directory) as an image attachment.
+List or read screenshot history saved by this provider (desktop ~/.dsh/cache/dsh-chrome/screenshots and headless ~/.dsh/cache/dsh-chrome/headless/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under either directory) as an image attachment. Shots recorded for another DSH session are hidden.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
@@ -388,7 +388,7 @@ Manage tabs owned by this DSH session: list owned tabs, open a new background ta
 
 ### `chrome_upload`
 
-Attach local files to a file input on the session page (e.g. upload a screenshot or a document). The ref must point at an <input type=file> from the latest snapshot. Requires approval and only accepts existing local files.
+Attach local files to a file input on the session page (e.g. upload a screenshot or a document). The ref must point at an <input type=file> from the latest snapshot. Files must live under the session working directory (or DSH_CHROME_UPLOAD_ROOTS), and every call asks for a hard confirmation that lists the full paths and the target origin.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
