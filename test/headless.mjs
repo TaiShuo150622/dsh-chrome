@@ -517,11 +517,182 @@ try {
   assert.equal(formClick.ok, true, `form submit click failed: ${JSON.stringify(formClick)}`)
   const formDiag = await tabDiag()
   assert.equal(formDiag.visualSkips, formBaseDiag.visualSkips, 'form submit click must keep the conservative wait (navigation hazard)')
-  // Input.* actions are not probe-covered yet: press keeps the full window.
+  // Keyboard press (docs/HEADLESS.md §4.1.12): a key with no UA default action
+  // outside an editable field keeps the previous change marker when the tracker
+  // sees no page change, so the next screenshot is a cache hit. Scrolling/
+  // activation/modifier keys, editable focus, a non-collapsed selection, a
+  // closed shadow root and any tracker counter movement keep the conservative
+  // wait.
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle(300)
+  const pressBaselineShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const pressBaselineBytes = fs.readFileSync(pressBaselineShot.path)
   const pressBaseDiag = await tabDiag()
+  const pressStartedAt = performance.now()
+  await driver.request('tab.press', { owner: 's1', key: 'Escape' })
+  const pressEscapeShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const pressEscapeMs = performance.now() - pressStartedAt
+  const pressEscapeDiag = await tabDiag()
+  assert.equal(
+    pressEscapeDiag.visualSkips,
+    pressBaseDiag.visualSkips + 1,
+    `no-op Escape press did not skip the repaint window: ${JSON.stringify({ before: pressBaseDiag.visualSkips, after: pressEscapeDiag.visualSkips })}`,
+  )
+  // A stray compositor frame can advance the frame counter on an otherwise idle
+  // page, so the contract is measured directly: no repaint-miss (that is the
+  // 40ms window), a cache-hit latency, and the same bytes.
+  assert.equal(
+    pressEscapeDiag.screenshotStream.repaintMisses,
+    pressBaseDiag.screenshotStream.repaintMisses,
+    'no-op Escape press ran into the repaint window',
+  )
+  assert.ok(pressEscapeMs < 25, `no-op Escape press paid the repaint window (${pressEscapeMs.toFixed(1)}ms)`)
+  assert.deepEqual(fs.readFileSync(pressEscapeShot.path), pressBaselineBytes, 'no-op Escape press must reuse the cached frame')
+  // A printable character with no editable focus is equally paint-free.
+  const printableBaseDiag = await tabDiag()
+  await driver.request('tab.press', { owner: 's1', key: 'k' })
+  const printableShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const printableDiag = await tabDiag()
+  assert.equal(printableDiag.visualSkips, printableBaseDiag.visualSkips + 1, 'printable press with body focus did not skip the repaint window')
+  assert.deepEqual(fs.readFileSync(printableShot.path), pressBaselineBytes, 'printable press must reuse the cached frame')
+  // A focused button is not editable, so a printable key still qualifies; Enter
+  // can activate the control, so it must not.
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("go").focus()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const buttonFocusBase = await tabDiag()
+  await driver.request('tab.press', { owner: 's1', key: 'k' })
+  const buttonFocusDiag = await tabDiag()
+  assert.equal(buttonFocusDiag.visualSkips, buttonFocusBase.visualSkips + 1, 'printable press on a focused button did not skip the repaint window')
+  await driver.request('tab.press', { owner: 's1', key: 'Enter' })
+  const buttonEnterDiag = await tabDiag()
+  assert.equal(buttonEnterDiag.visualSkips, buttonFocusBase.visualSkips + 1, 'Enter on a focused control must keep the conservative wait')
+  // Scrolling keys and modifiers keep the wait: the compositor scroll can land
+  // after the after-snapshot.
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur()' })
+  const arrowBaseDiag = await tabDiag()
+  await driver.request('tab.press', { owner: 's1', key: 'ArrowDown' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  const arrowDiag = await tabDiag()
+  assert.equal(arrowDiag.visualSkips, arrowBaseDiag.visualSkips, 'a scrolling key must keep the conservative wait')
+  const shiftBaseDiag = await tabDiag()
   await driver.request('tab.press', { owner: 's1', key: 'Shift' })
-  const pressDiag = await tabDiag()
-  assert.equal(pressDiag.visualSkips, pressBaseDiag.visualSkips, 'Input.* press still keeps the conservative wait (not probe-covered)')
+  const shiftDiag = await tabDiag()
+  assert.equal(shiftDiag.visualSkips, shiftBaseDiag.visualSkips, 'a modifier key must keep the conservative wait')
+  // Editable focus: a keystroke can move a caret or change a value without any
+  // DOM mutation, so both a printable key and Escape keep the wait.
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("name").focus()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const editableBaseDiag = await tabDiag()
+  for (const key of ['k', 'Escape']) {
+    await driver.request('tab.press', { owner: 's1', key })
+    const editableDiag = await tabDiag()
+    assert.equal(
+      editableDiag.visualSkips,
+      editableBaseDiag.visualSkips,
+      `a press over an editable focus (${key}) must keep the conservative wait`,
+    )
+  }
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur()' })
+  // A non-collapsed document selection can be replaced by a key inside an
+  // editable, and collapsing it is a repaint: keep the wait while one exists.
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression:
+      '(() => { const range = document.createRange(); range.selectNodeContents(document.getElementById("out")); const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); return String(selection) })()',
+  })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const selectionBaseDiag = await tabDiag()
+  await driver.request('tab.press', { owner: 's1', key: 'k' })
+  const selectionDiag = await tabDiag()
+  assert.equal(selectionDiag.visualSkips, selectionBaseDiag.visualSkips, 'a press with a non-collapsed selection must keep the conservative wait')
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'getSelection().removeAllRanges()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const clearedSelectionShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const clearedSelectionBytes = fs.readFileSync(clearedSelectionShot.path)
+  const clearedSelectionBase = await tabDiag()
+  await driver.request('tab.press', { owner: 's1', key: 'k' })
+  const clearedSelectionShot2 = await driver.request('tab.screenshot', { owner: 's1' })
+  const clearedSelectionDiag = await tabDiag()
+  assert.equal(
+    clearedSelectionDiag.visualSkips,
+    clearedSelectionBase.visualSkips + 1,
+    'the shortcut did not come back after clearing the selection',
+  )
+  assert.deepEqual(fs.readFileSync(clearedSelectionShot2.path), clearedSelectionBytes, 'press after clearing the selection must reuse the cached frame')
+  // Escape closing a modal dialog is a UA default action whose effect is a DOM
+  // mutation (the `open` attribute): the tracker must see it and keep the wait.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression:
+      '(() => { const dialog = document.createElement("dialog"); dialog.id = "probe-dialog"; dialog.textContent = "probe dialog"; document.body.append(dialog); dialog.showModal(); return dialog.open })()',
+  })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const dialogBaseDiag = await tabDiag()
+  await driver.request('tab.press', { owner: 's1', key: 'Escape' })
+  const dialogDiag = await tabDiag()
+  assert.equal(dialogDiag.visualSkips, dialogBaseDiag.visualSkips, 'Escape on a modal dialog must keep the conservative wait')
+  const dialogOpen = await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("probe-dialog").open' })
+  assert.equal(dialogOpen.value, false, 'Escape did not close the modal dialog')
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("probe-dialog").remove()' })
+  // Focus inside an open shadow root: document.activeElement is the host, so the
+  // tracker must walk shadowRoot.activeElement to find the editable field.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression:
+      '(() => { const host = document.createElement("div"); host.id = "probe-shadow-host"; document.body.append(host); const root = host.attachShadow({ mode: "open" }); const input = document.createElement("input"); input.id = "probe-shadow-input"; root.append(input); input.focus(); return document.activeElement.tagName })()',
+  })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const shadowBaseDiag = await tabDiag()
+  await driver.request('tab.press', { owner: 's1', key: 'k' })
+  const shadowDiag = await tabDiag()
+  assert.equal(shadowDiag.visualSkips, shadowBaseDiag.visualSkips, 'an editable inside an open shadow root must keep the conservative wait')
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur(); document.getElementById("probe-shadow-host").remove()' })
+  // A closed shadow root cannot be inspected, so a focused custom element (the
+  // likely host) keeps the wait instead of guessing that it is not editable.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression:
+      '(() => { const host = document.createElement("x-probe-closed"); host.setAttribute("tabindex", "0"); document.body.append(host); const root = host.attachShadow({ mode: "closed" }); const input = document.createElement("input"); input.id = "probe-closed-input"; root.append(input); input.focus(); return document.activeElement.tagName })()',
+  })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const closedBaseDiag = await tabDiag()
+  await driver.request('tab.press', { owner: 's1', key: 'k' })
+  const closedDiag = await tabDiag()
+  assert.equal(closedDiag.visualSkips, closedBaseDiag.visualSkips, 'a focused custom element must keep the conservative wait (closed shadow root)')
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur(); document.querySelector("x-probe-closed").remove()' })
+  // A page key handler that mutates the DOM is a paint source: the probe must
+  // see the mutation and the screenshot must be fresh.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression:
+      '(() => { window.__pressProbeKey = (event) => { if (event.key === "z") document.getElementById("out").textContent = "key-" + Date.now() }; document.addEventListener("keydown", window.__pressProbeKey); return true })()',
+  })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const handlerBaseShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const handlerBaseBytes = fs.readFileSync(handlerBaseShot.path)
+  const handlerBaseDiag = await tabDiag()
+  // `tab.text` is not probe-covered, so reading the value cannot move the
+  // visualSkips counter this assertion is about.
+  const outBeforePress = (await driver.request('tab.text', { owner: 's1', selector: '#out' })).text
+  await driver.request('tab.press', { owner: 's1', key: 'z' })
+  const handlerShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const handlerDiag = await tabDiag()
+  const outAfterPress = (await driver.request('tab.text', { owner: 's1', selector: '#out' })).text
+  assert.notEqual(outAfterPress, outBeforePress, 'the key handler did not run')
+  assert.equal(handlerDiag.visualSkips, handlerBaseDiag.visualSkips, 'a DOM-mutating key handler must keep the conservative wait')
+  assert.notDeepEqual(fs.readFileSync(handlerShot.path), handlerBaseBytes, 'a DOM-mutating key handler must not be stale')
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.removeEventListener("keydown", window.__pressProbeKey); delete window.__pressProbeKey' })
 
   const tabs = await driver.request('tab.tabs', { owner: 's1', op: 'list' })
   assert.equal(tabs.tabs.length, 1)

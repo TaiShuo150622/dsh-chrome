@@ -763,6 +763,68 @@ node test/bench-scenario.mjs                            # 契约测试（npm tes
 
 **没做/没采纳**：不把 idle 默认自动 settle 到 uptime≈45s（会让 `--idle-seconds` 悄悄多花 45s；改成显式开关 + 报告 uptime）；不按轮逐次采样 CPU（35–139 轮会让 `ps` 进程数翻倍，测出来的是探针自己的开销）；不把启动尾巴预热加进默认路径（10s 跑会变成 50s+，还会改变既有基线）；mixed 不新增「纯动作 CPU」指标（短跑里启动尾巴不可分，硬拆会得到假数）。
 
+### 4.1.12 2026-10-18 第十三轮：键盘 `tab.press` 的重绘窗（Ralph 循环第 10 轮）
+
+**为什么改**：第 3/4 轮让只读 evaluate、边界 scroll、普通 click/hover 在「可证明没有重绘」时复用缓存帧，但 `Input.*` 动作仍无条件推进变更标记。本轮探针实测（同一页、body 焦点）：
+
+| 动作 + 截图 | 截图耗时 | 结果 |
+|---|---|---|
+| `press Escape`（无可编辑焦点） | **43.2–43.4 ms** | 6/6 次 `repaintMisses`，返回按键前的旧帧 |
+| `press k`（body 焦点） | 43.2 ms | 同上 |
+| `press ArrowDown` / `Shift` | 43.3 ms | 同上（这些本来就该等） |
+| 只读 evaluate + 截图 | 0.4–0.8 ms | 命中缓存 |
+| `clickAt` 到普通 div / `drag` | 18.7 / 28.5 ms | 焦点/拖动事件真的重绘了一部分 |
+
+也就是说：**每个无可视效果的按键都白等满 40ms 重绘窗，然后拿回一张旧帧**（`repaintMisses` 计数就是它）。这和第 3/4 轮修的是同一类问题，只是键位路径一直没接探针。
+
+**改了什么**（`src/headless.js`）：
+
+- 追踪器快照新增 5 个字段（都只读、页面侧实测快照仍 ~0.01ms）：`active`（焦点元素 tag，穿透 open shadow root）、`editable`（input/textarea/select/contenteditable/role=textbox…、以及 **iframe/frame/object/embed** 与**自定义元素**——后者可能有无法探测的 closed shadow root）、`interactive`（a[href]/button/summary/label/area/[tabindex]/popovertarget/commandfor，Enter 能激活的东西）、`selection`（非折叠选区）、`fullscreen`（fullscreenElement/pictureInPictureElement）。
+- `visualProbeAction(tab, action, accept, precheck)` 新增 `precheck(before)`：用**动作前**状态否决短路，否决时连第二张快照都不拍（不合格的按键只多付 1 次快照 ≈0.25ms）。
+- `tab.press` 走该探针，键位策略 `pressProbeEligible(key, before)`：
+
+| 键/状态 | 是否短路 | 原因 |
+|---|---|---|
+| 可打印 ASCII 字符（`!`–`~`，不含空格） | 是（≤`complete` 且无编辑/选区/全屏） | 无可编辑焦点时没有 UA 默认动作 |
+| `Enter` | 仅当焦点不在可激活控件上 | 会激活按钮/链接/表单 |
+| `Escape` | 是（无编辑/选区/全屏且页面已加载完） | 只可能关 dialog/popover（都是 DOM 变更）或退全屏（已否决）/中止加载（要求 readyState complete） |
+| `Tab` / 方向键 / PageUp/Down / Home/End / Space / Backspace / Delete / F1–F12 / 任何多字符键名 | 否 | 滚动可能落在 after 快照之后（合成器线程），重载/导航/激活可能在快照之后才提交 |
+| 焦点在可编辑元素、非折叠选区、全屏、自定义元素、`readyState !== 'complete'`、canvas/media/同源 iframe、`DSH_HEADLESS_VISUAL_PROBE=0` | 否 | 探针看不见或来不及看见 |
+
+页面自己的 `keydown` 处理器与 click 处理器同类：同步改 DOM 会被 `mutations` 计数抓住，异步稍后重绘对任何探针都不可见（与 click 的既有边界相同）。**动作语义没有变**：仍然是同样的两次 `Input.dispatchKeyEvent`（keyDown + keyUp），只是不再无条件推进变更标记。
+
+**A/B（同机 3+3 交替，`--seconds 10 --press`，load 4.3–5.4）**：
+
+| 指标 | 改前（`git archive HEAD` 旧驱动 + 新 bench） | 改后 |
+|---|---|---|
+| 每轮 | **44.96–45.12 ms** | **1.65–1.71 ms**（−96%） |
+| 截图 | 43.22–43.37 ms | 0.45–0.47 ms |
+| 轮/秒 | 22.15–22.23 | **582–603** |
+| repaint 超时（每轮白等的 40ms） | 222/222/223 | **0** |
+| visualSkips | 0 | 5828–6028（每轮都短路 + 热身） |
+| RSS | 940–1030 MB | 997–1034 MB |
+
+改前的 45ms/轮 = 0.9ms 快照 + 0.85ms 按键 + 43.3ms 截图（40ms 窗口 + 开销）；改后 1.66ms = 0.39 + 0.82 + 0.45。
+
+**不回归**：mixed 场景 3+3 交替（同机，load 3.9–5.1）每轮 12.24/13.60/12.24 → 12.05/13.00/12.56 ms（中位 12.24 → 12.56，成对 −0.19/−0.60/+0.32，噪声带内）；`visualSkips` 两边都 18、`repaintMisses` 3/4/3 → 3/3/3；各动作桶同带（snapshot 1.20–1.50 / 1.20–1.35、click 1.78–2.23 / 1.92–2.38、screenshot 9.44–10.73 / 9.18–10.06）。
+
+**正确性证据**：
+
+- 正对照：把新 `test/headless.mjs` 放进旧树跑 → 第一条新断言 FAIL（`no-op Escape press did not skip the repaint window: {"before":15,"after":15}`），说明断言不是摆设。
+- `test/headless.mjs` 新增 21 条断言，覆盖：Escape/可打印键短路且字节与缓存帧相同、键盘延迟 <25ms；焦点在按钮时可打印键仍短路而 Enter 不短路；ArrowDown/Shift 不短路；焦点在 input 时 `k`/`Escape` 都不短路；**open shadow root 内的 input** 被 `shadowRoot.activeElement` 穿透；**closed shadow root 的自定义元素**保守等待；非折叠选区等待、清除后恢复短路；`<dialog showModal>` 的 Escape 关闭（属性变更）不短路且 dialog 真的关了；页面 keydown 处理器改 DOM 时截图必须是新帧。
+- `/tmp` 探针同口径复核（modal dialog、handler、open/closed shadow、按钮焦点、选区）；`node test/headless.mjs` PASS、`node test/bench-scenario.mjs` PASS（新增 `--press` 契约：`visualSkips === actions + 1`、`repaintMisses === 0`、截图 <5ms）。
+
+**复跑**：
+
+```bash
+cd /Users/taishuo/projects/dsh-chrome
+node scripts/headless-bench.mjs --seconds 10 --press   # 每轮 ~1.7ms、repaintMisses 0
+node scripts/headless-bench.mjs --seconds 10 --mixed   # 不回归
+node test/headless.mjs && node test/bench-scenario.mjs
+```
+
+**本轮没做**：`tab.clickAt` / `tab.drag` 仍不接探针（`clickAt` 是可信鼠标事件，点中可编辑元素会在已聚焦的输入框内移动插入符、双击会选文本，两者都不可由计数器证明；`drag` 的 `DragEvent` 合成不触发 UA 拖放状态，收益待量）；不放宽键位策略去覆盖 Tab/滚动键/功能键（原因见上表）；不把探针并进动作本身的 evaluate（§PERF-LOOP §2 已否决的方向）。
+
 ## 5. 下一步（H1）
 
 1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
@@ -780,12 +842,12 @@ node test/bench-scenario.mjs                            # 契约测试（npm tes
 
 | 文件 | 内容 |
 |---|---|
-| `src/headless.js` | headless Chromium 启动（`--no-startup-window`：只有 tab 才建窗口，§4.1.10）、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7）、合成 click/hover 的 hazard 判定与 change/toggle 计数（§4.1.8）、JPEG `clip`/`ref` 的 isolated-world 页面裁剪与 screencast 帧几何过滤（§4.1.9） |
+| `src/headless.js` | headless Chromium 启动（`--no-startup-window`：只有 tab 才建窗口，§4.1.10）、CDP client、页面动作、`tab.*`/`browser.*` 请求实现；截图帧流与 `clip`/`ref` 的驱动层 PNG 裁剪（§4.1.1–§4.1.4）、冷启动并行化（§4.1.5）、viewer 帧落盘节流（§4.1.6）、页面侧视觉变更追踪器与重绘窗短路（§4.1.7）、合成 click/hover 的 hazard 判定与 change/toggle 计数（§4.1.8）、JPEG `clip`/`ref` 的 isolated-world 页面裁剪与 screencast 帧几何过滤（§4.1.9）、键盘 press 的重绘窗探针与键位策略（§4.1.12） |
 | `host/host.mjs` | Chrome native messaging host：扩展 ↔ provider 的 JSON 帧中继、discovery 文件重连、viewer 帧落盘（节流，§4.1.6）与扩展热更新监听 |
 | `src/backend.js` | BackendRouter + AsyncLocalStorage + `wrapToolsForBackend`（给 39 个工具加 `backend` 参数） |
 | `index.js` | 创建 HeadlessDriver/Router，包装工具，卸载时关闭 |
-| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4，PNG 驱动裁剪 / JPEG 页面裁剪 §4.1.9）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）、`--noop-click` 普通 click + 截图场景（§4.1.8）、`--mixed` 真实节奏混合场景（§4.1.11）、`--idle-seconds` / `--idle-settle-seconds` 空闲采样（§4.1.11）；输出里带 `screenshotStream` 计数器（served/cropped/jpegCropped/fallbacks）、`snapshot` 响应字节、mixed 轮转/节奏统计、`idle` 块；动作上限 `ACTIONS*50`（短路场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
+| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 每动作 CPU + 相对 §4.1 基线的 delta + 截图格式选项；`--gap-ms` 轮间空闲、`--static` 静态页（测缓存/保活）、`--shot-clip WxH` / `--shot-ref` 元素/区域截图路径（§4.1.4，PNG 驱动裁剪 / JPEG 页面裁剪 §4.1.9）、`--readonly-eval` 只读 evaluate + 截图场景（§4.1.7）、`--noop-click` 普通 click + 截图场景（§4.1.8）、`--mixed` 真实节奏混合场景（§4.1.11）、`--press` 无效果按键 + 截图场景（§4.1.12）、`--idle-seconds` / `--idle-settle-seconds` 空闲采样（§4.1.11）；输出里带 `screenshotStream` 计数器（served/cropped/jpegCropped/fallbacks）、`snapshot` 响应字节、mixed 轮转/节奏统计、`idle` 块；动作上限 `ACTIONS*50`（短路场景 `ACTIONS*2000`），保证 `--seconds` 跑满 |
 | `test/backend-router.mjs` | 路由/参数剥离/默认桌面回归 |
-| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、JPEG clip/ref 的 SOI/EOI 与像素尺寸、同页字节复用与改页新鲜性、主世界覆盖 `toDataURL` 后 isolated-world 裁剪仍正确、viewer 帧落盘产物断言、只读 evaluate/边界 scroll/合成 click/hover 的视觉探针短路与陈旧帧断言） |
-| `test/bench-scenario.mjs` | bench 的 `--mixed` / `--idle-seconds` 契约：真起一次 Chrome 跑 5s 混合场景 + 1s 空闲，断言轮转覆盖五种动作、确定性 150–400ms 节奏、`snapshot` 字节与既有指标字段都在，且 idle 窗口真的等满（§4.1.11） |
+| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、PNG/JPEG 截图帧流复用与新鲜度、format/quality 切换、emulate 尺寸、空闲 2s 后保活缓存、clip/ref 裁剪尺寸与新鲜度、JPEG clip/ref 的 SOI/EOI 与像素尺寸、同页字节复用与改页新鲜性、主世界覆盖 `toDataURL` 后 isolated-world 裁剪仍正确、viewer 帧落盘产物断言、只读 evaluate/边界 scroll/合成 click/hover/无可效果按键的视觉探针短路与陈旧帧断言，含 editable/选区/open+closed shadow root/modal dialog/keydown handler 的反例） |
+| `test/bench-scenario.mjs` | bench 的 `--mixed` / `--idle-seconds` / `--press` 契约：真起 Chrome 跑 5s 混合场景 + 1s 空闲，断言轮转覆盖五种动作、确定性 150–400ms 节奏、`snapshot` 字节与既有指标字段都在、idle 窗口真的等满（§4.1.11）；再跑 4s `--press`，断言每轮都短路（`visualSkips === actions + 1`）、`repaintMisses === 0`、截图桶 <5ms（§4.1.12） |
 | `test/host-reconnect.mjs` | native host 持久化（provider 重启后重连）+ viewer 帧落盘/节流 trailing flush 断言（§4.1.6） |

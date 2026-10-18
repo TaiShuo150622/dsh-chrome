@@ -64,4 +64,27 @@ assert.ok(report.screenshotStream !== null && report.screenshotStream.served > 0
 assert.equal(report.screenshot.format, 'png')
 assert.ok(Number.isFinite(report.delta.rssPercent))
 
+// `--press` (docs/HEADLESS.md §4.1.12): the no-op key press scenario must
+// spend its rounds in the shortcut (every round paint-free), not in the ~40ms
+// repaint window. Before the press probe every round was a repaint miss.
+const pressRun = spawnSync(
+  process.execPath,
+  [path.join(root, 'scripts', 'headless-bench.mjs'), '--seconds', '4', '--press'],
+  { cwd: root, encoding: 'utf8', timeout: 120000 },
+)
+assert.equal(pressRun.status, 0, `press bench exited ${pressRun.status}\nstdout: ${pressRun.stdout}\nstderr: ${pressRun.stderr}`)
+const press = JSON.parse(pressRun.stdout)
+assert.equal(press.pressMode, true)
+assert.ok(press.scenario.includes('snapshot/press'), `unexpected press scenario: ${press.scenario}`)
+assert.ok(press.actions >= 100, `too few press rounds: ${press.actions}`)
+assert.ok(press.perActionMs.press > 0 && press.perActionMs.screenshot > 0, `press timings missing: ${JSON.stringify(press.perActionMs)}`)
+assert.ok(press.perActionMs.screenshot < 5, `press screenshots still pay the repaint window: ${press.perActionMs.screenshot}ms`)
+assert.equal(
+  press.visualSkips,
+  press.actions + 1,
+  `not every press round was proven paint-free: ${JSON.stringify({ visualSkips: press.visualSkips, actions: press.actions })}`,
+)
+assert.equal(press.screenshotStream.repaintMisses, 0, `press rounds paid the repaint window: ${JSON.stringify(press.screenshotStream)}`)
+assert.ok(press.press.keys.Escape > 0 && press.press.keys.k > 0, `press rotation missing keys: ${JSON.stringify(press.press)}`)
+
 console.log('BENCH SCENARIO TEST: PASS')

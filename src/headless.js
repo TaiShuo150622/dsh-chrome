@@ -122,10 +122,11 @@ const SHOT_JPEG_CROP_ENABLED = process.env.DSH_HEADLESS_JPEG_CROP !== '0'
 const SHOT_JPEG_CROP_MAX_FRAME_BYTES = 2 * 1024 * 1024
 const SHOT_JPEG_CROP_WORLD = 'dsh-shot-crop'
 
-// Page-side visual-change probe (docs/HEADLESS.md §4.1.7/§4.1.8). The repaint
-// window above is a blind wait for a composited frame, so an action that cannot
-// have painted anything (a read-only evaluate, a scroll that does not move the
-// viewport, a click on a plain element) still pays it in full. The driver
+// Page-side visual-change probe (docs/HEADLESS.md §4.1.7/§4.1.8/§4.1.12). The
+// repaint window above is a blind wait for a composited frame, so an action that
+// cannot have painted anything (a read-only evaluate, a scroll that does not
+// move the viewport, a click on a plain element, a key press with no editable
+// focus and no UA default action) still pays it in full. The driver
 // installs this tracker in every document and snapshots it around such an
 // action; only a clean verdict keeps the previous change marker, which turns
 // the next screenshot into a frame cache hit instead of a ~40ms wait. Anything
@@ -165,11 +166,52 @@ const VISUAL_TRACKER_SCRIPT = `(() => {
       return false
     } catch { return true }
   }
+  // UA state that a keystroke can change without a DOM mutation: which element
+  // holds focus (and whether it can consume text), a non-collapsed document
+  // selection, and fullscreen / picture-in-picture (Escape leaves those). The
+  // press probe keeps the conservative wait while any of them is set
+  // (docs/HEADLESS.md §4.1.12). A closed shadow root cannot be inspected, so a
+  // custom-element host (tag with a hyphen) is treated as editable too.
+  const activeState = () => {
+    try {
+      let el = document.activeElement
+      for (let depth = 0; depth < 8 && el && el.shadowRoot && el.shadowRoot.activeElement; depth += 1) {
+        el = el.shadowRoot.activeElement
+      }
+      if (!el || el === document.body || el === document.documentElement) {
+        return { active: el ? String(el.tagName || '').toLowerCase() : '', editable: false, interactive: false }
+      }
+      const tag = String(el.tagName || '').toUpperCase()
+      const role = String(el.getAttribute && el.getAttribute('role') || '').toLowerCase()
+      const editable =
+        tag.indexOf('-') >= 0 ||
+        tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+        tag === 'IFRAME' || tag === 'FRAME' || tag === 'OBJECT' || tag === 'EMBED' ||
+        /^(textbox|searchbox|combobox|spinbutton)$/.test(role) ||
+        Boolean(el.isContentEditable)
+      const interactive = editable || Boolean(el.closest && el.closest('a[href], button, summary, label, area, [popovertarget], [commandfor], [tabindex]'))
+      return { active: tag.toLowerCase(), editable, interactive }
+    } catch {
+      return { active: '', editable: true, interactive: true }
+    }
+  }
+  const selectionState = () => {
+    try {
+      const selection = document.getSelection && document.getSelection()
+      return Boolean(selection && selection.type === 'Range' && String(selection))
+    } catch { return true }
+  }
+  const fullscreenState = () => {
+    try {
+      return Boolean(document.fullscreenElement || document.pictureInPictureElement)
+    } catch { return true }
+  }
   window.__dshVisual = {
     snapshot() {
       // Canvas pixels and media surfaces repaint with no DOM mutation at all,
       // so their presence disables the shortcut (one scan covers both).
       const heavy = document.querySelector('canvas, video, audio')
+      const active = activeState()
       return {
         doc: docId,
         url: location.href,
@@ -181,6 +223,11 @@ const VISUAL_TRACKER_SCRIPT = `(() => {
         toggles: state.toggles,
         animations: typeof document.getAnimations === 'function' ? document.getAnimations().length : -1,
         scroll: [window.scrollX, window.scrollY],
+        active: active.active,
+        editable: active.editable,
+        interactive: active.interactive,
+        selection: selectionState(),
+        fullscreen: fullscreenState(),
         canvas: Boolean(heavy && heavy.tagName === 'CANVAS'),
         media: Boolean(heavy && (heavy.tagName === 'VIDEO' || heavy.tagName === 'AUDIO')),
         frames: sameOriginFrame(),
@@ -198,6 +245,33 @@ const VISUAL_TRACKER_SCRIPT = `(() => {
 // makes sure the last frame of a burst still lands, and `tab.screencast_stop`
 // flushes synchronously so the final frame is never dropped.
 const SCREENCAST_WRITE_INTERVAL_MS = 100
+
+// Keys the press probe may cover (docs/HEADLESS.md §4.1.12): only keys without
+// a UA default action outside an editable field. Scrolling keys (arrows, page,
+// home/end, space) keep the conservative wait because the compositor scroll can
+// land after the after-snapshot; activation/navigation/reload keys (Enter on a
+// focused control, Tab, F-keys) keep it because their effect may commit after
+// the snapshot; and any editable/selection/fullscreen state keeps it too. The
+// page's own key handlers are covered by the same tracker counters a click
+// handler is; an asynchronous handler that paints later is out of scope for the
+// probe exactly as it is for clicks.
+const PRESS_PROBE_PRINTABLE = /^[!-~]$/
+
+function pressProbeEligible(key, before) {
+  if (!before) return false
+  if (before.readyState !== 'complete') return false
+  if (before.broken || before.canvas || before.media || before.frames) return false
+  if (before.editable || before.selection || before.fullscreen) return false
+  // A printable character has no UA default action outside an editable field.
+  if (PRESS_PROBE_PRINTABLE.test(key)) return true
+  // Escape leaves a dialog/popover/fullscreen or cancels a load: the first two
+  // mutate the DOM (caught by the verdict) and the rest are excluded above.
+  if (key === 'Escape') return true
+  // Enter activates a focused control, so it only qualifies when the focused
+  // element is not one the UA can activate.
+  if (key === 'Enter') return !before.interactive
+  return false
+}
 
 // Every request that can change what the page renders bumps the owning tab's
 // change marker. `tab.screenshot` only reuses a streamed frame (or waits for a
@@ -1525,7 +1599,12 @@ export class HeadlessDriver {
       Number.isFinite(value.animations) &&
       Array.isArray(value.scroll) &&
       Number.isFinite(value.scroll[0]) &&
-      Number.isFinite(value.scroll[1])
+      Number.isFinite(value.scroll[1]) &&
+      typeof value.active === 'string' &&
+      typeof value.editable === 'boolean' &&
+      typeof value.interactive === 'boolean' &&
+      typeof value.selection === 'boolean' &&
+      typeof value.fullscreen === 'boolean'
     )
   }
 
@@ -1546,6 +1625,12 @@ export class HeadlessDriver {
     if (before.animations < 0) return 'unknown'
     if (before.animations !== after.animations) return 'unknown'
     if (before.scroll[0] !== after.scroll[0] || before.scroll[1] !== after.scroll[1]) return 'unknown'
+    // Focus/selection/fullscreen can move without a repaint and without a
+    // tracker counter for some transitions; a change keeps the conservative
+    // wait (the press probe's own eligibility checks also read these).
+    if (before.active !== after.active || before.editable !== after.editable) return 'unknown'
+    if (before.interactive !== after.interactive) return 'unknown'
+    if (before.selection !== after.selection || before.fullscreen !== after.fullscreen) return 'unknown'
     return 'clean'
   }
 
@@ -1553,9 +1638,11 @@ export class HeadlessDriver {
   // previous change marker (`tab.skipRenderChange`), so the next screenshot
   // reuses the cached frame instead of waiting for a frame that cannot come.
   // `accept(value)` can veto the shortcut from the action's own result (a click
-  // whose target may navigate or flip a form control): a veto skips the second
-  // snapshot entirely, so ineligible actions pay one round trip, not two.
-  async visualProbeAction(tab, action, accept = null) {
+  // whose target may navigate or flip a form control); `precheck(before)` can
+  // veto it from the pre-action state (a key press over an editable field). A
+  // veto skips the second snapshot entirely, so ineligible actions pay one
+  // round trip, not two.
+  async visualProbeAction(tab, action, accept = null, precheck = null) {
     const before = await this.visualSnapshot(tab)
     let value
     let failure = null
@@ -1569,11 +1656,20 @@ export class HeadlessDriver {
       return value
     }
     let eligible = true
-    if (!failure && accept) {
-      try {
-        eligible = Boolean(accept(value))
-      } catch {
-        eligible = false
+    if (!failure) {
+      if (precheck) {
+        try {
+          eligible = Boolean(precheck(before))
+        } catch {
+          eligible = false
+        }
+      }
+      if (eligible && accept) {
+        try {
+          eligible = Boolean(accept(value))
+        } catch {
+          eligible = false
+        }
       }
     }
     if (!failure && !eligible) return value
@@ -2369,9 +2465,24 @@ export class HeadlessDriver {
         const tab = await this.ensureTab(owner, params.tabId)
         const key = String(params.key || '')
         const keyCode = key === 'Enter' ? 13 : key === 'Tab' ? 9 : key === 'Escape' ? 27 : 0
-        await this.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: keyCode }, tab.sessionId)
-        await this.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: keyCode }, tab.sessionId)
-        return { ok: true, tabId: tab.tabId, key }
+        // A key press with no UA default action outside an editable field cannot
+        // paint unless a page handler changes something the tracker sees, so the
+        // same probe the click path uses keeps the previous change marker and
+        // the next screenshot reuses the cached frame instead of paying the
+        // repaint window (docs/HEADLESS.md §4.1.12). `pressProbeEligible` vetoes
+        // the key classes whose effect can commit after the after-snapshot;
+        // a veto skips the second snapshot entirely.
+        const result = await this.visualProbeAction(
+          tab,
+          async () => {
+            await this.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: keyCode }, tab.sessionId)
+            await this.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: keyCode }, tab.sessionId)
+            return { ok: true, tabId: tab.tabId, key }
+          },
+          null,
+          (before) => pressProbeEligible(key, before),
+        )
+        return result
       }
       case 'tab.history': {
         const tab = await this.ensureTab(owner, params.tabId)

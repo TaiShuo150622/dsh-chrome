@@ -21,7 +21,8 @@
  *   node scripts/headless-bench.mjs [--seconds 10] [--actions 20]
  *                                   [--shot-format png|jpeg] [--shot-quality 60]
  *                                   [--no-optimize] [--gap-ms 0] [--static]
- *                                   [--readonly-eval] [--noop-click] [--mixed]
+ *                                   [--readonly-eval] [--noop-click] [--press]
+ *                                   [--mixed]
  *                                   [--idle-seconds 0] [--idle-settle-seconds 0]
  *
  * Both formats are served from the tab's screenshot frame stream (PNG or JPEG
@@ -46,7 +47,14 @@
  * after an action that provably painted nothing (docs/HEADLESS.md §4.1.7).
  * `--noop-click` replaces them with a synthetic click on a plain, handler-free
  * `<div>`: the click cannot paint either, so every round measures the same
- * repaint window for click (docs/HEADLESS.md §4.1.8). The action cap is
+ * repaint window for click (docs/HEADLESS.md §4.1.8). `--press` replaces them
+ * with a key press that has no UA default action (Escape on body / a printable
+ * character, alternating): with no focused editable field the press cannot
+ * paint, so every round measures the repaint window the keyboard path used to
+ * pay (docs/HEADLESS.md §4.1.12; the keys the probe vetoes are covered by
+ * test/headless.mjs). The report's `visualSkips` counts the actions proven
+ * paint-free, so a run where the shortcut did not fire is visible. The action
+ * cap is
  * ACTIONS*50 (ACTIONS*2000 for the shortcut scenarios) so the default 10s run
  * is time-bound rather than cap-bound.
  *
@@ -111,6 +119,13 @@ const NOOP_CLICK = hasFlag('--noop-click')
 const MIXED = hasFlag('--mixed')
 const MIXED_KINDS = ['type', 'click', 'evaluate', 'noopClick', 'scroll']
 const mixedGapMs = (index) => 150 + ((index * 97) % 251)
+// No-op key-press scenario (docs/HEADLESS.md §4.1.12): snapshot + press +
+// screenshot, with no focused editable field and a key whose UA default action
+// is nothing (Escape on body / a printable character). The press cannot paint,
+// so the screenshot must reuse the cached frame instead of paying the repaint
+// window. `--press` deliberately uses only keys the press probe covers; the
+// keys it vetoes are covered by the driver tests.
+const PRESS = hasFlag('--press')
 // Element/region screenshot scenarios. Clip coordinates are CSS px like the
 // `clip` tool parameter; ref mode uses the input control from the same snapshot
 // the round already takes, so it measures ref resolution + crop end to end.
@@ -195,8 +210,8 @@ function processStats() {
 // Wall-clock accumulator per action kind; Chrome CPU is sampled only around the
 // whole loop, but wall time isolates which request dominates a round.
 function createTimer() {
-  const buckets = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0 }
-  const counts = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0 }
+  const buckets = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0 }
+  const counts = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0 }
   return {
     buckets,
     counts,
@@ -266,6 +281,7 @@ try {
     kinds: Object.fromEntries(MIXED_KINDS.map((kind) => [kind, 0])),
     gap: { samples: 0, sum: 0, min: Infinity, max: 0 },
   }
+  const pressStats = { keys: { Escape: 0, k: 0 } }
   const mixedKindFor = (index) => MIXED_KINDS[((index % MIXED_KINDS.length) + MIXED_KINDS.length) % MIXED_KINDS.length]
   const runRound = async (timer, index, measured) => {
     const timed = timer ? (kind, fn) => timer.time(kind, fn) : (kind, fn) => fn()
@@ -293,6 +309,12 @@ try {
       await timed('click', () => driver.request('tab.click', { owner: 'bench', selector: '#noop' }))
     } else if (READONLY_EVAL) {
       await timed('evaluate', () => driver.request('tab.evaluate', { owner: 'bench', expression: READONLY_EXPRESSION }))
+    } else if (PRESS) {
+      // Alternating UA-neutral key: Escape with no dialog/fullscreen and a
+      // printable character with no editable focus both have no default action.
+      const key = index % 2 === 0 ? 'Escape' : 'k'
+      pressStats.keys[key] += 1
+      await timed('press', () => driver.request('tab.press', { owner: 'bench', key }))
     } else if (input && !STATIC) {
       await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${index}`, replace: true }))
     }
@@ -302,7 +324,7 @@ try {
     // viewport offset, otherwise half the rounds would fall back to capture
     // because the element left the viewport (the honest off-screen case, but
     // not what this scenario is measuring).
-    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK) {
+    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK && !PRESS) {
       await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: SHOT_REF ? 60 : 200 }))
     }
   }
@@ -321,7 +343,7 @@ try {
   // per second possible, which used to hit the old ACTIONS*20=400 cap early).
   // The read-only evaluate and no-op click scenarios are orders of magnitude
   // cheaper per round, so they need a much higher cap to stay time-bound.
-  const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK ? 2000 : 50)
+  const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK || PRESS ? 2000 : 50)
   while (Date.now() < until && actions < ACTION_CAP) {
     await runRound(timer, actions, true)
     actions += 1
@@ -345,7 +367,7 @@ try {
   const cpuMsPerAction = round((cpuSeconds * 1000) / Math.max(1, actions), 2)
   const perActionMs = timer.averages()
   const roundTotalMs = round(
-    (timer.buckets.snapshot + timer.buckets.type + timer.buckets.evaluate + timer.buckets.click + timer.buckets.screenshot + timer.buckets.scroll) /
+    (timer.buckets.snapshot + timer.buckets.type + timer.buckets.evaluate + timer.buckets.click + timer.buckets.screenshot + timer.buckets.scroll + timer.buckets.press) /
       Math.max(1, actions),
     2,
   )
@@ -354,6 +376,7 @@ try {
   // Frame-stream counters describe the active loop; snapshot them before the
   // idle window so frames produced during idle cannot leak into active numbers.
   const streamDiag = shotStreamDiag()
+  const visualSkips = [...driver.tabs.values()].reduce((sum, tab) => sum + (tab.visualSkips || 0), 0)
   // Optional idle window: the browser is left exactly as the last round left it
   // (the input may keep focus and blink a caret), which is the honest "no tool
   // call in flight" state for a user who is reading the result.
@@ -396,9 +419,11 @@ try {
           : `headless active: ${actions} ${SHOT_FORMAT} ${
               NOOP_CLICK
                 ? 'snapshot/click(noop div)/screenshot (page never repaints)'
-                : READONLY_EVAL
-                  ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)'
-                  : STATIC
+                : PRESS
+                  ? 'snapshot/press(Escape,k)/screenshot (no editable focus, page never repaints)'
+                  : READONLY_EVAL
+                    ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)'
+                    : STATIC
                     ? 'snapshot/screenshot (static page)'
                     : 'snapshot/type/screenshot/scroll'
             } rounds${SHOT_MODE === 'viewport' ? '' : ` (${SHOT_MODE} screenshot)`}`,
@@ -409,6 +434,7 @@ try {
         staticMode: STATIC,
         readonlyEval: READONLY_EVAL,
         noopClick: NOOP_CLICK,
+        pressMode: PRESS,
         mixedMode: MIXED,
         shotMode: SHOT_MODE,
         ...(SHOT_CLIP ? { shotClip: SHOT_CLIP } : {}),
@@ -426,6 +452,11 @@ try {
           bytesMean: payloadStats.calls ? Math.round(payloadStats.bytes / payloadStats.calls) : 0,
           bytesMax: payloadStats.maxBytes,
         },
+        // Shortcut coverage: how many page-changing actions were proven
+        // paint-free and kept the previous frame marker. The press scenario's
+        // whole point is that this equals the round count.
+        visualSkips,
+        ...(PRESS ? { press: { keys: pressStats.keys } } : {}),
         ...(MIXED
           ? {
               mixed: {
