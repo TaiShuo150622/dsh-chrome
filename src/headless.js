@@ -1010,6 +1010,16 @@ export class HeadlessDriver {
         executable,
         [
           '--headless=new',
+          // Every tab is created by the driver through Target.createTarget, so
+          // the startup window/page that Chrome would open is dead weight: it
+          // pins one renderer process (~70-90MB RSS) to an about:blank page
+          // nobody ever drives (docs/HEADLESS.md §4.1.10). Without it Chrome
+          // starts with no tabs and still stays alive (verified: closing the
+          // last session tab does not exit the browser), and the first tab
+          // creates its window with the same 1440x813 viewport because
+          // --window-size still applies to windows created later. The
+          // positional about:blank is kept for a Chrome that ignores the flag.
+          '--no-startup-window',
           '--remote-debugging-port=0',
           `--user-data-dir=${profileDir}`,
           '--no-first-run',
