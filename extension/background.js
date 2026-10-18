@@ -261,6 +261,36 @@ async function firstActiveTabId() {
 const expectedActivations = new Set()
 const lastActiveByWindow = new Map()
 
+async function persistActiveWindows() {
+  try {
+    await chrome.storage.local.set({ dshActiveWindows: Object.fromEntries(lastActiveByWindow) })
+  } catch {
+    // best effort
+  }
+}
+
+async function initActiveWindows() {
+  try {
+    const stored = await chrome.storage.local.get('dshActiveWindows')
+    for (const [windowId, tabId] of Object.entries(stored?.dshActiveWindows || {})) {
+      const id = Number(windowId)
+      const tab = Number(tabId)
+      if (Number.isFinite(id) && Number.isFinite(tab)) lastActiveByWindow.set(id, tab)
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    const activeTabs = await chrome.tabs.query({ active: true })
+    for (const tab of activeTabs) {
+      if (Number.isFinite(tab.windowId) && Number.isFinite(tab.id)) lastActiveByWindow.set(tab.windowId, tab.id)
+    }
+    await persistActiveWindows()
+  } catch {
+    // ignore
+  }
+}
+
 async function ensureNotPaused(owner) {
   const entry = await getSessionEntry(owner)
   if (entry.paused) {
@@ -287,6 +317,7 @@ async function onTabActivated(info) {
   const sessions = await loadSessions()
   const previous = lastActiveByWindow.get(windowId)
   lastActiveByWindow.set(windowId, tabId)
+  persistActiveWindows().catch(() => {})
   const expected = expectedActivations.delete(tabId)
   const ownerOfTab = Object.entries(sessions).find(([, entry]) => Array.isArray(entry?.tabIds) && entry.tabIds.includes(tabId))
   if (ownerOfTab) {
@@ -3504,6 +3535,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.runtime.onInstalled.addListener(() => {
   ensureReconnectAlarm()
   ensurePort().catch(() => {})
+initActiveWindows().catch(() => {})
 })
 chrome.runtime.onStartup.addListener(() => {
   ensureReconnectAlarm()

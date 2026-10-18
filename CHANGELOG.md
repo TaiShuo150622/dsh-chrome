@@ -11,6 +11,17 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.78] - 2026-10-17
+
+### Added / Fixed（D2/D3 真机验证补充）
+
+- `chrome_pick` 增加 `nowait:true`（启动后立即返回）与 `poll:true`（读取结果/`pending:true`），阻塞式默认行为不变；`tabId` 输出允许 null
+- **D3 关键修复**：`lastActiveByWindow` 持久化到 `chrome.storage.local` 并在 worker 启动时用 `tabs.query({active:true})` 初始化——SW 被回收后用户切页仍能触发 pause（之前会因 affinity 丢失漏判）
+- 真机（Chrome for Testing headless，0.1.78）：
+  - pick：`nowait` → 覆盖层截图 → 坐标点击 → `poll` 返回 `ref=1 #greet`；随后 click ref → 页面 `Hello stranger`
+  - pause：CDP 激活 about:blank → click 返回 `USER_SWITCHED`；`chrome_resume` → click 恢复
+- p2/extension-logic 覆盖 nowait/poll 与 pause/resume 仍全绿
+
 ## [0.1.77] - 2026-10-17
 
 ### Added（批次 D4：截图历史 MVP）

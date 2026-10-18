@@ -1434,6 +1434,8 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       properties: {
         timeoutMs: { type: 'number', description: 'Pick timeout, 500-120000 ms (default 60000).' },
         cancel: { type: 'boolean', description: 'Cancel the active pick instead of starting a new one.' },
+        nowait: { type: 'boolean', description: 'Start pick mode and return immediately; use poll:true later to fetch the result.' },
+        poll: { type: 'boolean', description: 'Return the current pick status; pending:true means the user has not clicked yet.' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
       additionalProperties: false,
@@ -1446,9 +1448,13 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         tag: { type: 'string' },
         box: { type: 'array', items: { type: 'number' } },
         canceled: { type: 'boolean' },
-        tabId: { type: 'number' },
+        started: { type: 'boolean' },
+        pending: { type: 'boolean' },
+        tabId: {},
       }),
       render: (_args, value) => {
+        if (value.pending) return renderText('Pick pending: waiting for the user to click an element')
+        if (value.started) return renderText('Pick mode started; use chrome_pick {poll:true} to fetch the result')
         if (value.canceled) return renderText('Pick canceled')
         return renderText(
           `Picked <${value.tag || 'element'}> ref=${value.ref} ${JSON.stringify(value.text || '')}\nselector: ${value.selector || ''}\nbox: [${(value.box || []).join(',')}]`,
@@ -1461,6 +1467,17 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       if (args?.cancel) {
         await call('tab.pick_cancel', { tabId, owner }, 15000)
         return { canceled: true, tabId: tabId ?? null }
+      }
+      if (args?.poll) {
+        const status = await call('tab.pick_status', { tabId, owner }, 15000)
+        if (!status?.available) throw new BridgeError('PICK_CANCELED', 'no pick mode is active')
+        if (!status.done) return { pending: true, tabId: tabId ?? null }
+        if (status.canceled || !status.result) throw new BridgeError('PICK_CANCELED', 'pick was canceled')
+        return { ...status.result, canceled: false, tabId: tabId ?? null }
+      }
+      if (args?.nowait) {
+        const startedInfo = await call('tab.pick_start', { tabId, owner }, 15000)
+        return { started: true, tabId: startedInfo?.tabId ?? tabId ?? null }
       }
       const timeoutMs = Number.isFinite(args?.timeoutMs)
         ? Math.max(500, Math.min(120000, Number(args.timeoutMs)))
