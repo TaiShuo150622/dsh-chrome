@@ -913,6 +913,51 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   })
 
+  // ------------------------------------------------------------ 4b. chrome_html
+  list.push({
+    name: 'chrome_html',
+    description:
+      'Read the DOM/HTML of the current page or a selector. Credential-shaped attributes (value/csrf/token/password/secret/session/cookie/api-key) are masked before returning; mode "simplified" also strips scripts, styles, comments, inline event handlers and style attributes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector to read (default: whole documentElement).' },
+        mode: { type: 'string', enum: ['outer', 'simplified'], description: 'outer = raw outerHTML with masked secrets; simplified = also strip scripts/styles/handlers (default outer).' },
+        maxChars: { type: 'number', description: 'Optional cap (500-200000, default 20000).' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        found: { type: 'boolean' },
+        mode: { type: 'string' },
+        html: { type: 'string' },
+        truncated: { type: 'boolean' },
+        length: { type: 'number' },
+        tabId: { type: 'number' },
+      }),
+      render: (_args, value) => {
+        const body = String(value.html ?? '')
+        const shown = body.length > 3000 ? `${body.slice(0, 3000)}\n… (${body.length} chars total)` : body
+        return renderText(`HTML (${value.mode || 'outer'}${value.truncated ? ', truncated' : ''}):\n${shown}`)
+      },
+    },
+    async execute(args, exec) {
+      return call(
+        'tab.html',
+        {
+          selector: args?.selector,
+          mode: args?.mode,
+          maxChars: args?.maxChars,
+          tabId: args?.tabId,
+          owner: ownerOf(exec),
+        },
+        30000,
+      )
+    },
+  })
+
   // ---------------------------------------------------------------- 5. click
   list.push({
     name: 'chrome_click',

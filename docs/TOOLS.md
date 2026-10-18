@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：26
+> 工具数量：27
 
 ### `chrome_status`
 
@@ -158,6 +158,17 @@ Hover over the control with the given snapshot ref (useful to reveal menus, tool
 | `ref` | number | no | Control number from the latest chrome_snapshot or chrome_find. |
 | `selector` | string | no | CSS selector alternative to ref (used when ref is omitted). |
 | `snapshot` | boolean | no | Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip). |
+| `tabId` | number | no | Optional tab id owned by this session. |
+
+### `chrome_html`
+
+Read the DOM/HTML of the current page or a selector. Credential-shaped attributes (value/csrf/token/password/secret/session/cookie/api-key) are masked before returning; mode "simplified" also strips scripts, styles, comments, inline event handlers and style attributes.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `selector` | string | no | CSS selector to read (default: whole documentElement). |
+| `mode` | enum(outer | simplified) | no | outer = raw outerHTML with masked secrets; simplified = also strip scripts/styles/handlers (default outer). |
+| `maxChars` | number | no | Optional cap (500-200000, default 20000). |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_click`

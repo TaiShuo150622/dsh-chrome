@@ -488,6 +488,8 @@ async function handleRequest(message) {
       return click(owner, params)
     case 'tab.clickAt':
       return clickAt(owner, params)
+    case 'tab.html':
+      return html(owner, params)
     case 'tab.type':
       return typeText(owner, params)
     case 'tab.press':
@@ -573,6 +575,7 @@ const PAGE_ACTIONS = {
   storage: pageStorage,
   drag: dragByRef,
   elementBox,
+  html: outerHtml,
   overlay: drawRefOverlay,
   overlayRemove: removeRefOverlay,
   hasSelector,
@@ -952,6 +955,18 @@ async function clickAt(owner, params) {
     throw bridgeError(result?.reason || 'INTERNAL', result?.message || 'click_at failed')
   }
   return attachSnapshotIfRequested(tabId, { ...result, tabId }, params)
+}
+
+async function html(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const selector = params.selector ? String(params.selector) : ''
+  const mode = params.mode === 'simplified' ? 'simplified' : 'outer'
+  const maxChars = Number(params.maxChars)
+  const result = await callInPage(tabId, 'html', [selector, mode, Number.isFinite(maxChars) ? maxChars : null], 15000)
+  if (!result?.found) {
+    throw bridgeError(result?.error || 'SELECTOR_NOT_FOUND', result?.message || `selector not found: ${selector || '(document)'}`)
+  }
+  return { ...result, tabId }
 }
 
 async function typeText(owner, params) {
@@ -2104,6 +2119,47 @@ function readNetwork(filter, limit) {
       transferSize: entry.transferSize || 0,
       ...(Number.isFinite(entry.responseStatus) ? { status: entry.responseStatus } : {}),
     })),
+  }
+}
+
+function outerHtml(selector, mode, maxChars) {
+  const limit = Number.isFinite(maxChars) ? Math.max(500, Math.min(200000, maxChars)) : 20000
+  let root = null
+  try {
+    root = selector
+      ? window.__dshDeep?.one(String(selector)) || document.querySelector(String(selector))
+      : document.documentElement
+  } catch {
+    return { found: false, error: 'INVALID_SELECTOR', message: 'invalid selector' }
+  }
+  if (!root) return { found: false, error: 'SELECTOR_NOT_FOUND', message: `selector not found: ${selector}` }
+  const simplify = mode === 'simplified'
+  let raw = root.outerHTML || ''
+  if (simplify) {
+    raw = raw
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/\sstyle\s*=\s*("[^"]*"|'[^']*')/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+  // Never let credential-shaped attributes reach the model. Values are
+  // masked even in "outer" mode; script/style text is removed in simplified.
+  raw = raw
+    .replace(/\bvalue\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, 'value="••••"')
+    .replace(
+      /\b(?:[a-z0-9_-]*(?:token|secret|csrf|password|passwd|authorization|cookie|session|api[-_]?key)[a-z0-9_-]*)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi,
+      (match) => match.replace(/=\s*("[^"]*"|'[^']*'|[^\s>]+)$/, '="••••"'),
+    )
+  const truncated = raw.length > limit
+  return {
+    found: true,
+    mode: simplify ? 'simplified' : 'outer',
+    html: truncated ? raw.slice(0, limit) : raw,
+    truncated,
+    length: raw.length,
   }
 }
 

@@ -11,6 +11,13 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.63] - 2026-10-17
+
+### Added
+
+- **chrome_html（批次 A3，工具面 27）**：读取当前页/selector 的 HTML；`value` 与 token/secret/csrf/password/session/cookie/api-key 形状属性一律打码；simplified 模式再剥 script/style/注释/内联事件与 style；支持截断
+- fixture：`html-test.html`；真机验证整页与 #api 片段的脱敏输出
+
 ## [0.1.62] - 2026-10-17
 
 ### Added
