@@ -1452,9 +1452,16 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         const blocks = []
         if (value.image) blocks.push({ type: 'image', attachment: value.image })
         if (value.active) {
+          const visibility = [
+            value.visible != null ? `visible=${value.visible}` : null,
+            value.tabActive != null ? `tabActive=${value.tabActive}` : null,
+            value.frameAgeMs != null ? `frameAge=${value.frameAgeMs}ms` : null,
+          ]
+            .filter(Boolean)
+            .join(' ')
           blocks.push({
             type: 'text',
-            text: `Screencast active (${value.format || 'jpeg'}), frames=${value.frames ?? '—'}${value.path ? `\nlatest frame: ${value.path}` : '\nwaiting for the first frame…'}`,
+            text: `Screencast active (${value.format || 'jpeg'}), frames=${value.frames ?? '—'}${visibility ? `, ${visibility}` : ''}${value.path ? `\nlatest frame: ${value.path}` : '\nwaiting for the first frame…'}${value.hint ? `\n${value.hint}` : ''}`,
           })
         } else {
           blocks.push({

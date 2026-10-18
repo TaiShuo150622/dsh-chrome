@@ -74,7 +74,7 @@ function viewerHtml(token) {
   img { display: block; max-width: 100vw; max-height: calc(100vh - 40px); margin: 0 auto; }
 </style></head>
 <body>
-<header><b>DSH · Chrome Live</b><span>最新帧（页面有变化时刷新）</span><span id="st">连接中…</span></header>
+<header><b>DSH · Chrome Live</b><span>最新帧（页面有变化时刷新）</span><span>需要可见 tab；start 已自动激活</span><span id="st">连接中…</span></header>
 <img id="frame" alt="screencast frame" src="${frameUrl}">
 <script>
   const img = document.getElementById('frame')
@@ -109,7 +109,7 @@ async function serveFrame(req, res, home) {
       // try next
     }
   }
-  plain(res, 404, 'no screencast frame yet; call chrome_screencast {op:"start"} first')
+  plain(res, 404, 'no screencast frame yet; call chrome_screencast {op:"start"} first. Note: desktop screencast needs a visible/active tab; chrome_screencast start now auto-activates the tab and expands its group.')
 }
 
 /**
