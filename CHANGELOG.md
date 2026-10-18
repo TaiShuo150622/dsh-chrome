@@ -11,6 +11,17 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.77] - 2026-10-17
+
+### Added（批次 D4：截图历史 MVP）
+
+- 新工具 `chrome_shots`（工具面 36→37）：`op:"list"` 扫 `~/.dsh/cache/dsh-chrome/screenshots/`，返回名称/大小/修改时间/PNG 尺寸；`op:"read"` 读取目录内截图并作为图像附件返回
+- 历史文件系统持久化，DSH/扩展重启后仍在；路径校验只允许截图目录内
+- 真机（provider 本地）：list 5 条历史（含 2880x1556/174x44），read 返回 174x44 图像
+- p2 测试：列表/PNG 尺寸/读取/目录外路径拒绝
+
+> 扩展版本 0.1.77 仅作发布标记（D4 为 provider 侧能力）。
+
 ## [0.1.76] - 2026-10-17
 
 ### Added（批次 D3：切页 pause / follow）

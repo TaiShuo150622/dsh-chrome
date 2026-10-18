@@ -1287,6 +1287,125 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   })
 
+  // ---------------------------------------------------------- 4i. shots
+  list.push({
+    name: 'chrome_shots',
+    description:
+      'List or read screenshot history saved by this provider (~/.dsh/cache/dsh-chrome/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under that directory) as an image attachment.',
+    parameters: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['list', 'read'] },
+        limit: { type: 'number', description: 'list: max entries (default 20, max 100).' },
+        path: { type: 'string', description: 'read: absolute path under the screenshots directory.' },
+      },
+      required: ['op'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        directory: { type: 'string' },
+        entries: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        path: { type: 'string' },
+        width: {},
+        height: {},
+        bytes: { type: 'number' },
+        image: { type: 'object', additionalProperties: true },
+      }),
+      render: (_args, value) => {
+        if (value.image) {
+          return [
+            { type: 'image', attachment: value.image },
+            { type: 'text', text: `Screenshot ${value.width}x${value.height} (${formatBytes(value.bytes)}) ${value.path}` },
+          ]
+        }
+        const lines = (value.entries || []).map(
+          (entry) => `- ${entry.mtime} ${entry.name} (${formatBytes(entry.bytes)}${entry.width ? `, ${entry.width}x${entry.height}` : ''})`,
+        )
+        return renderText(`Screenshot history (${value.entries?.length ?? 0}) in ${value.directory}\n${lines.join('\n')}`)
+      },
+    },
+    async execute(args) {
+      const directory = path.join(dshHome(), 'cache', 'dsh-chrome', 'screenshots')
+      const op = String(args?.op || 'list')
+      if (op === 'list') {
+        const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.min(100, Number(args.limit))) : 20
+        let names = []
+        try {
+          names = await fsp.readdir(directory)
+        } catch {
+          names = []
+        }
+        const entries = []
+        for (const name of names) {
+          if (!/\.(png|jpe?g)$/i.test(name)) continue
+          const file = path.join(directory, name)
+          try {
+            const stat = await fsp.stat(file)
+            const entry = {
+              name,
+              path: file,
+              bytes: stat.size,
+              mtime: stat.mtime.toISOString(),
+              mtimeMs: stat.mtimeMs,
+            }
+            if (/\.png$/i.test(name)) {
+              try {
+                const head = Buffer.alloc(24)
+                const handle = await fsp.open(file, 'r')
+                try {
+                  await handle.read(head, 0, 24, 0)
+                } finally {
+                  await handle.close()
+                }
+                if (head.readUInt32BE(0) === 0x89504e47) {
+                  entry.width = head.readUInt32BE(16)
+                  entry.height = head.readUInt32BE(20)
+                }
+              } catch {
+                // dimensions optional
+              }
+            }
+            entries.push(entry)
+          } catch {
+            // skip unreadable file
+          }
+        }
+        entries.sort((a, b) => b.mtimeMs - a.mtimeMs)
+        return { directory, entries: entries.slice(0, limit) }
+      }
+      if (op === 'read') {
+        const target = path.resolve(String(args?.path || ''))
+        const root = path.resolve(directory)
+        if (!target.startsWith(`${root}${path.sep}`)) {
+          throw new BridgeError('INVALID_ARGUMENT', 'path must be inside the screenshots directory')
+        }
+        const data = await fsp.readFile(target)
+        let width
+        let height
+        if (data.length >= 24 && data.readUInt32BE(0) === 0x89504e47) {
+          width = data.readUInt32BE(16)
+          height = data.readUInt32BE(20)
+        }
+        let image = null
+        try {
+          const service = attachments?.()
+          if (service) {
+            image = await service.saveImage({
+              data: new Uint8Array(data),
+              mediaType: /\.jpe?g$/i.test(target) ? 'image/jpeg' : 'image/png',
+              name: path.basename(target),
+            })
+          }
+        } catch {
+          image = null
+        }
+        return { directory, path: target, bytes: data.byteLength, width, height, image }
+      }
+      throw new BridgeError('INVALID_ARGUMENT', `unknown shots op: ${op}`)
+    },
+  })
+
   // ---------------------------------------------------------- 4h. resume
   list.push({
     name: 'chrome_resume',

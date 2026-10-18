@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：36
+> 工具数量：37
 
 ### `chrome_status`
 
@@ -216,6 +216,16 @@ Read the recent site-policy audit log (~/.dsh/cache/dsh-chrome/audit.jsonl): tim
 |---|---|---|---|
 | `limit` | number | no | Max entries returned (default 20, max 100). |
 | `origin` | string | no | Only entries for this origin. |
+
+### `chrome_shots`
+
+List or read screenshot history saved by this provider (~/.dsh/cache/dsh-chrome/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under that directory) as an image attachment.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `op` | enum(list | read) | yes |  |
+| `limit` | number | no | list: max entries (default 20, max 100). |
+| `path` | string | no | read: absolute path under the screenshots directory. |
 
 ### `chrome_resume`
 

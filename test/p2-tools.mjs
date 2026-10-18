@@ -123,7 +123,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('thirty-six tools registered', tools.length === 36, tools.map((t) => t.name).join(', '))
+check('thirty-seven tools registered', tools.length === 37, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -232,6 +232,29 @@ const networkValue = await byName.chrome_network.execute({ filter: 'a.js', limit
 check('network status is returned', networkValue.entries?.[0]?.status === 200)
 check('chrome_network executes', networkValue.entries?.[0]?.url === 'https://example.com/a.js')
 check('network filter reaches the extension', requests.at(-1)?.params?.filter === 'a.js')
+
+// D4: screenshot history is filesystem-backed
+const shotsDir = path.join(home, 'cache', 'dsh-chrome', 'screenshots')
+await fsp.mkdir(shotsDir, { recursive: true })
+const tinyPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64',
+)
+const shotFile = path.join(shotsDir, 'test-shot.png')
+await fsp.writeFile(shotFile, tinyPng)
+const shotsList = await byName.chrome_shots.execute({ op: 'list', limit: 5 }, exec())
+check('chrome_shots lists saved screenshots', shotsList?.entries?.some((entry) => entry.path === shotFile))
+const listed = shotsList.entries.find((entry) => entry.path === shotFile)
+check('chrome_shots parses PNG dimensions', listed?.width === 1 && listed?.height === 1)
+const shotRead = await byName.chrome_shots.execute({ op: 'read', path: shotFile }, exec())
+check('chrome_shots reads a screenshot', shotRead?.bytes === tinyPng.length && shotRead?.width === 1)
+let outsideCode = null
+try {
+  await byName.chrome_shots.execute({ op: 'read', path: '/tmp/not-a-shot.txt' }, exec())
+} catch (error) {
+  outsideCode = error?.code
+}
+check('chrome_shots rejects paths outside the screenshots dir', outsideCode === 'INVALID_ARGUMENT')
 
 // D3: chrome_resume dispatches to the extension
 const resumeValue = await byName.chrome_resume.execute({}, exec())
@@ -355,7 +378,7 @@ const allowTools = evalTools(
   { ask: async () => ({ answers: [{ id: 'confirm', selected: ['允许一次'] }] }) },
 )
 const allowByName = Object.fromEntries(allowTools.map((definition) => [definition.name, definition]))
-check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 37 && Boolean(allowByName.chrome_evaluate))
+check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 38 && Boolean(allowByName.chrome_evaluate))
 const evalValue = await allowByName.chrome_evaluate.execute({ expression: '1 + 1' }, exec())
 check('evaluate returns the CDP value', evalValue?.value === 2 && evalValue?.type === 'number')
 check('evaluate params reach the extension', requests.at(-1)?.method === 'tab.evaluate' && requests.at(-1)?.params?.expression === '1 + 1')
