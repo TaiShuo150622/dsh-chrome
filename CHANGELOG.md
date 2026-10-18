@@ -11,6 +11,13 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.62] - 2026-10-17
+
+### Added
+
+- **chrome_click_at（批次 A2，工具面 26）**：按 CSS 像素视口坐标点击（左/右/中、双击），Canvas/地图/自绘控件可用；越界返回 `OUT_OF_VIEWPORT`；虚拟光标显示在点击点
+- fixture：`canvas.html`；真机验证点击后 canvas 收到 `clicked at 96,41`，越界坐标被拒绝
+
 ## [0.1.61] - 2026-10-17
 
 ### Added

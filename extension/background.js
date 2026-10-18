@@ -486,6 +486,8 @@ async function handleRequest(message) {
       return hover(owner, params)
     case 'tab.click':
       return click(owner, params)
+    case 'tab.clickAt':
+      return clickAt(owner, params)
     case 'tab.type':
       return typeText(owner, params)
     case 'tab.press':
@@ -560,6 +562,7 @@ const PAGE_ACTIONS = {
   snapshot: pageSnapshot,
   hover: hoverByRef,
   click: clickByRef,
+  clickAt: clickAtPoint,
   type: typeIntoRef,
   press: pressKey,
   scroll: scrollPage,
@@ -927,6 +930,26 @@ async function click(owner, params) {
   )
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
+  }
+  return attachSnapshotIfRequested(tabId, { ...result, tabId }, params)
+}
+
+async function clickAt(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const x = Number(params.x)
+  const y = Number(params.y)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    throw bridgeError('INVALID_ARGUMENT', 'x and y are required')
+  }
+  const result = await callInPage(
+    tabId,
+    'clickAt',
+    [x, y, String(params.button || 'left'), Number(params.clickCount) || 1],
+    15000,
+    params.dialog,
+  )
+  if (!result?.ok) {
+    throw bridgeError(result?.reason || 'INTERNAL', result?.message || 'click_at failed')
   }
   return attachSnapshotIfRequested(tabId, { ...result, tabId }, params)
 }
@@ -1690,6 +1713,46 @@ function dragByRef(fromRef, toRef) {
   to.dispatchEvent(new MouseEvent('mouseup', { ...base, button: 0, buttons: 0, clientX: x1, clientY: y1 }))
   to.dispatchEvent(new MouseEvent('click', { ...base, button: 0, clientX: x1, clientY: y1 }))
   return { ok: true, from: fromRef, to: toRef }
+}
+
+function clickAtPoint(x, y, buttonName, clickCount) {
+  const px = Number(x)
+  const py = Number(y)
+  if (!Number.isFinite(px) || !Number.isFinite(py)) {
+    return { ok: false, reason: 'INVALID_ARGUMENT', message: 'x and y must be finite numbers' }
+  }
+  if (px < 0 || py < 0 || px > window.innerWidth || py > window.innerHeight) {
+    return {
+      ok: false,
+      reason: 'OUT_OF_VIEWPORT',
+      message: `(${px}, ${py}) is outside the ${window.innerWidth}x${window.innerHeight} viewport`,
+    }
+  }
+  const target = document.elementFromPoint(px, py) || document.body
+  const button = buttonName === 'right' ? 2 : buttonName === 'middle' ? 1 : 0
+  const count = Number.isFinite(clickCount) ? Math.max(1, Math.min(3, clickCount)) : 1
+  try {
+    window.__dshCursor?.(px, py, 'click')
+  } catch {}
+  const base = { bubbles: true, cancelable: true, composed: true, view: window, clientX: px, clientY: py, button, detail: count }
+  const pointer = { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: button === 0, button, buttons: 1 }
+  try { target.dispatchEvent(new PointerEvent('pointerdown', pointer)) } catch {}
+  target.dispatchEvent(new MouseEvent('mousedown', base))
+  try { target.dispatchEvent(new PointerEvent('pointerup', { ...pointer, buttons: 0 })) } catch {}
+  target.dispatchEvent(new MouseEvent('mouseup', base))
+  if (button === 2) {
+    target.dispatchEvent(new MouseEvent('contextmenu', base))
+  } else {
+    target.dispatchEvent(new MouseEvent('click', base))
+    if (count === 2) target.dispatchEvent(new MouseEvent('dblclick', base))
+  }
+  return {
+    ok: true,
+    x: px,
+    y: py,
+    tag: target.tagName.toLowerCase(),
+    label: ((target.innerText || target.getAttribute('aria-label') || '') + '').trim().slice(0, 80),
+  }
 }
 
 function clickByRef(ref, selector, buttonName, clickCount) {

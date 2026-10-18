@@ -72,6 +72,7 @@ host.stdout.on(
       'tab.upload': { ok: true, ref: 5, files: 1 },
       'browser.downloads': { items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z' }] },
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
+      'tab.clickAt': { ok: true, x: 50, y: 60, tag: 'canvas', label: '' },
       'tab.storage': { ok: true, scope: 'local', value: 'hello' },
       'tab.drag': { ok: true, from: 1, to: 2, tabId: 7 },
       'tab.emulate': { width: 375, height: 800, applied: true },
@@ -109,7 +110,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('twenty-five tools registered', tools.length === 25, tools.map((t) => t.name).join(', '))
+check('twenty-six tools registered', tools.length === 26, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -166,6 +167,10 @@ check('claim params reach the extension', requests.at(-1)?.method === 'tab.tabs'
 const selectValue = await byName.chrome_select.execute({ ref: 4, checked: true }, exec())
 check('chrome_select executes', selectValue.ok === true && selectValue.value === 'checked')
 check('select params reach the extension', requests.at(-1)?.method === 'tab.select' && requests.at(-1)?.params?.checked === true)
+
+const clickAtValue = await byName.chrome_click_at.execute({ x: 50, y: 60 }, exec())
+check('chrome_click_at executes', clickAtValue?.ok === true && clickAtValue?.x === 50)
+check('click_at params reach the extension', requests.at(-1)?.method === 'tab.clickAt' && requests.at(-1)?.params?.y === 60)
 
 const storageValue = await byName.chrome_storage.execute({ op: 'get', key: 'k' }, exec())
 check('chrome_storage get executes', storageValue.value === 'hello')

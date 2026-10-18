@@ -971,6 +971,55 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   })
 
+  // ------------------------------------------------------------ 5b. click_at
+  list.push({
+    name: 'chrome_click_at',
+    description:
+      'Click at CSS-pixel viewport coordinates (x, y) instead of a snapshot ref. Useful for canvas, maps, video controls and other painted UI that has no DOM control. Coordinates outside the viewport return OUT_OF_VIEWPORT.',
+    parameters: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: 'Viewport x in CSS pixels.' },
+        y: { type: 'number', description: 'Viewport y in CSS pixels.' },
+        button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button (default left).' },
+        clickCount: { type: 'number', description: 'Click count, 1-3 (default 1; 2 = double click).' },
+        snapshot: { type: 'boolean', description: 'Attach a fresh page snapshot to the result.' },
+        dialog: { type: 'object', additionalProperties: true },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      required: ['x', 'y'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        ok: { type: 'boolean' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        tag: { type: 'string' },
+        label: { type: 'string' },
+        tabId: { type: 'number' },
+        page: { type: 'object', additionalProperties: true },
+      }),
+      render: (_args, value) =>
+        renderText(
+          `Clicked at (${value.x}, ${value.y}) on <${value.tag || 'unknown'}> ${JSON.stringify(value.label || '')}${value.page ? '\n[page snapshot attached]' : ''}`,
+        ),
+    },
+    async execute(args, exec) {
+      await guard(exec, 'chrome_click_at', `click at ${args?.x},${args?.y}`)
+      return call('tab.clickAt', {
+        x: args?.x,
+        y: args?.y,
+        button: args?.button,
+        clickCount: args?.clickCount,
+        snapshot: Boolean(args?.snapshot),
+        dialog: args?.dialog,
+        tabId: args?.tabId,
+        owner: ownerOf(exec),
+      })
+    },
+  })
+
   // ----------------------------------------------------------------- 6. type
   list.push({
     name: 'chrome_type',
