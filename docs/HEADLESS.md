@@ -1,6 +1,6 @@
 # 后台浏览器（headless Chromium）H0/H1
 
-> 2026-10-17 · provider 0.1.87 · 扩展 0.1.86 · 工具面 40（新增 `chrome_headless_login`）
+> 2026-10-18 · provider 0.1.88 · 扩展 0.1.88 · 工具面 40（含 `chrome_headless_login`）
 > 目标：不显示在桌面上也能调用浏览器，同时保留前台可见的 Chrome 登录态。
 
 ## 1. 为什么是「另起一个浏览器」

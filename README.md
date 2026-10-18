@@ -3,9 +3,9 @@
 **DSH 桌面端（DeepSeek Harness Desktop）的 Chrome 操控插件**：让模型直接操作你当前已登录的 Google Chrome —— 读页面、点击、填表、开后台标签、截图看图、按会话隔离，危险动作先问你。
 
 > 状态：**P1 真机可用（40 个工具；含后台 headless Chromium 同套工具面）**（2026-10-17）
-> 版本：扩展 **0.1.86** / provider **0.1.87**；`npm test` **15 条全过**。
+> 版本：扩展 **0.1.88** / provider **0.1.88**；`npm test` **20 个测试文件全过**。
 > 重点能力：桌面 Chrome 可见操作 + `backend:"headless"` 后台无窗口浏览器 + screencast 实时画面 viewer。
-> 待做与阻塞项：[docs/BACKLOG.md](docs/BACKLOG.md)；最新发布说明：[docs/RELEASE-NOTES-0.1.87.md](docs/RELEASE-NOTES-0.1.87.md)。
+> 待做与阻塞项：[docs/BACKLOG.md](docs/BACKLOG.md)；最新发布说明：[docs/RELEASE-NOTES-0.1.88.md](docs/RELEASE-NOTES-0.1.88.md)。
 
 ## 快速开始（macOS）
 
@@ -71,6 +71,7 @@
 - [能力差距与参考项目分析：需求、验收与公开项目借鉴](docs/GAP-ANALYSIS.md)
 - [安装指南（macOS 本地/开发者）](docs/INSTALL.md) · [工具参考（自动生成）](docs/TOOLS.md)
 - [用法示例：典型任务的工具序列](docs/EXAMPLES.md) · [FAQ](docs/FAQ.md)
+- [发布说明 0.1.88（能力门控/操作记录/性能循环）](docs/RELEASE-NOTES-0.1.88.md)
 - [发布说明 0.1.79–0.1.87（P0/P1/后台浏览器）](docs/RELEASE-NOTES-0.1.87.md)
 - [待做 Backlog（含阻塞项）](docs/BACKLOG.md)
 - [后台浏览器（headless）设计与能力矩阵](docs/HEADLESS.md)

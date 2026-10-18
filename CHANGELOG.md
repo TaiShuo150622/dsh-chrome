@@ -11,9 +11,11 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
-## [Unreleased]
+## [0.1.88] - 2026-10-18
 
 ### Added（capability 门控 / 操作记录 / 优化 Round 2）
+
+- **8 小时 Ralph 性能循环 S1–S9**（16 轮）：帧写盘 −34%、操作记录 append −68%、无重绘动作截图 43.2→0.21–0.26ms、JPEG clip 46→18–21ms、零 tab 空闲 700→449MB、扩展空闲写盘 26.3KB/min→0、snapshot wire −70%、bench mixed/idle、press/drag/同值 type/select 1.2–1.7ms；标准场景 16.85ms/轮（60Hz 上限），明细 `docs/PERF-LOOP.md`
 
 - **capability 门控接入 tools**：`supports(capability)` helper；chrome_pick/screencast 前置门控，headless pick 直接返回可执行 `UNSUPPORTED_BACKEND`（b363866）
 - **操作记录系统**：`src/operation-log.js` 记录每个 chrome_* 调用的 tool/backend/耗时/ok/errorCode/参数与结果摘要；JSONL ≤2KB/条、4MiB 轮转、URL/secret/password 脱敏、HTML/body/base64 不落盘、env `DSH_OPERATION_LOG=0` 关闭、`readOperationStats()`（2b4ff7d，10 项测试）
