@@ -1053,6 +1053,41 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
   })
 
+  // ------------------------------------------------------------ 4d. frames
+  list.push({
+    name: 'chrome_frames',
+    description:
+      'List the frames of the current DSH session page (main frame plus iframes) via CDP Page.getFrameTree. Set probe:true to also read each frame URL/title/control count with a fixed read-only script in an isolated world (no arbitrary code injection).',
+    parameters: {
+      type: 'object',
+      properties: {
+        probe: { type: 'boolean', description: 'Read url/title/control count in every frame.' },
+        tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: outputSchema({
+        tabId: { type: 'number' },
+        frames: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+        },
+      }),
+      render: (_args, value) => {
+        const lines = (value.frames || []).map((frame) => {
+          const indent = frame.parentFrameId ? '  ↳ ' : ''
+          const probe = frame.probe ? ` controls=${frame.probe.buttons} title=${JSON.stringify(frame.probe.title)}` : frame.probeError ? ` probeError=${frame.probeError}` : ''
+          return `${indent}${String(frame.frameId || '').slice(0, 8) || '?'} ${frame.url || ''}${probe}`
+        })
+        return renderText(`Frames (${lines.length}):\n${lines.join('\n')}`)
+      },
+    },
+    async execute(args, exec) {
+      return call('tab.frames', { probe: Boolean(args?.probe), tabId: args?.tabId, owner: ownerOf(exec) }, 30000)
+    },
+  })
+
   // ------------------------------------------------------------ 5b. click_at
   list.push({
     name: 'chrome_click_at',

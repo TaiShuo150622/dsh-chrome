@@ -490,6 +490,8 @@ async function handleRequest(message) {
       return clickAt(owner, params)
     case 'tab.html':
       return html(owner, params)
+    case 'tab.frames':
+      return frames(owner, params)
     case 'tab.selection':
       return selection(owner, params)
     case 'tab.type':
@@ -970,6 +972,59 @@ async function html(owner, params) {
     throw bridgeError(result?.error || 'SELECTOR_NOT_FOUND', result?.message || `selector not found: ${selector || '(document)'}`)
   }
   return { ...result, tabId }
+}
+
+async function frames(owner, params) {
+  const tabId = await resolveOwnedTabId(owner, params.tabId)
+  const target = { tabId }
+  try {
+    await chrome.debugger.attach(target, '1.3')
+  } catch (error) {
+    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
+  }
+  try {
+    const tree = await chrome.debugger.sendCommand(target, 'Page.getFrameTree')
+    const out = []
+    const visit = (node, parentId) => {
+      const frame = node?.frame
+      if (!frame) return
+      out.push({
+        frameId: String(frame.id || ''),
+        parentFrameId: parentId || null,
+        url: String(frame.url || ''),
+        domainAndRegistry: String(frame.domainAndRegistry || ''),
+        mimeType: String(frame.mimeType || ''),
+      })
+      for (const child of node.childFrames || []) visit(child, String(frame.id || ''))
+    }
+    visit(tree?.frameTree, null)
+    if (params?.probe) {
+      for (const frame of out) {
+        try {
+          const world = await chrome.debugger.sendCommand(target, 'Page.createIsolatedWorld', {
+            frameId: frame.frameId,
+            worldName: 'dsh-frame-probe',
+          })
+          const probe = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+            contextId: world.executionContextId,
+            expression:
+              '({ url: location.href, title: document.title, buttons: document.querySelectorAll("button, input, select, textarea, a[href]").length })',
+            returnByValue: true,
+          })
+          frame.probe = probe?.result?.value ?? null
+        } catch (error) {
+          frame.probeError = error?.message || String(error)
+        }
+      }
+    }
+    return { tabId, frames: out }
+  } finally {
+    try {
+      await chrome.debugger.detach(target)
+    } catch {
+      // tab may have closed
+    }
+  }
 }
 
 async function selection(owner, params) {

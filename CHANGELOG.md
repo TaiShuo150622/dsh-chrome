@@ -11,6 +11,14 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.65] - 2026-10-17
+
+### Added
+
+- **批次 B iframe spike**：`chrome_frames`（第 29 个工具）用 CDP `Page.getFrameTree` 枚举主 frame + iframe；`probe:true` 在每个 frame 的 isolated world 执行固定只读脚本（url/title/控件数），**同源与跨源 iframe 均验证成功**
+- fixture：`iframe.html` + `iframe-child.html`（127.0.0.1:8766 模拟跨源）
+- docs/tasks/BATCH-B.md：spike 结论 + B1–B6 实现步骤/验收/风险
+
 ## [0.1.64] - 2026-10-17
 
 ### Added

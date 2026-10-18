@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：28
+> 工具数量：29
 
 ### `chrome_status`
 
@@ -192,6 +192,15 @@ Read the current page selection (or selected text inside a focused input/textare
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `maxChars` | number | no | Optional cap (10-20000, default 4000). |
+| `tabId` | number | no | Optional tab id owned by this session. |
+
+### `chrome_frames`
+
+List the frames of the current DSH session page (main frame plus iframes) via CDP Page.getFrameTree. Set probe:true to also read each frame URL/title/control count with a fixed read-only script in an isolated world (no arbitrary code injection).
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `probe` | boolean | no | Read url/title/control count in every frame. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_click_at`

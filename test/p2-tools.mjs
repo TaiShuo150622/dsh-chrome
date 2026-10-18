@@ -72,6 +72,7 @@ host.stdout.on(
       'tab.upload': { ok: true, ref: 5, files: 1 },
       'browser.downloads': { items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z' }] },
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
+      'tab.frames': { tabId: 7, frames: [{ frameId: 'main', parentFrameId: null, url: 'http://127.0.0.1:8765/iframe.html' }] },
       'tab.selection': { found: true, text: 'selected paragraph', url: 'http://127.0.0.1:8765/selection.html', title: 'DSH Selection Test Page', truncated: false, source: 'page' },
       'tab.html': { found: true, mode: 'simplified', html: '<div id="api" value="••••">x</div>', truncated: false, length: 42 },
       'tab.clickAt': { ok: true, x: 50, y: 60, tag: 'canvas', label: '' },
@@ -112,7 +113,7 @@ const tools = chromeTools({
   approval: () => ({ request: async (request) => (approvalCalls.push(request), 'allowed-once') }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('twenty-eight tools registered', tools.length === 28, tools.map((t) => t.name).join(', '))
+check('twenty-nine tools registered', tools.length === 29, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -169,6 +170,10 @@ check('claim params reach the extension', requests.at(-1)?.method === 'tab.tabs'
 const selectValue = await byName.chrome_select.execute({ ref: 4, checked: true }, exec())
 check('chrome_select executes', selectValue.ok === true && selectValue.value === 'checked')
 check('select params reach the extension', requests.at(-1)?.method === 'tab.select' && requests.at(-1)?.params?.checked === true)
+
+const framesValue = await byName.chrome_frames.execute({ probe: true }, exec())
+check('chrome_frames lists frames', Array.isArray(framesValue?.frames) && framesValue.frames.length === 1)
+check('frames params reach the extension', requests.at(-1)?.method === 'tab.frames' && requests.at(-1)?.params?.probe === true)
 
 const selectionValue = await byName.chrome_selection.execute({}, exec())
 check('chrome_selection reads a selection', selectionValue?.found === true && selectionValue.text.includes('selected'))
