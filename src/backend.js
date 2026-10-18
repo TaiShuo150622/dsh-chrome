@@ -3,26 +3,100 @@
  * `backend` argument selects between the desktop extension bridge and the
  * background headless Chromium driver. AsyncLocalStorage carries the choice
  * through the async tool execution so concurrent calls cannot mix backends.
+ *
+ * The router is also the runtime read side of the capability contract
+ * (src/capabilities.js): `capabilities` and `supports(capability)` answer for
+ * the backend carried by AsyncLocalStorage, without changing routing/call
+ * behavior.
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 
+import {
+  CAPABILITIES,
+  backendSupports,
+  capabilitiesFor,
+} from './capabilities.js'
+
 const backendStorage = new AsyncLocalStorage()
 
+/**
+ * Backend enum exposed to the tools' `backend` parameter (declaration order).
+ * Keep in sync with KNOWN_BACKENDS in src/capabilities.js; test/backend-contract.mjs
+ * asserts the two agree, and runWithBackend()/call() below own the actual routing.
+ */
 export const BACKENDS = ['desktop', 'headless']
+
+/**
+ * Normalize an injected capability override for the headless backend.
+ * `null`/`undefined` means "use the declared headless contract".
+ */
+function normalizeCapabilities(input) {
+  if (input == null) return null
+  if (typeof input === 'string' || typeof input?.[Symbol.iterator] !== 'function') {
+    throw new TypeError('headlessCapabilities must be an iterable of capability names (or null to use the declared contract)')
+  }
+  const values = new Set(input)
+  for (const value of values) {
+    if (typeof value !== 'string') throw new TypeError('headlessCapabilities entries must be strings')
+    if (!CAPABILITIES.includes(value)) {
+      throw new TypeError(`unknown capability "${value}" in headlessCapabilities (known: ${CAPABILITIES.join(', ')})`)
+    }
+  }
+  // Canonical order, frozen: a capability list is contract data, not a mutable
+  // handle owned by the caller.
+  return Object.freeze(CAPABILITIES.filter((name) => values.has(name)))
+}
 
 export function currentBackend() {
   return backendStorage.getStore() || 'desktop'
 }
 
 export class BackendRouter {
-  constructor({ desktop, headless = null, headlessSupported = false }) {
+  /**
+   * @param {object} options
+   * @param {{ call: Function, connected?: boolean }} options.desktop
+   * @param {{ request: Function, connected?: boolean } | null} [options.headless]
+   * @param {boolean} [options.headlessSupported]
+   * @param {Iterable<string> | null} [options.headlessCapabilities] override the
+   *   capability set declared for the headless backend (e.g. an embedded or
+   *   remote driver that only implements a subset). Defaults to the declared
+   *   headless contract from src/capabilities.js.
+   */
+  constructor({ desktop, headless = null, headlessSupported = false, headlessCapabilities = null }) {
     this.desktop = desktop
     this.headless = headless
     this.headlessSupported = headlessSupported
+    this.headlessCapabilities = normalizeCapabilities(headlessCapabilities)
   }
 
   get backend() {
     return currentBackend()
+  }
+
+  /**
+   * Capability names declared by the backend carried by AsyncLocalStorage at
+   * this point (frozen array). Outside a wrapped tool call this is the desktop
+   * backend, matching the default route. Unknown backend -> empty array.
+   */
+  get capabilities() {
+    const backend = currentBackend()
+    if (backend === 'headless' && this.headlessCapabilities) return this.headlessCapabilities
+    return capabilitiesFor(backend)
+  }
+
+  /**
+   * Whether the backend carried by AsyncLocalStorage declares `capability`.
+   * Unknown backend/capability -> false (safe, never throws).
+   *
+   * This answers the contract question only; runtime availability is separate
+   * (`connected`, or the UNSUPPORTED_BACKEND thrown by `call` when no driver
+   * exists).
+   */
+  supports(capability) {
+    const backend = currentBackend()
+    if (typeof capability !== 'string') return false
+    if (backend === 'headless' && this.headlessCapabilities) return this.headlessCapabilities.includes(capability)
+    return backendSupports(backend, capability)
   }
 
   get connected() {
