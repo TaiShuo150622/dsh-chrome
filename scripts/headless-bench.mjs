@@ -22,6 +22,7 @@
  *                                   [--shot-format png|jpeg] [--shot-quality 60]
  *                                   [--no-optimize] [--gap-ms 0] [--static]
  *                                   [--readonly-eval] [--noop-click] [--press]
+ *                                   [--click-at]
  *                                   [--mixed]
  *                                   [--idle-seconds 0] [--idle-settle-seconds 0]
  *
@@ -52,9 +53,15 @@
  * character, alternating): with no focused editable field the press cannot
  * paint, so every round measures the repaint window the keyboard path used to
  * pay (docs/HEADLESS.md §4.1.12; the keys the probe vetoes are covered by
- * test/headless.mjs). The report's `visualSkips` counts the actions proven
- * paint-free, so a run where the shortcut did not fire is visible. The action
- * cap is
+ * test/headless.mjs). `--click-at` replaces them with a real `tab.clickAt` on a
+ * plain, handler-free `<div>` at a fixed point, repeated: after the first round
+ * the pointer already rests there, so the click cannot repaint and every round
+ * measures the repaint window the pointer path used to pay
+ * (docs/HEADLESS.md §4.1.13; the hazards that keep the conservative wait —
+ * hover-chain moves, focus, selection, buttons/links/form controls — are
+ * covered by test/headless.mjs). The report's `visualSkips` counts the actions
+ * proven paint-free, so a run where the shortcut did not fire is visible. The
+ * action cap is
  * ACTIONS*50 (ACTIONS*2000 for the shortcut scenarios) so the default 10s run
  * is time-bound rather than cap-bound.
  *
@@ -126,6 +133,16 @@ const mixedGapMs = (index) => 150 + ((index * 97) % 251)
 // window. `--press` deliberately uses only keys the press probe covers; the
 // keys it vetoes are covered by the driver tests.
 const PRESS = hasFlag('--press')
+// No-op pointer scenario (docs/HEADLESS.md §4.1.13): snapshot + real
+// `tab.clickAt` at one fixed point on a plain div + screenshot. The warm-up
+// round parks the pointer there and pays the hover repaint; from then on the
+// pointer already rests on the element under the point, so the click cannot
+// paint and the screenshot must reuse the cached frame instead of paying the
+// repaint window.
+const CLICK_AT = hasFlag('--click-at')
+// Set after the page loads: the `#noop` div centre, i.e. a target with no
+// handler, no focusability and no UA default action.
+let clickAtPoint = null
 // Element/region screenshot scenarios. Clip coordinates are CSS px like the
 // `clip` tool parameter; ref mode uses the input control from the same snapshot
 // the round already takes, so it measures ref resolution + crop end to end.
@@ -210,8 +227,8 @@ function processStats() {
 // Wall-clock accumulator per action kind; Chrome CPU is sampled only around the
 // whole loop, but wall time isolates which request dominates a round.
 function createTimer() {
-  const buckets = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0 }
-  const counts = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0 }
+  const buckets = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0, clickAt: 0 }
+  const counts = { snapshot: 0, type: 0, evaluate: 0, click: 0, screenshot: 0, scroll: 0, press: 0, clickAt: 0 }
   return {
     buckets,
     counts,
@@ -283,6 +300,27 @@ try {
   }
   const pressStats = { keys: { Escape: 0, k: 0 } }
   const mixedKindFor = (index) => MIXED_KINDS[((index % MIXED_KINDS.length) + MIXED_KINDS.length) % MIXED_KINDS.length]
+  if (CLICK_AT) {
+    // The point is resolved once, untimed: the page is static in this scenario,
+    // so the `#noop` box cannot move between rounds.
+    const rect = await driver.request('tab.evaluate', {
+      owner: 'bench',
+      expression:
+        '(() => { const box = document.getElementById("noop").getBoundingClientRect(); return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) } })()',
+    })
+    clickAtPoint = rect?.value || rect
+    // Park the pointer before measuring (untimed, same on both sides). This
+    // click moves the pointer onto #noop, i.e. it changes the hover chain, so
+    // the probe keeps the conservative wait for it: it bumps the change marker
+    // without painting, and the marker stays unsatisfied until something does
+    // paint. One DOM write + screenshot settles the marker so the measured
+    // rounds start from a valid cached frame instead of inheriting a pending
+    // repaint window (the "a conservative no-op poisons the next screenshot"
+    // behaviour is pre-existing and unrelated to the pointer shortcut).
+    await driver.request('tab.clickAt', { owner: 'bench', x: clickAtPoint.x, y: clickAtPoint.y })
+    await driver.request('tab.evaluate', { owner: 'bench', expression: 'document.getElementById("out").textContent = "settled"' })
+    await driver.request('tab.screenshot', { owner: 'bench' })
+  }
   const runRound = async (timer, index, measured) => {
     const timed = timer ? (kind, fn) => timer.time(kind, fn) : (kind, fn) => fn()
     const snap = await timed('snapshot', () => driver.request('tab.snapshot', { owner: 'bench', maxChars: SNAPSHOT_MAX_CHARS }))
@@ -315,6 +353,8 @@ try {
       const key = index % 2 === 0 ? 'Escape' : 'k'
       pressStats.keys[key] += 1
       await timed('press', () => driver.request('tab.press', { owner: 'bench', key }))
+    } else if (CLICK_AT) {
+      await timed('clickAt', () => driver.request('tab.clickAt', { owner: 'bench', x: clickAtPoint.x, y: clickAtPoint.y }))
     } else if (input && !STATIC) {
       await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${index}`, replace: true }))
     }
@@ -324,7 +364,7 @@ try {
     // viewport offset, otherwise half the rounds would fall back to capture
     // because the element left the viewport (the honest off-screen case, but
     // not what this scenario is measuring).
-    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK && !PRESS) {
+    if (!MIXED && !STATIC && !READONLY_EVAL && !NOOP_CLICK && !PRESS && !CLICK_AT) {
       await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: SHOT_REF ? 60 : 200 }))
     }
   }
@@ -341,9 +381,10 @@ try {
   // Hard cap so a stuck fast path cannot loop forever; high enough that the
   // default 10s run is time-bound (the screenshot frame stream made 58+ rounds
   // per second possible, which used to hit the old ACTIONS*20=400 cap early).
-  // The read-only evaluate and no-op click scenarios are orders of magnitude
-  // cheaper per round, so they need a much higher cap to stay time-bound.
-  const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK || PRESS ? 2000 : 50)
+  // The read-only evaluate, no-op click and pointer scenarios are orders of
+  // magnitude cheaper per round, so they need a much higher cap to stay
+  // time-bound.
+  const ACTION_CAP = ACTIONS * (READONLY_EVAL || NOOP_CLICK || PRESS || CLICK_AT ? 2000 : 50)
   while (Date.now() < until && actions < ACTION_CAP) {
     await runRound(timer, actions, true)
     actions += 1
@@ -367,7 +408,7 @@ try {
   const cpuMsPerAction = round((cpuSeconds * 1000) / Math.max(1, actions), 2)
   const perActionMs = timer.averages()
   const roundTotalMs = round(
-    (timer.buckets.snapshot + timer.buckets.type + timer.buckets.evaluate + timer.buckets.click + timer.buckets.screenshot + timer.buckets.scroll + timer.buckets.press) /
+    (timer.buckets.snapshot + timer.buckets.type + timer.buckets.evaluate + timer.buckets.click + timer.buckets.screenshot + timer.buckets.scroll + timer.buckets.press + timer.buckets.clickAt) /
       Math.max(1, actions),
     2,
   )
@@ -419,13 +460,15 @@ try {
           : `headless active: ${actions} ${SHOT_FORMAT} ${
               NOOP_CLICK
                 ? 'snapshot/click(noop div)/screenshot (page never repaints)'
-                : PRESS
-                  ? 'snapshot/press(Escape,k)/screenshot (no editable focus, page never repaints)'
-                  : READONLY_EVAL
-                    ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)'
-                    : STATIC
-                    ? 'snapshot/screenshot (static page)'
-                    : 'snapshot/type/screenshot/scroll'
+                : CLICK_AT
+                  ? 'snapshot/clickAt(noop div center)/screenshot (pointer rests there, page never repaints)'
+                  : PRESS
+                    ? 'snapshot/press(Escape,k)/screenshot (no editable focus, page never repaints)'
+                    : READONLY_EVAL
+                      ? 'snapshot/evaluate/screenshot (read-only evaluate, page never repaints)'
+                      : STATIC
+                      ? 'snapshot/screenshot (static page)'
+                      : 'snapshot/type/screenshot/scroll'
             } rounds${SHOT_MODE === 'viewport' ? '' : ` (${SHOT_MODE} screenshot)`}`,
         elapsedSeconds: round(elapsed, 1),
         // The effective inter-round gap: the fixed `--gap-ms` value, or the
@@ -435,6 +478,8 @@ try {
         readonlyEval: READONLY_EVAL,
         noopClick: NOOP_CLICK,
         pressMode: PRESS,
+        clickAtMode: CLICK_AT,
+        ...(CLICK_AT && clickAtPoint ? { clickAtPoint } : {}),
         mixedMode: MIXED,
         shotMode: SHOT_MODE,
         ...(SHOT_CLIP ? { shotClip: SHOT_CLIP } : {}),

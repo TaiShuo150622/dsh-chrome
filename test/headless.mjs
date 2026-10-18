@@ -694,6 +694,181 @@ try {
   assert.notDeepEqual(fs.readFileSync(handlerShot.path), handlerBaseBytes, 'a DOM-mutating key handler must not be stale')
   await driver.request('tab.evaluate', { owner: 's1', expression: 'document.removeEventListener("keydown", window.__pressProbeKey); delete window.__pressProbeKey' })
 
+  // Real pointer clicks (docs/HEADLESS.md §4.1.13): a single left click at a
+  // point where the pointer already rests, over a target no UA default action
+  // can reach, cannot paint, so the next screenshot is a cache hit. Everything
+  // that can make the UA move state without a tracker counter keeps the
+  // conservative wait: the pointer moving onto another element (the CSS :hover
+  // chain changes), a focused control, a non-collapsed selection, a double
+  // click (it selects text) and targets the UA can activate (button, anchor,
+  // input, tabindex widget). The hover case is the one that would otherwise be
+  // served stale, so it is asserted down to the frame bytes.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: 'window.scrollTo(0, 0); document.activeElement?.blur(); getSelection().removeAllRanges()',
+  })
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression:
+      '(() => { const style = document.createElement("style"); style.id = "probe-hover-style"; style.textContent = "#hover-probe:hover { background: #f00 }"; document.head.append(style); const div = document.createElement("div"); div.id = "hover-probe"; div.style.cssText = "padding:6px;border:1px solid #999;width:120px"; div.textContent = "hover probe"; document.getElementById("noop").insertAdjacentElement("afterend", div); return true })()',
+  })
+  const rectOf = async (selector) =>
+    (
+      await driver.request('tab.evaluate', {
+        owner: 's1',
+        expression: `(() => { const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2), inside: box.top >= 0 && box.bottom <= innerHeight && box.left >= 0 && box.right <= innerWidth } })()`,
+      })
+    ).value
+  const noopCentre = await rectOf('#noop')
+  const buttonCentre = await rectOf('#go')
+  const linkCentre = await rectOf('#download')
+  const fieldCentre = await rectOf('#name')
+  const tabindexCentre = await rectOf('#drag-src')
+  const hoverStyleCentre = await rectOf('#hover-probe')
+  assert.ok(
+    noopCentre.inside && buttonCentre.inside && linkCentre.inside && fieldCentre.inside && tabindexCentre.inside && hoverStyleCentre.inside,
+    `clickAt probe targets left the viewport: ${JSON.stringify({ noopCentre, buttonCentre, linkCentre, fieldCentre, tabindexCentre, hoverStyleCentre })}`,
+  )
+  // A pending compose from an earlier action can land at any time; wait until
+  // two consecutive screenshots agree, so a byte comparison measures the click
+  // under test instead of a late frame.
+  const stableFrameBytes = async () => {
+    let previous = await driver.request('tab.screenshot', { owner: 's1' })
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await settle()
+      const next = await driver.request('tab.screenshot', { owner: 's1' })
+      if (fs.readFileSync(next.path).equals(fs.readFileSync(previous.path))) return fs.readFileSync(next.path)
+      previous = next
+    }
+    throw new Error('the page never settled: consecutive screenshots keep changing')
+  }
+  // Parking the pointer on #noop changes the hover chain, so that click keeps
+  // the conservative wait.
+  const clickAtParkBase = await tabDiag()
+  await driver.request('tab.clickAt', { owner: 's1', x: noopCentre.x, y: noopCentre.y })
+  const clickAtParkDiag = await tabDiag()
+  assert.equal(clickAtParkDiag.visualSkips, clickAtParkBase.visualSkips, 'the click that moves the pointer must keep the conservative wait')
+  // A conservative click bumps the change marker without painting; one DOM
+  // write plus a screenshot settles the marker, so the cache-hit assertions
+  // below compare against a valid cached frame instead of inheriting a pending
+  // repaint window.
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("out").textContent = "clickat-settled"' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const clickAtBaseBytes = await stableFrameBytes()
+  const clickAtBaseDiag = await tabDiag()
+  const clickAtStartedAt = performance.now()
+  await driver.request('tab.clickAt', { owner: 's1', x: noopCentre.x, y: noopCentre.y })
+  const clickAtShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const clickAtMs = performance.now() - clickAtStartedAt
+  const clickAtDiag = await tabDiag()
+  assert.equal(
+    clickAtDiag.visualSkips,
+    clickAtBaseDiag.visualSkips + 1,
+    `a repeated click at the same point did not skip the repaint window: ${JSON.stringify({ before: clickAtBaseDiag.visualSkips, after: clickAtDiag.visualSkips })}`,
+  )
+  assert.equal(
+    clickAtDiag.screenshotStream.repaintMisses,
+    clickAtBaseDiag.screenshotStream.repaintMisses,
+    'a repeated click at the same point ran into the repaint window',
+  )
+  assert.ok(clickAtMs < 25, `a repeated click at the same point paid the repaint window (${clickAtMs.toFixed(1)}ms)`)
+  assert.deepEqual(fs.readFileSync(clickAtShot.path), clickAtBaseBytes, 'a repeated click at the same point must reuse the cached frame')
+  // The hover chain is the paint source no tracker counter records: the first
+  // click onto a :hover-styled element must keep the wait AND produce the new
+  // paint, and the repeat must skip while returning that hovered frame.
+  const hoverStylePreBytes = await stableFrameBytes()
+  const hoverStyleBaseDiag = await tabDiag()
+  await driver.request('tab.clickAt', { owner: 's1', x: hoverStyleCentre.x, y: hoverStyleCentre.y })
+  const hoverStyleClickDiag = await tabDiag()
+  const hoverStyleShot = await driver.request('tab.screenshot', { owner: 's1' })
+  assert.equal(hoverStyleClickDiag.visualSkips, hoverStyleBaseDiag.visualSkips, 'the click that applies a hover style must keep the conservative wait')
+  assert.notDeepEqual(fs.readFileSync(hoverStyleShot.path), hoverStylePreBytes, 'a hover repaint must not be served from the cache')
+  await settle()
+  const hoverStyleSettledBytes = await stableFrameBytes()
+  const hoverStyleRepeatBaseDiag = await tabDiag()
+  const hoverStyleRepeatStartedAt = performance.now()
+  await driver.request('tab.clickAt', { owner: 's1', x: hoverStyleCentre.x, y: hoverStyleCentre.y })
+  const hoverStyleRepeatShot = await driver.request('tab.screenshot', { owner: 's1' })
+  const hoverStyleRepeatMs = performance.now() - hoverStyleRepeatStartedAt
+  const hoverStyleRepeatDiag = await tabDiag()
+  assert.equal(
+    hoverStyleRepeatDiag.visualSkips,
+    hoverStyleRepeatBaseDiag.visualSkips + 1,
+    'the repeat click on the already-hovered element did not skip the repaint window',
+  )
+  assert.ok(hoverStyleRepeatMs < 25, `the repeat click on the hovered element paid the repaint window (${hoverStyleRepeatMs.toFixed(1)}ms)`)
+  assert.deepEqual(fs.readFileSync(hoverStyleRepeatShot.path), hoverStyleSettledBytes, 'the shortcut must return the hovered frame, not the pre-hover one')
+  // Everything below only asserts the conservative path (no skip): a paint can
+  // land late, so frame bytes are not compared here.
+  // A double click selects text, so it keeps the wait even at the same point.
+  const doubleClickBaseDiag = await tabDiag()
+  await driver.request('tab.clickAt', { owner: 's1', x: hoverStyleCentre.x, y: hoverStyleCentre.y, clickCount: 2 })
+  const doubleClickDiag = await tabDiag()
+  assert.equal(doubleClickDiag.visualSkips, doubleClickBaseDiag.visualSkips, 'a double click must keep the conservative wait')
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'getSelection().removeAllRanges()' })
+  // Moving the pointer onto another element is the hover hazard again.
+  const awayBaseDiag = await tabDiag()
+  await driver.request('tab.clickAt', { owner: 's1', x: noopCentre.x, y: noopCentre.y })
+  const awayDiag = await tabDiag()
+  assert.equal(awayDiag.visualSkips, awayBaseDiag.visualSkips, 'a click that moves the pointer onto another element must keep the conservative wait')
+  // The click after that has a settled hover chain again, so the pointer veto
+  // must not have been a permanent one.
+  const settledAgainBaseDiag = await tabDiag()
+  await driver.request('tab.clickAt', { owner: 's1', x: noopCentre.x, y: noopCentre.y })
+  const settledAgainDiag = await tabDiag()
+  assert.equal(settledAgainDiag.visualSkips, settledAgainBaseDiag.visualSkips + 1, 'the shortcut did not come back once the pointer stopped moving')
+  // UA-reachable targets: every one of these can change state the tracker
+  // cannot see (navigation, activation, focus, caret), so none may short-cut.
+  // Each target is clicked twice so the second click has a settled hover chain
+  // and only the target hazard can be what vetoes it.
+  for (const [label, centre] of [
+    ['button', buttonCentre],
+    ['anchor', linkCentre],
+    ['input', fieldCentre],
+    ['tabindex widget', tabindexCentre],
+  ]) {
+    await driver.request('tab.clickAt', { owner: 's1', x: centre.x, y: centre.y })
+    await settle()
+    const beforeHazardDiag = await tabDiag()
+    await driver.request('tab.clickAt', { owner: 's1', x: centre.x, y: centre.y })
+    const afterHazardDiag = await tabDiag()
+    assert.equal(afterHazardDiag.visualSkips, beforeHazardDiag.visualSkips, `a settled click on a ${label} must keep the conservative wait`)
+  }
+  // Focus on an editable field: clicking elsewhere blurs it, which repaints.
+  await driver.request('tab.clickAt', { owner: 's1', x: noopCentre.x, y: noopCentre.y })
+  await settle()
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.getElementById("name").focus()' })
+  const focusBaseDiag = await tabDiag()
+  await driver.request('tab.clickAt', { owner: 's1', x: noopCentre.x, y: noopCentre.y })
+  const focusClickDiag = await tabDiag()
+  assert.equal(focusClickDiag.visualSkips, focusBaseDiag.visualSkips, 'a click that blurs a focused field must keep the conservative wait')
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'document.activeElement?.blur()' })
+  // A non-collapsed selection is collapsed by a click: keep the wait while one
+  // exists, and let the shortcut come back once it is cleared.
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression:
+      '(() => { const range = document.createRange(); range.selectNodeContents(document.getElementById("out")); const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); return String(selection) })()',
+  })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const selectionClickBase = await tabDiag()
+  await driver.request('tab.clickAt', { owner: 's1', x: noopCentre.x, y: noopCentre.y })
+  const selectionClickDiag = await tabDiag()
+  assert.equal(selectionClickDiag.visualSkips, selectionClickBase.visualSkips, 'a click with a non-collapsed selection must keep the conservative wait')
+  await driver.request('tab.evaluate', { owner: 's1', expression: 'getSelection().removeAllRanges()' })
+  await driver.request('tab.screenshot', { owner: 's1' })
+  await settle()
+  const recoveredBaseDiag = await tabDiag()
+  await driver.request('tab.clickAt', { owner: 's1', x: noopCentre.x, y: noopCentre.y })
+  const recoveredDiag = await tabDiag()
+  assert.equal(recoveredDiag.visualSkips, recoveredBaseDiag.visualSkips + 1, 'the shortcut did not come back after clearing the selection')
+  await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: 'document.getElementById("hover-probe")?.remove(); document.getElementById("probe-hover-style")?.remove(); window.scrollTo(0, 0)',
+  })
+
   const tabs = await driver.request('tab.tabs', { owner: 's1', op: 'list' })
   assert.equal(tabs.tabs.length, 1)
   assert.equal(tabs.activeTabId, gone.tabId)

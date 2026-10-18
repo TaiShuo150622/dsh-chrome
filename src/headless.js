@@ -206,12 +206,78 @@ const VISUAL_TRACKER_SCRIPT = `(() => {
       return Boolean(document.fullscreenElement || document.pictureInPictureElement)
     } catch { return true }
   }
+  // ":hover" is UA state (docs/HEADLESS.md §4.1.13): moving the pointer onto a
+  // styled element repaints with no DOM mutation and with no tracker counter, so
+  // the clickAt probe compares the hover chain before and after. The UA hovers
+  // exactly the ancestors of the element under the pointer, so the innermost
+  // hovered element identifies the whole chain, and a child-index path
+  // identifies that element without serialising tags or text.
+  const pathOf = (el) => {
+    const parts = []
+    let node = el
+    while (node && node.nodeType === 1) {
+      let index = 0
+      let sibling = node
+      while ((sibling = sibling.previousElementSibling)) index += 1
+      parts.push(index)
+      node = node.parentElement
+    }
+    return parts.reverse().join('.')
+  }
+  const hoverPath = () => {
+    try {
+      const list = document.querySelectorAll(':hover')
+      return list.length ? pathOf(list[list.length - 1]) : ''
+    } catch { return null }
+  }
+  // A real left click runs UA default actions the tracker cannot see: navigation,
+  // label/focus forwarding, form-control activation, media controls,
+  // popover/command toggles, dialog dismissal, subframe input, contenteditable
+  // carets, and custom elements (a shadow tree's inner ":hover" state is
+  // invisible to the document-level hover chain). "null" means the click cannot
+  // paint through any of those routes.
+  const clickAtHazard = (el) => {
+    try {
+      if (!el || !el.closest) return 'unknown'
+      if (el.closest('a[href], area[href]')) return 'navigation'
+      if (el.closest('label')) return 'label-activation'
+      if (el.closest('video, audio')) return 'media-control'
+      if (el.closest('[popovertarget], [commandfor]')) return 'ua-toggle'
+      if (el.closest('summary, details')) return 'ua-toggle'
+      if (el.closest('dialog')) return 'dialog'
+      if (el.closest('iframe, frame, object, embed')) return 'subframe'
+      const button = el.closest('button')
+      if (button) {
+        // A button's own default action is form submission; only a submitter
+        // (implicit type=submit) associated with a form can navigate.
+        const type = String(button.getAttribute('type') || 'submit').toLowerCase()
+        if ((button.form || button.closest('form')) && type !== 'button' && type !== 'reset') return 'form-submit'
+        return 'button'
+      }
+      if (el.closest('input, select, textarea, [contenteditable], [tabindex]')) return 'form-control'
+      for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
+        if (String(node.tagName || '').indexOf('-') >= 0) return 'custom-element'
+      }
+    } catch {
+      return 'unknown'
+    }
+    return null
+  }
   window.__dshVisual = {
-    snapshot() {
+    // "px"/"py" are optional: when both are finite the snapshot also answers
+    // "what is under this point" (hit hazard + the hover chain a pointer move
+    // there would produce) and reports the current hover chain, which is only
+    // meaningful for the pointer-driven click probe.
+    snapshot(px, py) {
       // Canvas pixels and media surfaces repaint with no DOM mutation at all,
       // so their presence disables the shortcut (one scan covers both).
       const heavy = document.querySelector('canvas, video, audio')
       const active = activeState()
+      const probePoint = Number.isFinite(px) && Number.isFinite(py) ? (() => {
+        let hit = null
+        try { hit = document.elementFromPoint(px, py) } catch { hit = null }
+        return { x: px, y: py, hit: Boolean(hit), hazard: clickAtHazard(hit), hover: hit ? pathOf(hit) : null }
+      })() : null
       return {
         doc: docId,
         url: location.href,
@@ -232,6 +298,11 @@ const VISUAL_TRACKER_SCRIPT = `(() => {
         media: Boolean(heavy && (heavy.tagName === 'VIDEO' || heavy.tagName === 'AUDIO')),
         frames: sameOriginFrame(),
         broken: Boolean(state.broken),
+        // Only computed for the pointer probe: the hover chain is the one paint
+        // source a click can hit that no counter records, and every other action
+        // (synthetic click, key press, evaluate) cannot move the real pointer.
+        hover: probePoint ? hoverPath() : null,
+        point: probePoint,
       }
     },
   }
@@ -271,6 +342,33 @@ function pressProbeEligible(key, before) {
   // element is not one the UA can activate.
   if (key === 'Enter') return !before.interactive
   return false
+}
+
+// A real left click at a screen point (docs/HEADLESS.md §4.1.13) can only be
+// proven paint-free while every UA default action is out of reach: the pointer
+// already rests on the element under (x, y) (a pointer move changes the CSS
+// `:hover` chain, which repaints with no DOM mutation), focus sits on the body
+// (a click can blur or focus something), no text is selected (a single click
+// collapses a selection) and nothing is fullscreen. The page-side snapshot
+// answers the hit question; everything else reads the same pre-action snapshot,
+// so an ineligible click pays one round trip, not two.
+const CLICK_AT_BODY_FOCUS = new Set(['', 'body', 'html'])
+
+function clickAtProbeEligible(before, point) {
+  if (!before || !before.point || !point) return false
+  if (before.readyState !== 'complete') return false
+  if (before.broken || before.canvas || before.media || before.frames) return false
+  // `active` is the lowercased tag of document.activeElement: body and html mean
+  // "nothing is focused", which is the only state a click cannot blur.
+  if (before.editable || !CLICK_AT_BODY_FOCUS.has(before.active) || before.selection || before.fullscreen) return false
+  const hit = before.point
+  if (hit.x !== point.x || hit.y !== point.y) return false
+  if (!hit.hit || hit.hazard !== null) return false
+  // The chain the pointer move would produce must be the chain that is already
+  // hovered; a fresh page has no hover chain at all, so its first click at a new
+  // point keeps the conservative wait.
+  if (!before.hover || hit.hover !== before.hover) return false
+  return true
 }
 
 // Every request that can change what the page renders bumps the owning tab's
@@ -1573,10 +1671,13 @@ export class HeadlessDriver {
     return tab.visualTracker
   }
 
-  async visualSnapshot(tab) {
+  async visualSnapshot(tab, point = null) {
     if (!VISUAL_PROBE_ENABLED || !tab.visualTracker) return null
+    // The point form is only used by the pointer probe: it makes the page
+    // answer the hit-test question in the same round trip as the snapshot.
+    const args = point ? `${JSON.stringify(point.x)}, ${JSON.stringify(point.y)}` : ''
     try {
-      return await this.evalOn(tab, 'window.__dshVisual ? window.__dshVisual.snapshot() : null')
+      return await this.evalOn(tab, `window.__dshVisual ? window.__dshVisual.snapshot(${args}) : null`)
     } catch {
       return null
     }
@@ -1604,7 +1705,17 @@ export class HeadlessDriver {
       typeof value.editable === 'boolean' &&
       typeof value.interactive === 'boolean' &&
       typeof value.selection === 'boolean' &&
-      typeof value.fullscreen === 'boolean'
+      typeof value.fullscreen === 'boolean' &&
+      // Both are null for every action that is not the pointer probe (a new
+      // field: an older shape must never be read as a clean hover chain).
+      (value.hover === null || typeof value.hover === 'string') &&
+      (value.point === null ||
+        (typeof value.point === 'object' &&
+          Number.isFinite(value.point.x) &&
+          Number.isFinite(value.point.y) &&
+          typeof value.point.hit === 'boolean' &&
+          (value.point.hazard === null || typeof value.point.hazard === 'string') &&
+          (value.point.hover === null || typeof value.point.hover === 'string')))
     )
   }
 
@@ -1631,6 +1742,8 @@ export class HeadlessDriver {
     if (before.active !== after.active || before.editable !== after.editable) return 'unknown'
     if (before.interactive !== after.interactive) return 'unknown'
     if (before.selection !== after.selection || before.fullscreen !== after.fullscreen) return 'unknown'
+    // The pointer probe's hover chain: a hover change repaints with no counter.
+    if (typeof before.hover === 'string' && typeof after.hover === 'string' && before.hover !== after.hover) return 'unknown'
     return 'clean'
   }
 
@@ -1641,9 +1754,10 @@ export class HeadlessDriver {
   // whose target may navigate or flip a form control); `precheck(before)` can
   // veto it from the pre-action state (a key press over an editable field). A
   // veto skips the second snapshot entirely, so ineligible actions pay one
-  // round trip, not two.
-  async visualProbeAction(tab, action, accept = null, precheck = null) {
-    const before = await this.visualSnapshot(tab)
+  // round trip, not two. `point` makes both snapshots answer the hit-test /
+  // hover question for a pointer action at that screen point.
+  async visualProbeAction(tab, action, accept = null, precheck = null, point = null) {
+    const before = await this.visualSnapshot(tab, point)
     let value
     let failure = null
     try {
@@ -1673,7 +1787,7 @@ export class HeadlessDriver {
       }
     }
     if (!failure && !eligible) return value
-    const after = await this.visualSnapshot(tab)
+    const after = await this.visualSnapshot(tab, point)
     if (!failure) {
       let verdict = 'unknown'
       try {
@@ -2417,9 +2531,28 @@ export class HeadlessDriver {
         const tab = await this.ensureTab(owner, params.tabId)
         const x = Number(params.x)
         const y = Number(params.y)
-        await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, tab.sessionId)
-        await this.cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: params.clickCount || 1 }, tab.sessionId)
-        await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: params.clickCount || 1 }, tab.sessionId)
+        const clickCount = params.clickCount || 1
+        // A real left click at a point where the pointer already rests, on a
+        // target no UA default action can reach, cannot paint: the pointer move
+        // is a no-op hover update, focus stays on the body and a click handler's
+        // DOM work is caught by the tracker counters (docs/HEADLESS.md §4.1.13).
+        // A double click selects text and a non-left button has its own UA
+        // action, so only the plain single left click is covered; everything
+        // else keeps the conservative wait (the precheck always vetoes).
+        const leftClick = params.button == null || params.button === 'left'
+        const point = leftClick && clickCount === 1 && Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
+        await this.visualProbeAction(
+          tab,
+          async () => {
+            await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, tab.sessionId)
+            await this.cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount }, tab.sessionId)
+            await this.cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount }, tab.sessionId)
+            return true
+          },
+          null,
+          (before) => (point ? clickAtProbeEligible(before, point) : false),
+          point,
+        )
         return { ok: true, tabId: tab.tabId, x, y }
       }
       case 'tab.hover': {

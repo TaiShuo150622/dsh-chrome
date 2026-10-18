@@ -87,4 +87,26 @@ assert.equal(
 assert.equal(press.screenshotStream.repaintMisses, 0, `press rounds paid the repaint window: ${JSON.stringify(press.screenshotStream)}`)
 assert.ok(press.press.keys.Escape > 0 && press.press.keys.k > 0, `press rotation missing keys: ${JSON.stringify(press.press)}`)
 
+// `--click-at` (docs/HEADLESS.md §4.1.13): real pointer rounds at one settled
+// point. Every measured round must be proven paint-free; a driver without the
+// pointer probe pays the ~40ms repaint window on every round instead.
+const clickAtRun = spawnSync(
+  process.execPath,
+  [path.join(root, 'scripts', 'headless-bench.mjs'), '--seconds', '4', '--click-at'],
+  { cwd: root, encoding: 'utf8', timeout: 120000 },
+)
+assert.equal(clickAtRun.status, 0, `click-at bench exited ${clickAtRun.status}\nstdout: ${clickAtRun.stdout}\nstderr: ${clickAtRun.stderr}`)
+const clickAt = JSON.parse(clickAtRun.stdout)
+assert.equal(clickAt.clickAtMode, true)
+assert.ok(clickAt.scenario.includes('snapshot/clickAt'), `unexpected click-at scenario: ${clickAt.scenario}`)
+assert.ok(clickAt.clickAtPoint && Number.isFinite(clickAt.clickAtPoint.x) && Number.isFinite(clickAt.clickAtPoint.y), `click-at point missing: ${JSON.stringify(clickAt.clickAtPoint)}`)
+assert.ok(clickAt.actions >= 100, `too few click-at rounds: ${clickAt.actions}`)
+assert.ok(clickAt.perActionMs.clickAt > 0 && clickAt.perActionMs.screenshot > 0, `click-at timings missing: ${JSON.stringify(clickAt.perActionMs)}`)
+assert.ok(clickAt.perActionMs.screenshot < 5, `click-at screenshots still pay the repaint window: ${clickAt.perActionMs.screenshot}ms`)
+assert.ok(
+  clickAt.visualSkips >= clickAt.actions,
+  `click-at rounds were not proven paint-free: ${JSON.stringify({ visualSkips: clickAt.visualSkips, actions: clickAt.actions })}`,
+)
+assert.equal(clickAt.screenshotStream.repaintMisses, 0, `click-at rounds paid the repaint window: ${JSON.stringify(clickAt.screenshotStream)}`)
+
 console.log('BENCH SCENARIO TEST: PASS')
