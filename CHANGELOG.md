@@ -13,6 +13,14 @@
 
 ## [Unreleased]
 
+### Fixed（headless capture 对齐扩展语义）
+
+- 抓取阶段 `resourceTypes` 过滤生效；`maxEntries` 改为丢最旧保最新；`capture_requests` 取最新 N 条并按过滤后计数
+- 读侧 body 截断标记、`storeBodies:false`、`Network.getRequestPostData` 兜底
+- `capture_start/stop`/entry 字段补齐（startedAt/timestamp/documentURL/statusText/fromServiceWorker/…）
+- 缓存映射修正；`CAPTURE_LOST` vs `CAPTURE_NOT_FOUND` 区分
+- `test/capture-parity.mjs` 77 严格断言全绿；npm test 16 条全过
+
 ### Added（headless 活跃基线）
 
 - `scripts/headless-bench.mjs`（`npm run bench:headless`）：10s 压测 181 轮 snapshot/type/screenshot/scroll

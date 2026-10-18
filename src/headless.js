@@ -686,16 +686,25 @@ export class HeadlessDriver {
     if (!capture || !capture.active) return
     const requestId = params.requestId
     if (method === 'Network.requestWillBeSent') {
+      const resourceType = String(params.type || 'other').toLowerCase()
+      if (!capture.resourceTypes.includes(resourceType)) return
       if (capture.entries.length >= capture.maxEntries) {
+        // Keep the newest requests: drop the oldest entry, like the extension.
+        const removed = capture.entries.shift()
+        if (removed) capture.byId.delete(String(removed.id))
         capture.dropped += 1
-        return
       }
+      const wallTime = Number(params.wallTime)
       const entry = {
         id: String(requestId),
         method: String(params.request?.method || 'GET'),
         url: redactUrl(params.request?.url),
-        resourceType: String(params.type || 'other').toLowerCase(),
-        startTimestamp: params.timestamp,
+        resourceType,
+        timestamp: Number.isFinite(wallTime) ? Math.round(wallTime * 1000) : Date.now(),
+        startTime: Date.now(),
+        wallTime: Number.isFinite(wallTime) ? wallTime : null,
+        startMono: params.timestamp ?? null,
+        documentURL: params.documentURL ? redactUrl(params.documentURL) : null,
         hasPostData: Boolean(params.request?.hasPostData || params.request?.postData),
       }
       capture.byId.set(String(requestId), entry)
@@ -706,11 +715,14 @@ export class HeadlessDriver {
     const entry = capture.byId.get(String(requestId))
     if (!entry) return
     if (method === 'Network.responseReceived') {
-      entry.status = params.response?.status
-      entry.mimeType = String(params.response?.mimeType || '')
-      if (params.response?.fromDiskCache || params.response?.fromMemoryCache || params.response?.fromServiceWorker) {
-        entry.fromCache = true
-      }
+      const response = params.response || {}
+      entry.status = response.status
+      entry.statusText = String(response.statusText || '')
+      entry.mimeType = String(response.mimeType || '')
+      entry.fromServiceWorker = Boolean(response.fromServiceWorker)
+      if (Number.isFinite(response.encodedDataLength)) entry.encodedDataLength = response.encodedDataLength
+      if (response.fromDiskCache || response.fromMemoryCache || response.fromPrefetchCache) entry.fromCache = true
+      entry.responseAt = Date.now()
       return
     }
     if (method === 'Network.requestServedFromCache') {
@@ -719,12 +731,15 @@ export class HeadlessDriver {
     }
     if (method === 'Network.loadingFailed') {
       entry.failed = true
+      entry.canceled = Boolean(params.canceled)
       entry.errorText = String(params.errorText || '')
-      entry.durationMs = entry.startTimestamp != null ? Math.round((params.timestamp - entry.startTimestamp) * 1000) : null
+      entry.durationMs = entry.startMono != null ? Math.round((params.timestamp - entry.startMono) * 1000) : null
       return
     }
     if (method === 'Network.loadingFinished') {
-      entry.durationMs = entry.startTimestamp != null ? Math.round((params.timestamp - entry.startTimestamp) * 1000) : null
+      entry.durationMs = entry.startMono != null ? Math.round((params.timestamp - entry.startMono) * 1000) : null
+      entry.finishedAt = Date.now()
+      if (Number.isFinite(params.encodedDataLength)) entry.encodedDataLength = params.encodedDataLength
       if (!capture.storeBodies) return
       if (!['xhr', 'fetch', 'document'].includes(entry.resourceType)) return
       if (capture.bodyTasks >= 4) {
@@ -732,9 +747,9 @@ export class HeadlessDriver {
         return
       }
       capture.bodyTasks += 1
-      this.cdp
-        .send('Network.getResponseBody', { requestId: String(requestId) }, tab.sessionId)
-        .then((response) => {
+      const bodyTask = (async () => {
+        try {
+          const response = await this.cdp.send('Network.getResponseBody', { requestId: String(requestId) }, tab.sessionId)
           const raw = response?.base64Encoded
             ? Buffer.from(response.body || '', 'base64').toString('utf8')
             : String(response?.body ?? '')
@@ -744,24 +759,33 @@ export class HeadlessDriver {
             entry.bodyTruncated = materialized.truncated
             entry.redacted = true
           }
-        })
-        .catch(() => {
+        } catch {
           entry.bodyUnavailable = 'evicted'
-        })
-        .finally(() => {
-          capture.bodyTasks -= 1
-        })
-      if (entry._postDataRaw != null) {
-        const requestMime = /^{|^\[/.test(String(entry._postDataRaw).trim())
-          ? 'application/json'
-          : 'application/x-www-form-urlencoded'
-        const materialized = materializeCaptureBody(capture, entry._postDataRaw, requestMime, CAPTURE_REQUEST_BODY_CHARS)
-        if (materialized) {
-          entry.requestBody = materialized.text
-          entry.redacted = true
         }
-        delete entry._postDataRaw
-      }
+        if (entry._postDataRaw == null && entry.hasPostData) {
+          try {
+            const request = await this.cdp.send('Network.getRequestPostData', { requestId: String(requestId) }, tab.sessionId)
+            if (request?.postData) entry._postDataRaw = String(request.postData)
+          } catch {
+            // request body unavailable
+          }
+        }
+        if (entry._postDataRaw != null) {
+          const requestMime = /^{|^\[/.test(String(entry._postDataRaw).trim())
+            ? 'application/json'
+            : 'application/x-www-form-urlencoded'
+          const materialized = materializeCaptureBody(capture, entry._postDataRaw, requestMime, CAPTURE_REQUEST_BODY_CHARS)
+          if (materialized) {
+            entry.requestBody = materialized.text
+            entry.redacted = true
+          }
+          delete entry._postDataRaw
+        }
+        capture.bodyTasks -= 1
+      })()
+      capture.bodyTasksSet = capture.bodyTasksSet || new Set()
+      capture.bodyTasksSet.add(bodyTask)
+      bodyTask.finally(() => capture.bodyTasksSet.delete(bodyTask))
     }
   }
 
@@ -970,7 +994,8 @@ export class HeadlessDriver {
   findCapture(owner, captureId) {
     if (captureId) {
       const capture = this.captures.get(String(captureId))
-      if (!capture || capture.owner !== owner) throw error('CAPTURE_NOT_FOUND', `no capture ${captureId} for this session`)
+      if (!capture) throw error('CAPTURE_LOST', `capture ${captureId} is gone (was the extension worker restarted?)`)
+      if (capture.owner !== owner) throw error('CAPTURE_NOT_FOUND', `no capture ${captureId} for this session`)
       return capture
     }
     let latest = null
@@ -1296,7 +1321,14 @@ export class HeadlessDriver {
         const tab = await this.ensureTab(owner, params.tabId)
         if (this.captureByTab.get(tab.tabId)?.active) {
           const existing = this.captureByTab.get(tab.tabId)
-          return { captureId: existing.captureId, active: true, alreadyActive: true, tabId: tab.tabId }
+          return {
+            captureId: existing.captureId,
+            tabId: tab.tabId,
+            alreadyActive: true,
+            requests: existing.entries.length,
+            startedAt: new Date(existing.startedAt).toISOString(),
+            resourceTypes: existing.resourceTypes,
+          }
         }
         const resourceTypes = Array.isArray(params.resourceTypes) && params.resourceTypes.length > 0
           ? params.resourceTypes.map(String)
@@ -1315,7 +1347,7 @@ export class HeadlessDriver {
           byId: new Map(),
           dropped: 0,
           maxEntries,
-          storeBodies: true,
+          storeBodies: params.storeBodies !== false,
           bodyBytes: 0,
           bodiesDropped: 0,
           bodyTasks: 0,
@@ -1336,7 +1368,15 @@ export class HeadlessDriver {
         this.captures.set(capture.captureId, capture)
         this.captureByTab.set(tab.tabId, capture)
         await this.cdp.send('Network.enable', {}, tab.sessionId)
-        return { captureId: capture.captureId, active: true, tabId: tab.tabId, maxEntries, storeBodies: true }
+        return {
+          captureId: capture.captureId,
+          active: true,
+          tabId: tab.tabId,
+          startedAt: new Date(capture.startedAt).toISOString(),
+          resourceTypes,
+          maxEntries,
+          storeBodies: capture.storeBodies,
+        }
       }
       case 'tab.capture_stop': {
         const capture = this.findCapture(owner, params.captureId)
@@ -1353,8 +1393,12 @@ export class HeadlessDriver {
         return {
           captureId: capture.captureId,
           active: false,
+          tabId: capture.tabId,
           requests: capture.entries.length,
           dropped: capture.dropped,
+          bodiesDropped: capture.bodiesDropped,
+          startedAt: new Date(capture.startedAt).toISOString(),
+          endedAt: new Date().toISOString(),
           endedReason: capture.endedReason,
           durationMs: Date.now() - capture.startedAt,
         }
@@ -1373,15 +1417,30 @@ export class HeadlessDriver {
         }
         const includeBodies = params.includeBodies !== false
         const maxBodyChars = Number(params.maxBodyChars) > 0 ? Math.min(Number(params.maxBodyChars), 65536) : 4096
-        const rendered = entries.slice(0, limit).map((entry) => {
-          const copy = { ...entry, _postDataRaw: undefined }
+        const filtered = entries
+        const selected = filtered.slice(-limit)
+        const truncateBody = (text) => {
+          const value = String(text || '')
+          if (value.length <= maxBodyChars) return { text: value, truncated: false }
+          return { text: `${value.slice(0, maxBodyChars)}… <truncated>`, truncated: true }
+        }
+        const rendered = selected.map((entry) => {
+          const copy = { ...entry }
           delete copy._postDataRaw
           if (!includeBodies) {
             delete copy.requestBody
             delete copy.responseBody
           } else {
-            if (copy.requestBody) copy.requestBody = String(copy.requestBody).slice(0, maxBodyChars)
-            if (copy.responseBody) copy.responseBody = String(copy.responseBody).slice(0, maxBodyChars)
+            if (copy.requestBody) {
+              const result = truncateBody(copy.requestBody)
+              copy.requestBody = result.text
+              if (result.truncated) copy.bodyTruncated = true
+            }
+            if (copy.responseBody) {
+              const result = truncateBody(copy.responseBody)
+              copy.responseBody = result.text
+              if (result.truncated) copy.bodyTruncated = true
+            }
           }
           return copy
         })
@@ -1392,8 +1451,8 @@ export class HeadlessDriver {
           captureId: capture.captureId,
           tabId: capture.tabId,
           entries: rendered,
-          total: capture.entries.length,
-          truncated: capture.entries.length > limit,
+          total: filtered.length,
+          truncated: filtered.length > limit,
           dropped: capture.dropped,
           bodiesDropped: capture.bodiesDropped,
         }

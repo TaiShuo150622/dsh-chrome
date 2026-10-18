@@ -129,3 +129,19 @@ node test/capture-parity.mjs
 - 相关实现：`extension/background.js` `captureStart/captureStop/captureRequests/routeNetworkEvent`
   （约 1080-1495 行）；`src/headless.js` `onNetworkEvent/findCapture/capture_start/capture_stop/capture_requests`
   （约 142-747、923-936、1225-1329 行）。
+
+## 5. 修复记录（2026-10-17）
+
+以下差异已在 headless 侧按扩展语义修复（`src/headless.js`）：
+
+- 抓取阶段 `resourceTypes` 过滤生效（默认 xhr/fetch/document，自定义生效）；
+- `maxEntries` 溢出改为**丢最旧、保留最新**；
+- `capture_requests` 的 `limit` 取最新 N 条，`total/truncated` 按过滤后计数；
+- 读侧 `maxBodyChars` 截断追加 `… <truncated>` 并置 `bodyTruncated`；
+- 请求体缺 `postData` 时用 `Network.getRequestPostData` 兜底；
+- `storeBodies:false` 生效；
+- `capture_start`/`capture_stop`/entry 补齐 `startedAt/resourceTypes/timestamp/documentURL/statusText/fromServiceWorker/encodedDataLength/responseAt/finishedAt/canceled` 等字段；
+- 缓存映射修正（fromPrefetchCache 计入 fromCache，fromServiceWorker 单独字段）；
+- `captureId` 不存在 → `CAPTURE_LOST`；owner 不匹配 → `CAPTURE_NOT_FOUND`。
+
+`test/capture-parity.mjs` 保持「旧行为或修复后行为都接受」的差异断言，严格断言 77 项仍全绿；本文件 §3 的待修清单作为历史差异记录保留。
