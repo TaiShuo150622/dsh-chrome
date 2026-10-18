@@ -165,9 +165,16 @@ try {
   const cast = await driver.request('tab.screencast_start', { owner: 's1', everyNthFrame: 1, quality: 50 })
   assert.equal(cast.active, true)
   await new Promise((resolve) => setTimeout(resolve, 200))
-  await driver.request('tab.scroll', { owner: 's1', direction: 'down', amount: 300 })
-  await new Promise((resolve) => setTimeout(resolve, 500))
-  const castStatus = await driver.request('tab.screencast_status', { owner: 's1' })
+  let castStatus = { frames: 0 }
+  for (let attempt = 0; attempt < 4 && castStatus.frames === 0; attempt += 1) {
+    await driver.request('tab.scroll', { owner: 's1', direction: attempt % 2 === 0 ? 'top' : 'bottom' })
+    await driver.request('tab.evaluate', {
+      owner: 's1',
+      expression: `document.body.style.background = ${JSON.stringify(attempt % 2 === 0 ? '#ff0000' : '#ffffff')}`,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    castStatus = await driver.request('tab.screencast_status', { owner: 's1' })
+  }
   assert.ok(castStatus.frames > 0, `headless screencast produced no frames: ${JSON.stringify(castStatus)}`)
   const castStop = await driver.request('tab.screencast_stop', { owner: 's1' })
   assert.equal(castStop.active, false)

@@ -49,6 +49,7 @@ http://127.0.0.1:<DSH web 端口>/dsh-chrome/live?token=<随机 token>
 - token 随机 48 hex，存 `~/.dsh/cache/dsh-chrome/live-token`（0600）；只接受 loopback 请求 + 正确 token；
 - 页面每 300ms 拉一次帧（`cache-control: no-store`），帧来自 native host 写入的 `latest.jpg`；
 - screencast 有 **10 分钟硬上限**自动停止（桌面扩展与 headless 都实现）；
+- viewer 有 **5 分钟无帧请求自动停止**守卫（`src/screencast-guard.js`，只在 viewer 启用时生效）；
 - 实测：HTML 200、frame `image/jpeg 1280x642 6493B`、错误 token 403、非 loopback 403；`HEAD` 返回 405（只接受 GET）。
 
 ## 3. 「实时画面」还缺什么

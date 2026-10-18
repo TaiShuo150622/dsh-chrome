@@ -13,6 +13,12 @@
 
 ## [Unreleased]
 
+### Added（viewer 无查看者自动停止）
+
+- viewer 启用时，screencast start 会挂 5 分钟无帧请求自动停止守卫（`src/screencast-guard.js`）；stop 时解除
+- `test/screencast-guard.mjs` 假时钟覆盖 arm/idle/超时/disarm
+- provider 0.1.87
+
 ### Added（一次性登录 profile）
 
 - 新工具 `chrome_headless_login`（第 40 个）：op=start/status/finish

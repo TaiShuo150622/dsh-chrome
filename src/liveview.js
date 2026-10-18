@@ -13,6 +13,8 @@ const state = {
   token: null,
   home: null,
   dispose: null,
+  lastFrameAt: 0,
+  frameRequests: 0,
 }
 
 function cacheDir(home) {
@@ -100,6 +102,8 @@ async function serveFrame(req, res, home) {
         'content-length': data.byteLength,
       })
       res.end(data)
+      state.lastFrameAt = Date.now()
+      state.frameRequests += 1
       return
     } catch {
       // try next
@@ -180,6 +184,14 @@ export function getLiveViewUrl() {
 
 export function getLiveViewInfo() {
   return { enabled: Boolean(state.origin && state.token), url: getLiveViewUrl(), origin: state.origin }
+}
+
+export function getViewerActivity() {
+  return {
+    enabled: Boolean(state.origin && state.token),
+    lastFrameAt: state.lastFrameAt || 0,
+    frameRequests: state.frameRequests || 0,
+  }
 }
 
 export function unregisterLiveView() {
