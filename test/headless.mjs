@@ -74,6 +74,24 @@ try {
   const shot = await driver.request('tab.screenshot', { owner: 's1' })
   assert.ok(fs.existsSync(shot.path), `screenshot missing: ${shot.path}`)
   assert.ok(shot.bytes > 1000)
+  // The default fast-PNG path must still produce a valid PNG whose pixel size
+  // matches the cached viewport size reported to the caller.
+  const shotBytes = fs.readFileSync(shot.path)
+  assert.equal(shot.mediaType, 'image/png')
+  assert.deepEqual([...shotBytes.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  const dpr = (await driver.request('tab.evaluate', { owner: 's1', expression: 'devicePixelRatio' })).value
+  assert.equal(shotBytes.readUInt32BE(16), Math.round(shot.width * dpr))
+  assert.equal(shotBytes.readUInt32BE(20), Math.round(shot.height * dpr))
+  const viewportNow = await driver.request('tab.evaluate', { owner: 's1', expression: '({ w: innerWidth, h: innerHeight })' })
+  assert.deepEqual([shot.width, shot.height], [viewportNow.value.w, viewportNow.value.h])
+  // Optional JPEG path (used by the benchmark's alternate scenario).
+  const jpegShot = await driver.request('tab.screenshot', { owner: 's1', format: 'jpeg', quality: 60 })
+  assert.equal(jpegShot.mediaType, 'image/jpeg')
+  assert.ok(jpegShot.path.endsWith('.jpg'), `jpeg screenshot path: ${jpegShot.path}`)
+  assert.ok(fs.existsSync(jpegShot.path))
+  const jpegBytes = fs.readFileSync(jpegShot.path)
+  assert.deepEqual([...jpegBytes.subarray(0, 3)], [0xff, 0xd8, 0xff])
+  assert.ok(jpegShot.bytes > 1000)
 
   const tabs = await driver.request('tab.tabs', { owner: 's1', op: 'list' })
   assert.equal(tabs.tabs.length, 1)
@@ -157,6 +175,9 @@ try {
   assert.equal(emulated.applied, true)
   const widthNow = await driver.request('tab.evaluate', { owner: 's1', expression: 'innerWidth' })
   assert.equal(widthNow.value, 800)
+  // Screenshot viewport metadata follows the emulation override.
+  const emulatedShot = await driver.request('tab.screenshot', { owner: 's1' })
+  assert.deepEqual([emulatedShot.width, emulatedShot.height], [800, 600])
   const resetViewport = await driver.request('tab.emulate', { owner: 's1', reset: true })
   assert.equal(resetViewport.applied, false)
   const dragged = await driver.request('tab.drag', { owner: 's1', fromRef: dragSrc.ref, toRef: dropTarget.ref })

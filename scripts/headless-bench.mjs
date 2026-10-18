@@ -4,9 +4,21 @@
  *
  * Starts a local HTTP page, runs a fixed scripted action sequence through the
  * headless CDP driver, and samples the Chrome process tree (CPU time / RSS)
- * before and after. Use the idle numbers from docs/HEADLESS.md for comparison.
+ * before and after. Per-action wall time is reported alongside the aggregate so
+ * a regression can be attributed to a specific path (snapshot / type /
+ * screenshot / scroll).
  *
- * Usage: node scripts/headless-bench.mjs [--actions 20] [--seconds 10]
+ * The scenario is the same as the 2026-10-17 baseline in docs/HEADLESS.md §4.1
+ * (181 rounds/10s, 69.89% CPU, 1113MB RSS), so `delta` is directly comparable.
+ *
+ * Usage:
+ *   node scripts/headless-bench.mjs [--seconds 10] [--actions 20]
+ *                                   [--shot-format png|jpeg] [--shot-quality 60]
+ *                                   [--no-optimize]
+ *
+ * The PNG path defaults to Chrome's fast PNG encoder (`optimizeForSpeed`).
+ * `--no-optimize` measures the old, smaller-PNG path; `--shot-format jpeg`
+ * measures the optional JPEG path (not the tool default).
  */
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -21,8 +33,21 @@ const argValue = (name, fallback) => {
   const index = args.indexOf(name)
   return index >= 0 && args[index + 1] ? Number(args[index + 1]) : fallback
 }
+const hasFlag = (name) => args.includes(name)
 const ACTIONS = Math.max(5, Math.min(200, argValue('--actions', 20)))
 const DURATION = Math.max(5, Math.min(60, argValue('--seconds', 10)))
+const SHOT_FORMAT = hasFlag('--shot-format') && args[args.indexOf('--shot-format') + 1] === 'jpeg' ? 'jpeg' : 'png'
+const SHOT_QUALITY = Math.max(1, Math.min(100, argValue('--shot-quality', 60)))
+const SHOT_OPTIMIZE = !hasFlag('--no-optimize')
+
+// Measured on this machine (Chrome 155) before the screenshot/round-trip work;
+// keep in sync with docs/HEADLESS.md §4.1.
+const BASELINE = {
+  actions: 181,
+  cpuPercent: 69.89,
+  rssMb: 1113,
+  source: 'docs/HEADLESS.md §4.1, 2026-10-17, png',
+}
 
 const html = `<!doctype html><html><head><title>Headless Bench</title></head><body>
 <h1>Headless Bench</h1>
@@ -41,6 +66,9 @@ const { port } = server.address()
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-headless-bench-'))
 const profilePattern = path.join(home, 'cache', 'dsh-chrome', 'headless', 'profile')
 const driver = new HeadlessDriver({ home })
+
+const round = (value, digits = 2) => Math.round(value * 10 ** digits) / 10 ** digits
+const percentDelta = (current, base) => round(((current - base) / base) * 100, 1)
 
 function profilePids() {
   try {
@@ -79,35 +107,94 @@ function processStats() {
   return { cpuSeconds, rssKb, processes }
 }
 
+// Wall-clock accumulator per action kind; Chrome CPU is sampled only around the
+// whole loop, but wall time isolates which request dominates a round.
+function createTimer() {
+  const buckets = { snapshot: 0, type: 0, screenshot: 0, scroll: 0 }
+  const counts = { snapshot: 0, type: 0, screenshot: 0, scroll: 0 }
+  return {
+    buckets,
+    counts,
+    async time(kind, fn) {
+      const startedAt = performance.now()
+      try {
+        return await fn()
+      } finally {
+        buckets[kind] += performance.now() - startedAt
+        counts[kind] += 1
+      }
+    },
+    averages() {
+      const out = {}
+      for (const kind of Object.keys(buckets)) out[kind] = counts[kind] ? round(buckets[kind] / counts[kind], 2) : 0
+      return out
+    },
+  }
+}
+
 try {
   await driver.ensureStarted()
   await driver.request('tab.goto', { owner: 'bench', url: `http://127.0.0.1:${port}/` })
   await driver.request('tab.snapshot', { owner: 'bench', maxChars: 5000 })
+
+  const shotParams = {
+    owner: 'bench',
+    format: SHOT_FORMAT,
+    ...(SHOT_FORMAT === 'jpeg' ? { quality: SHOT_QUALITY } : {}),
+    optimizeForSpeed: SHOT_OPTIMIZE,
+  }
+  const runRound = async (timer, index) => {
+    const timed = timer ? (kind, fn) => timer.time(kind, fn) : (kind, fn) => fn()
+    const snap = await timed('snapshot', () => driver.request('tab.snapshot', { owner: 'bench', maxChars: 2000 }))
+    const input = snap.controls.find((control) => control.tag === 'input')
+    if (input) await timed('type', () => driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${index}`, replace: true }))
+    await timed('screenshot', () => driver.request('tab.screenshot', shotParams))
+    await timed('scroll', () => driver.request('tab.scroll', { owner: 'bench', direction: index % 2 === 0 ? 'down' : 'up', amount: 200 }))
+  }
+
+  // One untimed warm-up round keeps the first screenshot (cold compositor) out
+  // of the measurement.
+  await runRound(null, -1)
+
   const before = processStats()
   const t0 = Date.now()
   const until = t0 + DURATION * 1000
+  const timer = createTimer()
   let actions = 0
   while (Date.now() < until && actions < ACTIONS * 20) {
-    const snap = await driver.request('tab.snapshot', { owner: 'bench', maxChars: 2000 })
-    const input = snap.controls.find((control) => control.tag === 'input')
-    if (input) await driver.request('tab.type', { owner: 'bench', ref: input.ref, text: `v${actions}`, replace: true })
-    await driver.request('tab.screenshot', { owner: 'bench' })
-    await driver.request('tab.scroll', { owner: 'bench', direction: actions % 2 === 0 ? 'down' : 'up', amount: 200 })
+    await runRound(timer, actions)
     actions += 1
   }
   const elapsed = (Date.now() - t0) / 1000
   const after = processStats()
-  const cpuPercent = Math.round(((after.cpuSeconds - before.cpuSeconds) / elapsed) * 10000) / 100
+  const cpuPercent = round(((after.cpuSeconds - before.cpuSeconds) / elapsed) * 100, 2)
+  const perActionMs = timer.averages()
+  const roundTotalMs = round((timer.buckets.snapshot + timer.buckets.type + timer.buckets.screenshot + timer.buckets.scroll) / Math.max(1, actions), 2)
+  const roundsPerSecond = round(actions / elapsed, 2)
+  const rssMb = Math.round(after.rssKb / 1024)
   console.log(
     JSON.stringify(
       {
-        scenario: `headless active: ${actions} snapshot/type/screenshot/scroll rounds`,
-        elapsedSeconds: Math.round(elapsed * 10) / 10,
+        scenario: `headless active: ${actions} ${SHOT_FORMAT} snapshot/type/screenshot/scroll rounds`,
+        elapsedSeconds: round(elapsed, 1),
         actions,
+        roundsPerSecond,
         processes: after.processes,
-        rssMb: Math.round(after.rssKb / 1024),
+        rssMb,
         cpuPercent,
-        cpuSeconds: Math.round((after.cpuSeconds - before.cpuSeconds) * 100) / 100,
+        cpuSeconds: round(after.cpuSeconds - before.cpuSeconds, 2),
+        perActionMs: { ...perActionMs, roundTotal: roundTotalMs },
+        screenshot: {
+          format: SHOT_FORMAT,
+          ...(SHOT_FORMAT === 'jpeg' ? { quality: SHOT_QUALITY } : { optimizeForSpeed: SHOT_OPTIMIZE }),
+        },
+        baseline: BASELINE,
+        delta: {
+          actionsPercent: percentDelta(actions, BASELINE.actions),
+          roundsPerSecondPercent: percentDelta(roundsPerSecond, BASELINE.actions / DURATION),
+          cpuPercent: percentDelta(cpuPercent, BASELINE.cpuPercent),
+          rssPercent: percentDelta(rssMb, BASELINE.rssMb),
+        },
       },
       null,
       2,

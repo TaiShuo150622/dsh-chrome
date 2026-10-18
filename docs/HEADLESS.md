@@ -119,7 +119,7 @@ chrome_headless_login {op:"status"}
 - **并发限制**：最多 12 个 headless tabs（`DSH_HEADLESS_MAX_TABS` 可调），超出返回 `RESOURCE_LIMIT`；
 - **CPU/内存基线**（本机 Chrome 155，headless 无 tab 空闲 60s 采样）：见下方 §4.1。
 
-### 4.1 空闲基线（本机，Chrome 155）
+### 4.1 空闲与活跃基线（本机，Chrome 155）
 
 headless 无 tab、无请求，60s `ps` 时间差：
 
@@ -129,29 +129,64 @@ headless 无 tab、无请求，60s `ps` 时间差：
 | 内存 RSS | **672 MB** |
 | 进程数 | 7 |
 
-**活跃压测**（`node scripts/headless-bench.mjs --seconds 10`，同一 profile，10 个进程）：
+**活跃压测**（`node scripts/headless-bench.mjs --seconds 10`，每轮 snapshot + type + screenshot + scroll，10 个进程）：
 
-| 指标 | 值 |
+| 指标 | 优化前（基线） | 优化后（本次） |
+|---|---|---|
+| 动作 | **181 轮/10s** | **233–241 轮/10s**（5 次复跑，中位 238，+31%） |
+| CPU | **69.89%**（6.99s / 10s） | 63.6–71.4%（中位 69.6%）；**每动作 CPU 35.8ms → 27ms（约 -24%）** |
+| 内存 RSS | **1113 MB** | 1049–1115 MB（中位 1108 MB，约持平） |
+
+CPU 百分比总量看起来没降，是因为 10s 内完成的动作多了 ~31%：单动作成本下降体现在「每动作 CPU」和「每轮墙钟」上。
+
+分项（优化后，单次调用墙钟均值，同一次压测采样）：
+
+| 动作 | 耗时 |
 |---|---|
-| 动作 | 181 轮（每轮 snapshot + type + screenshot + scroll） |
-| CPU | **69.89%**（6.99s / 10s） |
-| 内存 RSS | **1113 MB** |
-| 进程 | 10 |
+| `tab.snapshot` | 0.62 ms |
+| `tab.type` | 0.57 ms |
+| `tab.screenshot` | 40.1 ms |
+| `tab.scroll` | 0.64 ms |
+| 每轮合计 | 41.9 ms |
 
-对比：桌面 Chrome 空闲在用户标签很多时是 5%+；headless 空闲约 1.3%/672MB，活跃压测约 70%/1.1GB——成本主要来自高频截图与 CDP evaluate。真实 agent 动作间隔通常远大于此，但仍说明：**headless 只应在任务期间常驻，空闲 5 分钟回收是必要的**。
+结论：**screenshot 占每轮 ~96%**，是活跃期的绝对瓶颈；CDP 往返优化只能再拿几个百分点。剩余成本在 Chrome `Page.captureScreenshot` 的取帧 + PNG 编码本身（~40ms/次，与页面内容复杂度相关、与像素数弱相关——1440×813 与 720×450 实测几乎同价）。
+
+本次优化（`src/headless.js`，其余行为不变）：
+
+1. **PNG 默认走 Chrome 快编码** `optimizeForSpeed`：bench 页 screenshot 51.1 → 40.1ms/次（-21%），内容更复杂的页面收益更大（另测 ~48→38ms）。代价是 PNG 体积约 1.3–2×（仍无损、仍是 PNG，`chrome_screenshot` 语义不变）；需要旧行为可传 `optimizeForSpeed:false`。
+2. **去掉每轮多余的 CDP 往返**：
+   - `tab.snapshot` 不再先 `syncTabMeta`（snapshotPage 本身已返回 title/url，直接刷 tab 缓存）；
+   - `tab.screenshot` 不再每次 evaluate `innerWidth/innerHeight`，按 tab 缓存，`tab.emulate` 时失效；
+   - `tab.scroll` 把「滚动 + 读位置」合并为一次 evaluate；
+   - `tab.click` 用页面返回值刷新 title/url，去掉点击后的一次 `Runtime.evaluate`。
+3. 截图/PDF 输出目录只 `mkdir` 一次；文件名加序号避免同毫秒覆盖；bench 增加逐动作计时、相对基线 delta 与截图格式选项。
+
+A/B（同一台机器，同样的 10s 场景；「普通 PNG」是通过 `--no-optimize` 复现旧编码路径）：
+
+| 变体 | 动作 | 每轮墙钟 | screenshot |
+|---|---|---|---|
+| 旧代码（基线） | 181 | ~55.2 ms | — |
+| 新代码 + 普通 PNG | 189 | 53.1 ms | 51.1 ms |
+| **新代码 + 快 PNG（默认）** | **237** | **42.2 ms** | **40.4 ms** |
+| 新代码 + JPEG q60 | 237 | 42.2 ms | 40.3 ms |
+
+去掉 CDP 往返本身约 +4%（181→189）；其余 +27% 来自截图编码路径。JPEG q60 与快 PNG 速度基本一致，所以**工具默认仍返回 PNG**（与桌面扩展行为一致、无损），JPEG 只是 bench 的可选对照。
 
 复跑：
 
 ```bash
 cd /Users/taishuo/projects/dsh-chrome
-node scripts/headless-bench.mjs --seconds 10
+node scripts/headless-bench.mjs --seconds 10                  # 默认：快 PNG
+node scripts/headless-bench.mjs --seconds 10 --no-optimize    # 旧 PNG 编码路径
+node scripts/headless-bench.mjs --seconds 10 --shot-format jpeg --shot-quality 60
+node test/headless.mjs                                        # headless 回归
 ```
 
 ## 5. 下一步（H1）
 
 1. `chrome_pick` 的 headless 语义（可返回 selector 流程）；
 2. capture 引擎与扩展共享（两套行为一致性）；
-3. CPU/内存活跃基线（已测，见 §4.1）与 capture 双后端一致性对比。
+3. 截图性能的剩余大头是 Chrome 取帧 + PNG 编码（~40ms/次）：可选方向是「同一帧内复用/限频」（需要页面变更信号才能保证不返回陈旧画面）、JPEG 快照（已测：与快 PNG 同速，故未改默认）、或把 `chrome_screenshot` 的 `clip`/`ref` 参数接到 headless（能直接缩小区块）。
 
 ## 6. 代码
 
@@ -160,5 +195,6 @@ node scripts/headless-bench.mjs --seconds 10
 | `src/headless.js` | headless Chromium 启动、CDP client、页面动作、`tab.*`/`browser.*` 请求实现 |
 | `src/backend.js` | BackendRouter + AsyncLocalStorage + `wrapToolsForBackend`（给 39 个工具加 `backend` 参数） |
 | `index.js` | 创建 HeadlessDriver/Router，包装工具，卸载时关闭 |
+| `scripts/headless-bench.mjs` | 活跃 CPU/RSS 压测：逐动作计时 + 相对 §4.1 基线的 delta + 截图格式选项 |
 | `test/backend-router.mjs` | 路由/参数剥离/默认桌面回归 |
-| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/tabs） |
+| `test/headless.mjs` | 真 Chrome headless 端到端（goto/snapshot/type/click/screenshot/capture/screencast/emulate 等，含快 PNG 合法性、缓存视口、JPEG 可选路径断言） |
