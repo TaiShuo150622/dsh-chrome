@@ -26,6 +26,7 @@ Return a text snapshot of the current DSH session page: title, URL, a numbered l
 | `maxChars` | number | no | Maximum page-text characters to return (default 100000). |
 | `boxes` | boolean | no | Include each control viewport box [x,y,width,height] in CSS px. |
 | `mode` | enum(full | delta) | no | delta returns only controls that changed since the previous snapshot in this page. |
+| `frames` | enum(all | main) | no | all (default) includes iframe controls with f<frame>:<ref> handles; main keeps legacy main-frame-only output. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_find`
@@ -157,6 +158,7 @@ Hover over the control with the given snapshot ref (useful to reveal menus, tool
 |---|---|---|---|
 | `ref` | number | no | Control number from the latest chrome_snapshot or chrome_find. |
 | `selector` | string | no | CSS selector alternative to ref (used when ref is omitted). |
+| `frameRef` | string | no | Iframe handle from chrome_snapshot frames, e.g. "f83F9D728:1". |
 | `snapshot` | boolean | no | Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip). |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
@@ -179,6 +181,7 @@ Click the interactive control with the given snapshot ref number on the current 
 |---|---|---|---|
 | `ref` | number | no | Control number from the latest chrome_snapshot. |
 | `selector` | string | no | CSS selector alternative to ref (used when ref is omitted). |
+| `frameRef` | string | no | Iframe handle from chrome_snapshot frames, e.g. "f83F9D728:1" (takes precedence over ref). |
 | `button` | enum(left | right | middle) | no | Mouse button (default left). |
 | `clickCount` | number | no | Click count, 1-3 (default 1; 2 = double click). |
 | `snapshot` | boolean | no | Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip). |
@@ -225,6 +228,7 @@ Type text into the input/textarea with the given snapshot ref number (React/Vue-
 |---|---|---|---|
 | `ref` | number | no | Control number from the latest chrome_snapshot. |
 | `selector` | string | no | CSS selector alternative to ref (used when ref is omitted). |
+| `frameRef` | string | no | Iframe handle from chrome_snapshot frames, e.g. "f749ABB6B:2" (takes precedence over ref). |
 | `text` | string | yes | Text to enter. |
 | `replace` | boolean | no | Replace the existing value instead of appending. |
 | `submit` | boolean | no | Submit the form after typing. |

@@ -832,6 +832,13 @@ async function snapshot(owner, params) {
   const limit = Number.isFinite(params.maxChars)
     ? Math.max(1000, Math.min(200000, params.maxChars))
     : 100000
+  if (params.frames !== 'main') {
+    try {
+      return await snapshotAllFrames(tabId, { ...params, maxChars: limit })
+    } catch (error) {
+      log('snapshot all frames failed; falling back to main frame', error?.message || error)
+    }
+  }
   const value = await callInPage(tabId, 'snapshot', [limit, Boolean(params.boxes), String(params.mode || 'full')])
   if (!value) throw bridgeError('INTERNAL', 'page snapshot returned no result')
   return value
@@ -912,10 +919,21 @@ async function hover(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
   const selector = params.selector ? String(params.selector) : ''
-  if (!Number.isFinite(ref) && !selector) {
-    throw bridgeError('INVALID_ARGUMENT', 'ref or selector is required')
+  const frameRef = params.frameRef ? String(params.frameRef) : ''
+  if (!Number.isFinite(ref) && !selector && !frameRef) {
+    throw bridgeError('INVALID_ARGUMENT', 'ref, frameRef or selector is required')
   }
-  const result = await callInPage(tabId, 'hover', [Number.isFinite(ref) ? ref : null, selector])
+  let result
+  if (frameRef) {
+    const parsed = parseFrameRef(frameRef)
+    if (!parsed) throw bridgeError('INVALID_ARGUMENT', `invalid frameRef: ${frameRef}`)
+    const frameId = frameIdForPrefix(tabId, parsed.prefix)
+    if (!frameId) throw bridgeError('FRAME_STALE', 'frame registry is stale; take a new snapshot')
+    result = await callInFrame(tabId, frameId, 'hover', [parsed.ref, selector])
+    if (result) result.frameRef = frameRef
+  } else {
+    result = await callInPage(tabId, 'hover', [Number.isFinite(ref) ? ref : null, selector])
+  }
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
   }
@@ -926,16 +944,33 @@ async function click(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
   const selector = params.selector ? String(params.selector) : ''
-  if (!Number.isFinite(ref) && !selector) {
-    throw bridgeError('INVALID_ARGUMENT', 'ref or selector is required')
+  const frameRef = params.frameRef ? String(params.frameRef) : ''
+  if (!Number.isFinite(ref) && !selector && !frameRef) {
+    throw bridgeError('INVALID_ARGUMENT', 'ref, frameRef or selector is required')
   }
-  const result = await callInPage(
-    tabId,
-    'click',
-    [Number.isFinite(ref) ? ref : null, selector, String(params.button || 'left'), Number(params.clickCount) || 1],
-    15000,
-    params.dialog,
-  )
+  let result
+  if (frameRef) {
+    const parsed = parseFrameRef(frameRef)
+    if (!parsed) throw bridgeError('INVALID_ARGUMENT', `invalid frameRef: ${frameRef}`)
+    const frameId = frameIdForPrefix(tabId, parsed.prefix)
+    if (!frameId) throw bridgeError('FRAME_STALE', 'frame registry is stale; take a new snapshot')
+    result = await callInFrame(
+      tabId,
+      frameId,
+      'click',
+      [parsed.ref, selector, String(params.button || 'left'), Number(params.clickCount) || 1],
+      15000,
+    )
+    if (result) result.frameRef = frameRef
+  } else {
+    result = await callInPage(
+      tabId,
+      'click',
+      [Number.isFinite(ref) ? ref : null, selector, String(params.button || 'left'), Number(params.clickCount) || 1],
+      15000,
+      params.dialog,
+    )
+  }
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
   }
@@ -974,6 +1009,170 @@ async function html(owner, params) {
   return { ...result, tabId }
 }
 
+const frameRegistry = new Map()
+
+function framePrefix(frameId) {
+  return String(frameId || '').slice(0, 8)
+}
+
+async function readFrameTree(target) {
+  const tree = await chrome.debugger.sendCommand(target, 'Page.getFrameTree')
+  const out = []
+  const visit = (node, parentId) => {
+    const frame = node?.frame
+    if (!frame) return
+    out.push({
+      frameId: String(frame.id || ''),
+      parentFrameId: parentId || null,
+      url: String(frame.url || ''),
+      domainAndRegistry: String(frame.domainAndRegistry || ''),
+      mimeType: String(frame.mimeType || ''),
+    })
+    for (const child of node.childFrames || []) visit(child, String(frame.id || ''))
+  }
+  visit(tree?.frameTree, null)
+  return out
+}
+
+function frameExpression(fn, args) {
+  return `(() => { ${CURSOR_HELPER_SRC}
+    ${DEEP_HELPERS_SRC}
+    return (${fn.toString()})(...${JSON.stringify(args)})
+  })()`
+}
+
+async function evalInFrameContext(target, frameId, fn, args, timeoutMs = 15000) {
+  const world = await chrome.debugger.sendCommand(target, 'Page.createIsolatedWorld', {
+    frameId,
+    worldName: 'dsh-frame-actions',
+  })
+  const response = await withTimeout(
+    chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+      expression: frameExpression(fn, args),
+      contextId: world.executionContextId,
+      returnByValue: true,
+      awaitPromise: true,
+    }),
+    timeoutMs,
+    'TIMEOUT',
+    `frame action timed out after ${timeoutMs}ms`,
+  )
+  if (response?.exceptionDetails) {
+    const text = response.exceptionDetails.exception?.description || response.exceptionDetails.text || 'frame action failed'
+    throw bridgeError('INTERNAL', String(text))
+  }
+  return response?.result?.value
+}
+
+function parseFrameRef(value) {
+  if (typeof value !== 'string') return null
+  const match = /^f([0-9a-f]{1,16}):(\d+)$/i.exec(value.trim())
+  if (!match) return null
+  return { prefix: match[1].toLowerCase(), ref: Number(match[2]) }
+}
+
+function frameIdForPrefix(tabId, prefix) {
+  const registry = frameRegistry.get(tabId)
+  if (!registry) return null
+  return registry.get(prefix) ?? null
+}
+
+async function callInFrame(tabId, frameId, action, args, timeoutMs = 15000) {
+  const fn = PAGE_ACTIONS[action]
+  if (!fn) throw bridgeError('UNSUPPORTED', `unknown page action: ${action}`)
+  const target = { tabId }
+  try {
+    await chrome.debugger.attach(target, '1.3')
+  } catch (error) {
+    throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
+  }
+  try {
+    return await evalInFrameContext(target, frameId, fn, args, timeoutMs)
+  } finally {
+    try {
+      await chrome.debugger.detach(target)
+    } catch {
+      // tab may have closed
+    }
+  }
+}
+
+async function snapshotAllFrames(tabId, params) {
+  const limit = Number.isFinite(params.maxChars) ? Math.max(1000, Math.min(200000, params.maxChars)) : 100000
+  const boxes = Boolean(params.boxes)
+  const mode = String(params.mode || 'full')
+  const target = { tabId }
+  await chrome.debugger.attach(target, '1.3')
+  try {
+    const tree = await readFrameTree(target)
+    const frames = []
+    for (const frame of tree) {
+      const prefix = framePrefix(frame.frameId).toLowerCase()
+      try {
+        const value = await evalInFrameContext(target, frame.frameId, pageSnapshot, [limit, boxes, mode], 15000)
+        const isMain = !frame.parentFrameId
+        const controls = Array.isArray(value?.controls)
+          ? value.controls.map((control) =>
+              isMain
+                ? control
+                : { ...control, frameRef: `f${prefix}:${control.ref}`, frame: prefix },
+            )
+          : []
+        frames.push({
+          frameId: frame.frameId,
+          prefix,
+          parentFrameId: frame.parentFrameId,
+          url: value?.url || frame.url,
+          title: value?.title || '',
+          controls,
+          text: isMain ? value?.text || '' : '',
+          truncated: Boolean(value?.truncated),
+        })
+      } catch (error) {
+        frames.push({
+          frameId: frame.frameId,
+          prefix,
+          parentFrameId: frame.parentFrameId,
+          url: frame.url,
+          title: '',
+          controls: [],
+          error: String(error?.message || error),
+        })
+      }
+    }
+    const registry = new Map(frames.map((frame) => [frame.prefix, frame.frameId]))
+    frameRegistry.set(tabId, registry)
+    const main = frames.find((frame) => !frame.parentFrameId) ?? frames[0] ?? null
+    const result = {
+      title: main?.title || '',
+      url: main?.url || '',
+      mode,
+      controls: main?.controls || [],
+      text: main?.text || '',
+      truncated: Boolean(main?.truncated),
+      frameCount: frames.length,
+    }
+    if (frames.length > 1) {
+      result.frames = frames.map((frame) => ({
+        frameId: frame.frameId,
+        prefix: frame.prefix,
+        parentFrameId: frame.parentFrameId,
+        url: frame.url,
+        title: frame.title,
+        controls: frame.controls,
+        ...(frame.error ? { error: frame.error } : {}),
+      }))
+    }
+    return result
+  } finally {
+    try {
+      await chrome.debugger.detach(target)
+    } catch {
+      // tab may have closed
+    }
+  }
+}
+
 async function frames(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const target = { tabId }
@@ -983,21 +1182,7 @@ async function frames(owner, params) {
     throw bridgeError('DEBUGGER_FAILED', `cannot attach debugger: ${error?.message || error}`)
   }
   try {
-    const tree = await chrome.debugger.sendCommand(target, 'Page.getFrameTree')
-    const out = []
-    const visit = (node, parentId) => {
-      const frame = node?.frame
-      if (!frame) return
-      out.push({
-        frameId: String(frame.id || ''),
-        parentFrameId: parentId || null,
-        url: String(frame.url || ''),
-        domainAndRegistry: String(frame.domainAndRegistry || ''),
-        mimeType: String(frame.mimeType || ''),
-      })
-      for (const child of node.childFrames || []) visit(child, String(frame.id || ''))
-    }
-    visit(tree?.frameTree, null)
+    const out = await readFrameTree(target)
     if (params?.probe) {
       for (const frame of out) {
         try {
@@ -1041,16 +1226,33 @@ async function typeText(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const ref = Number(params.ref)
   const selector = params.selector ? String(params.selector) : ''
-  if (!Number.isFinite(ref) && !selector) {
-    throw bridgeError('INVALID_ARGUMENT', 'ref or selector is required')
+  const frameRef = params.frameRef ? String(params.frameRef) : ''
+  if (!Number.isFinite(ref) && !selector && !frameRef) {
+    throw bridgeError('INVALID_ARGUMENT', 'ref, frameRef or selector is required')
   }
-  const result = await callInPage(
-    tabId,
-    'type',
-    [Number.isFinite(ref) ? ref : null, String(params.text ?? ''), Boolean(params.replace), Boolean(params.submit), selector],
-    15000,
-    params.dialog,
-  )
+  let result
+  if (frameRef) {
+    const parsed = parseFrameRef(frameRef)
+    if (!parsed) throw bridgeError('INVALID_ARGUMENT', `invalid frameRef: ${frameRef}`)
+    const frameId = frameIdForPrefix(tabId, parsed.prefix)
+    if (!frameId) throw bridgeError('FRAME_STALE', 'frame registry is stale; take a new snapshot')
+    result = await callInFrame(
+      tabId,
+      frameId,
+      'type',
+      [parsed.ref, String(params.text ?? ''), Boolean(params.replace), Boolean(params.submit), selector],
+      15000,
+    )
+    if (result) result.frameRef = frameRef
+  } else {
+    result = await callInPage(
+      tabId,
+      'type',
+      [Number.isFinite(ref) ? ref : null, String(params.text ?? ''), Boolean(params.replace), Boolean(params.submit), selector],
+      15000,
+      params.dialog,
+    )
+  }
   if (!result?.ok) {
     throw bridgeError(result?.reason || 'REF_STALE', result?.message || `ref ${ref} is stale; take a new snapshot`)
   }

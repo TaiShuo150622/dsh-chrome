@@ -277,6 +277,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         maxChars: { type: 'number', description: 'Maximum page-text characters to return (default 100000).' },
         boxes: { type: 'boolean', description: 'Include each control viewport box [x,y,width,height] in CSS px.' },
         mode: { type: 'string', enum: ['full', 'delta'], description: 'delta returns only controls that changed since the previous snapshot in this page.' },
+        frames: { type: 'string', enum: ['all', 'main'], description: 'all (default) includes iframe controls with f<frame>:<ref> handles; main keeps legacy main-frame-only output.' },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
       additionalProperties: false,
@@ -291,18 +292,37 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         changedCount: { type: 'number' },
         sameCount: { type: 'number' },
         removedRefs: { type: 'array', items: { type: 'number' } },
+        frameCount: { type: 'number' },
         controls: {
           type: 'array',
           items: {
             type: 'object',
             properties: {
               ref: { type: 'number' },
+              frameRef: { type: 'string' },
+              frame: { type: 'string' },
               tag: { type: 'string' },
               label: { type: 'string' },
               kind: { type: 'string' },
               value: { type: 'string' },
               new: { type: 'boolean' },
               box: { type: 'array', items: { type: 'number' } },
+            },
+            additionalProperties: true,
+          },
+        },
+        frames: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              frameId: { type: 'string' },
+              prefix: { type: 'string' },
+              parentFrameId: {},
+              url: { type: 'string' },
+              title: { type: 'string' },
+              controls: { type: 'array', items: { type: 'object', additionalProperties: true } },
+              error: { type: 'string' },
             },
             additionalProperties: true,
           },
@@ -329,11 +349,26 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           '',
           `Controls (${controls.length}):`,
           ...controlLines,
-          '',
-          'Page text:',
-          value.text || '',
-          value.truncated ? '\n[truncated]' : '',
         ]
+        const frames = Array.isArray(value.frames) ? value.frames : []
+        if (frames.length > 1) {
+          body.push('', `Frames (${frames.length}):`)
+          for (const frame of frames) {
+            if (frame.parentFrameId == null && frames.length > 0) {
+              // main frame controls already listed above
+              continue
+            }
+            const indent = frame.parentFrameId ? '  ↳ ' : ''
+            body.push(`${indent}f${frame.prefix || '?'} ${frame.url || ''}${frame.error ? ` (error: ${frame.error})` : ''}`)
+            for (const control of frame.controls || []) {
+              const handle = control.frameRef ? `[${control.frameRef}]` : `[${control.ref}]`
+              body.push(
+                `  ${control.new ? '+ ' : ''}${handle} ${control.tag}${control.kind ? ` (${control.kind})` : ''} ${JSON.stringify(control.label)}${control.value ? ` value=${JSON.stringify(control.value)}` : ''}`,
+              )
+            }
+          }
+        }
+        body.push('', 'Page text:', value.text || '', value.truncated ? '\n[truncated]' : '')
         return renderText(body.join('\n'))
       },
     },
@@ -343,7 +378,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         : 100000
       return call(
         'tab.snapshot',
-        { maxChars, boxes: Boolean(args?.boxes), mode: args?.mode || 'full', tabId: args?.tabId, owner: ownerOf(exec) },
+        { maxChars, boxes: Boolean(args?.boxes), mode: args?.mode || 'full', frames: args?.frames || 'all', tabId: args?.tabId, owner: ownerOf(exec) },
         30000,
       )
     },
@@ -889,6 +924,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       properties: {
         ref: { type: 'number', description: 'Control number from the latest chrome_snapshot or chrome_find.' },
         selector: { type: 'string', description: 'CSS selector alternative to ref (used when ref is omitted).' },
+        frameRef: { type: 'string', description: 'Iframe handle from chrome_snapshot frames, e.g. "f83F9D728:1".' },
         snapshot: {
           type: 'boolean',
           description: 'Attach a fresh page snapshot to the result (saves a separate chrome_snapshot roundtrip).',
@@ -909,7 +945,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_hover', `hover ref ${args?.ref}`)
-      return call('tab.hover', { ref: args?.ref, selector: args?.selector, snapshot: Boolean(args?.snapshot), tabId: args?.tabId, owner: ownerOf(exec) })
+      return call('tab.hover', { ref: args?.ref, selector: args?.selector, frameRef: args?.frameRef, snapshot: Boolean(args?.snapshot), tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
 
@@ -968,6 +1004,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       properties: {
         ref: { type: 'number', description: 'Control number from the latest chrome_snapshot.' },
         selector: { type: 'string', description: 'CSS selector alternative to ref (used when ref is omitted).' },
+        frameRef: { type: 'string', description: 'Iframe handle from chrome_snapshot frames, e.g. "f83F9D728:1" (takes precedence over ref).' },
         button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button (default left).' },
         clickCount: { type: 'number', description: 'Click count, 1-3 (default 1; 2 = double click).' },
         snapshot: {
@@ -1012,7 +1049,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_click', `click ref ${args?.ref}`)
-      return call('tab.click', { ref: args?.ref, selector: args?.selector, button: args?.button, clickCount: args?.clickCount, snapshot: Boolean(args?.snapshot), dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
+      return call('tab.click', { ref: args?.ref, selector: args?.selector, frameRef: args?.frameRef, button: args?.button, clickCount: args?.clickCount, snapshot: Boolean(args?.snapshot), dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
     },
   })
 
@@ -1147,6 +1184,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       properties: {
         ref: { type: 'number', description: 'Control number from the latest chrome_snapshot.' },
         selector: { type: 'string', description: 'CSS selector alternative to ref (used when ref is omitted).' },
+        frameRef: { type: 'string', description: 'Iframe handle from chrome_snapshot frames, e.g. "f749ABB6B:2" (takes precedence over ref).' },
         text: { type: 'string', description: 'Text to enter.' },
         replace: { type: 'boolean', description: 'Replace the existing value instead of appending.' },
         submit: { type: 'boolean', description: 'Submit the form after typing.' },
@@ -1199,6 +1237,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       return call('tab.type', {
         ref: args?.ref,
         selector: args?.selector,
+        frameRef: args?.frameRef,
         text: String(args?.text ?? ''),
         replace: Boolean(args?.replace),
         submit: Boolean(args?.submit),

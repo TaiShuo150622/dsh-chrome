@@ -11,6 +11,14 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.67] - 2026-10-17
+
+### Added
+
+- **批次 B2 iframe 快照聚合**：`chrome_snapshot` 默认枚举所有 frame，输出 `Frames (N)` 段；iframe 控件带 `frameRef`（`f<frameId前8位>:<本地ref>`），主 frame 输出保持兼容；`frames:"main"` 可退回旧行为
+- **批次 B3 frame-qualified 动作**：`chrome_click` / `chrome_type` / `chrome_hover` 支持 `frameRef`，在目标 frame 的 isolated world 里执行
+- 真机验证：跨源 iframe（127.0.0.1:8766）内输入 "cross frame"、点击按钮后 input value 变 "clicked"
+
 ## [0.1.65] - 2026-10-17
 
 ### Added
