@@ -26,7 +26,7 @@
   - 新建 `src/headless-png.js`，迁移 `src/headless.js` 中的 `PNG_CRC_TABLE`、`pngCrc32`、`pngChunk`、`paethPredictor`、`unfilterPngRows`、`pngFrameSize`、`jpegFrameSize`、`decodePngFrame`、`encodePngFrame`；
   - `headless.js` 改为 import；只导出 `headless.js` 实际用到的函数；
   - 不改帧格式/截图行为；全量测试。
-- [ ] Q5 抽出 headless 启动参数
+- [x] Q5 抽出 headless 启动参数
   - 新建 `src/headless-launch.js`：`buildLaunchArgs({visible, profileDir, windowSize, extraArgs})` + DevToolsActivePort 解析辅助函数（如有）；
   - `ensureStarted` 调用它；参数顺序/内容不变；
   - 新增/更新一个纯函数测试（不需要真 Chrome）；全量测试。

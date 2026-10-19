@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 
+import { buildLaunchArgs, parseDevToolsActivePort } from './headless-launch.js'
 import { decodePngFrame, encodePngFrame, jpegFrameSize, pngFrameSize } from './headless-png.js'
 
 let overlaySourceCache = null
@@ -1079,9 +1080,9 @@ export class HeadlessDriver {
       // (e.g. provider reload) instead of racing a second process on the same
       // profile. A stale DevToolsActivePort is removed before a fresh launch.
       try {
-        const existing = fs.readFileSync(activePortPath, 'utf8').trim().split('\n')
-        if (existing.length >= 2) {
-          const existingCdp = new Cdp(`ws://127.0.0.1:${existing[0]}${existing[1]}`)
+        const existing = parseDevToolsActivePort(fs.readFileSync(activePortPath, 'utf8'))
+        if (existing) {
+          const existingCdp = new Cdp(existing.url)
           const version = await existingCdp.connect().then(() => existingCdp.send('Browser.getVersion'))
           this.cdp = existingCdp
           this.chrome = null
@@ -1103,45 +1104,29 @@ export class HeadlessDriver {
       }
       const child = spawn(
         executable,
-        [
-          // A visible context is a real headed Chrome window (I2 isolated-visible);
-          // a headless context keeps the compositor-only flags. Both are driven
-          // through the same CDP path.
-          ...(this.visible ? ['--new-window'] : ['--headless=new']),
-          // Every headless tab is created by the driver through Target.createTarget,
-          // so the startup window/page is dead weight. For visible mode we keep
-          // the startup window because the user must see and interact with it.
-          ...(this.visible ? [] : ['--no-startup-window']),
-          '--remote-debugging-port=0',
-          `--user-data-dir=${profileDir}`,
-          '--no-first-run',
-          '--no-default-browser-check',
-          '--disable-background-networking',
-          '--disable-component-update',
-          '--disable-sync',
-          '--disable-extensions',
-          '--mute-audio',
-          `--window-size=${this.windowSize?.width || 1440},${this.windowSize?.height || 900}`,
-          ...EXTRA_CHROME_ARGS,
-          'about:blank',
-        ],
+        buildLaunchArgs({
+          visible: this.visible,
+          profileDir,
+          windowSize: this.windowSize,
+          extraArgs: EXTRA_CHROME_ARGS,
+        }),
         { stdio: ['ignore', 'ignore', 'pipe'] },
       )
       child.stderr?.on('data', (chunk) => this.logger?.debug?.('headless chrome: %s', String(chunk).trim().slice(0, 300)))
       this.chrome = child
       const deadline = Date.now() + 15000
-      let lines = null
+      let activePort = null
       while (Date.now() < deadline) {
         try {
-          lines = fs.readFileSync(activePortPath, 'utf8').trim().split('\n')
-          if (lines.length >= 2) break
+          activePort = parseDevToolsActivePort(fs.readFileSync(activePortPath, 'utf8'))
+          if (activePort) break
         } catch {
           // not ready
         }
         await new Promise((resolve) => setTimeout(resolve, 150))
       }
-      if (!lines || lines.length < 2) throw error('HEADLESS_LAUNCH_FAILED', 'headless Chrome did not expose DevToolsActivePort')
-      const cdp = new Cdp(`ws://127.0.0.1:${lines[0]}${lines[1]}`)
+      if (!activePort) throw error('HEADLESS_LAUNCH_FAILED', 'headless Chrome did not expose DevToolsActivePort')
+      const cdp = new Cdp(activePort.url)
       cdp.onMessage((message) => this.onCdpEvent(message))
       await cdp.connect()
       this.cdp = cdp
