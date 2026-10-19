@@ -771,7 +771,7 @@ const PAGE_ACTIONS = {
   pickStart,
   pickStatus,
   pickCancel,
-  overlay: drawRefOverlay,
+  overlayDraw: drawRefOverlay,
   overlayRemove: removeRefOverlay,
   hasSelector,
   urlMatches,
@@ -1873,7 +1873,7 @@ async function screenshot(owner, params) {
   const highlight = Boolean(params?.highlight)
   const fullPage = Boolean(params?.fullPage)
   const elementRef = Number(params?.ref)
-  if (highlight) await callInPage(tabId, 'overlay', [], 10000).catch(() => null)
+  if (highlight) await callInPage(tabId, 'overlayDraw', [], 10000).catch(() => null)
   let clip
   const rawClip = params?.clip
   if (rawClip && typeof rawClip === 'object') {

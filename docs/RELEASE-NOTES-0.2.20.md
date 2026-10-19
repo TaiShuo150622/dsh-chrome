@@ -16,6 +16,11 @@
 - 这是**浏览器页面**的视觉反馈，不是 OS 级鼠标；
 - OS 级鼠标/桌面操作仍属于未来独立的 `dsh-computer-use` 插件。
 
+## 修复
+
+- 修复 `PAGE_ACTIONS` 中 `overlay` 被 `drawRefOverlay` 重复键覆盖的问题；虚拟指针和 ref 高亮现在分别使用 `overlay` / `overlayDraw`，避免“Pointer hidden”；
+- 新增 `test/extension-page-actions.mjs` 防重复键回归。
+
 ## 测试
 
 - `test/overlay.mjs` 通过；
