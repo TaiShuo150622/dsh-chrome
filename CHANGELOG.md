@@ -11,6 +11,10 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.9] - 2026-10-19
+
+- chrome_verify 移到 src/tools-verify.js（步骤解释/artifacts 独立）
+
 ## [0.2.8] - 2026-10-19
 
 - chrome_context 移到 src/tools-context.js（注入 contexts/viewer/owner）
