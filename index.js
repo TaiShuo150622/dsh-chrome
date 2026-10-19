@@ -213,6 +213,10 @@ export function apply(ctx) {
         contextViewer: () => contextViewer.current,
       }),
       router,
+      {
+        leases,
+        leaseRequired: configInfo.config.browser.shared.enabled === true,
+      },
     )
     const disposers = wrapToolsForOperationLog(definitions, {
       defaultBackend: () => router.backend,
