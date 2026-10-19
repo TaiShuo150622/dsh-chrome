@@ -69,6 +69,7 @@ Windows 预览包：[v0.1.93-win-preview.1](https://github.com/TaiShuo150622/dsh
 
 - [版本号规则](docs/VERSIONING.md)
 - [浏览器支持路线（Chrome/Edge/Safari）](docs/BROWSER-ROADMAP.md)
+- [Computer Use 独立插件规划（超远未来）](docs/COMPUTER-USE-PLUGIN.md)
 - [DSH 原生侧边栏设计](docs/DSH-SIDEBAR-NATIVE.md) · [多浏览器沙盒设计](docs/MULTI-BROWSER-SANDBOX.md) · [插件设置设计](docs/PLUGIN-SETTINGS.md) · [密码管理设计](docs/PASSWORD-MANAGEMENT.md)
 - [Edge 支持说明](docs/EDGE.md) · [Safari 可行性结论](docs/SAFARI-SPIKE.md)
 - [设计文档：架构、协议、工具契约、安全模型、里程碑](docs/DESIGN.md)
