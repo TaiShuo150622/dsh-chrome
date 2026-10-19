@@ -52,7 +52,9 @@ export class BrowserContextManager {
   async create({ owner = 'default', preset, profileName, cwd = process.cwd() } = {}) {
     if (this.contexts.size >= this.maxContexts) throw new ContextError('CONTEXT_LIMIT', `too many browser contexts (max ${this.maxContexts})`)
     const mode = presetToMode(preset || this.config.browser.preset)
-    if (mode.isolation === 'shared') throw new ContextError('UNSUPPORTED_MODE', 'shared contexts are not implemented in I1')
+    if (mode.isolation === 'shared' || mode.visible) {
+      throw new ContextError('UNSUPPORTED_MODE', 'visible/shared contexts are not implemented in I1; use sandbox or sandbox-persistent')
+    }
     const contextId = randomUUID()
     const named = mode.isolation === 'named'
     const profileId = named ? safeName(profileName || `${owner}-${Date.now()}`) : `ephemeral-${contextId}`

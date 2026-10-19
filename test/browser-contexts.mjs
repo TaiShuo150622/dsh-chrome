@@ -107,11 +107,9 @@ try {
   assert.equal(fs.existsSync(path.join(home, 'cache', 'dsh-chrome', 'profiles', idle.profileId)), false)
   await idleManager.closeAll()
 
-  // Shared is explicitly not implemented in I1.
+  // Shared and visible are explicitly not implemented in I1.
   await assert.rejects(() => manager.create({ owner: 'x', preset: 'collab' }), (error) => error.code === 'UNSUPPORTED_MODE')
-  // Visible isolation is allowed only when explicitly requested via debug.
-  const debug = await manager.create({ owner: 'debug', preset: 'debug' })
-  assert.equal(debug.visible, true)
+  await assert.rejects(() => manager.create({ owner: 'debug', preset: 'debug' }), (error) => error.code === 'UNSUPPORTED_MODE')
   await manager.closeAll()
 
   assert.deepEqual(PRESETS, ['sandbox', 'sandbox-persistent', 'debug', 'collab'])
