@@ -16,10 +16,8 @@ import { BrowserContextManager } from './src/contexts.js'
 import { loadConfig } from './src/config.js'
 import { HeadlessContextRouter } from './src/headless-contexts.js'
 import { BrowserLeaseManager } from './src/lease.js'
-import { createUpdateRuntime, createViewerRuntime } from './src/runtime.js'
-import { BridgeServer } from './src/bridge.js'
+import { createBridgeRuntime, createUpdateRuntime, createViewerRuntime } from './src/runtime.js'
 import { HeadlessDriver, headlessSupported } from './src/headless.js'
-import { ensureInstallAssets } from './src/install.js'
 import { wrapToolsForOperationLog } from './src/operation-log.js'
 import { chromeTools } from './src/tools.js'
 
@@ -36,7 +34,6 @@ export const BROWSER_GUIDANCE = `Browser tools (chrome_*) control the user's rea
 export function apply(ctx) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)))
   const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
-  const bridge = new BridgeServer({ home })
   const assets = { current: null }
   const attachments = { current: null }
   const approval = { current: null }
@@ -79,6 +76,12 @@ export function apply(ctx) {
         visible: visible === true,
       }),
   })
+  // The bridge and its native-host install assets are owned by the runtime
+  // (Q22). index.js keeps the handle for BackendRouter and only runs the
+  // start/stop effect below; teardown still closes the bridge before contexts.
+  const bridgeRuntime = createBridgeRuntime({ home, root, assets, contexts, logger })
+  const bridge = bridgeRuntime.bridge
+
   const headless = headlessSupported() ? new HeadlessContextRouter({ manager: contexts, logger }) : null
   const router = new BackendRouter({
     desktop: bridge,
@@ -185,22 +188,8 @@ export function apply(ctx) {
   })
 
   ctx.effect(() => {
-    const ready = bridge.start().catch((error) => {
-      logger?.warn?.('dsh-chrome: bridge listen failed: %s', error?.message || String(error))
-    })
-    ensureInstallAssets({ root, logger })
-      .then((info) => {
-        assets.current = info
-        logger?.info?.('dsh-chrome: native host installed at %s', info.nativeManifestPath)
-      })
-      .catch((error) => {
-        logger?.warn?.('dsh-chrome: install assets failed: %s', error?.message || String(error))
-      })
-    void ready
-    return async () => {
-      await bridge.stop()
-      await contexts.closeAll()
-    }
+    bridgeRuntime.start()
+    return () => bridgeRuntime.stop()
   })
 
   const browserUse = ctx.get('browserUse')

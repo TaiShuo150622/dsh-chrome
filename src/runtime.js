@@ -10,10 +10,13 @@
  * The update checker is created here too: index.js only registers its
  * start/stop effect and injects the checker into chrome_status.
  *
- * This module intentionally does not own the bridge, contexts or tools; those
- * still live in index.js until their runtime split is queued.
+ * The native-host bridge, its install assets and the contexts teardown are
+ * orchestrated here as well (Q22); index.js keeps only the effect and the
+ * injection of the handles it needs.
  */
+import { BridgeServer } from './bridge.js'
 import { registerContextViewer } from './context-viewer.js'
+import { ensureInstallAssets } from './install.js'
 import { registerLiveView, unregisterLiveView } from './liveview.js'
 import { createUpdateChecker } from './update.js'
 
@@ -79,6 +82,57 @@ export function createUpdateRuntime({
     },
     stop() {
       updateChecker.stop()
+    },
+  }
+}
+
+/**
+ * Create the native-host bridge and own its start/stop lifecycle.
+ *
+ * `start` preserves the original effect order: listen first, then write the
+ * Chrome native-messaging assets and publish the result through `assets`.
+ * `stop` keeps the original teardown order: close the bridge socket first,
+ * then close every browser context. Both awaited steps stay in index.js's
+ * single effect; the module only sequences them.
+ *
+ * @param {object} options
+ * @param {string} options.home DSH home (bridge socket + discovery file).
+ * @param {string} options.root Provider root directory (extension assets).
+ * @param {{current: object|null}} options.assets Install-asset handle read by chrome_status.
+ * @param {{closeAll: Function}|null} [options.contexts] Context manager cleaned up on unload.
+ * @param {{info?: Function, warn?: Function}} [options.logger]
+ * @param {Function} [options.createBridge] Bridge factory (tests inject a stub).
+ * @param {Function} [options.installAssets] Installer factory (tests inject a stub).
+ */
+export function createBridgeRuntime({
+  home,
+  root,
+  assets = null,
+  contexts = null,
+  logger = null,
+  createBridge = (options) => new BridgeServer(options),
+  installAssets = ensureInstallAssets,
+}) {
+  const bridge = createBridge({ home })
+  return {
+    bridge,
+    start() {
+      const ready = bridge.start().catch((error) => {
+        logger?.warn?.('dsh-chrome: bridge listen failed: %s', error?.message || String(error))
+      })
+      installAssets({ root, logger })
+        .then((info) => {
+          if (assets) assets.current = info
+          logger?.info?.('dsh-chrome: native host installed at %s', info.nativeManifestPath)
+        })
+        .catch((error) => {
+          logger?.warn?.('dsh-chrome: install assets failed: %s', error?.message || String(error))
+        })
+      void ready
+    },
+    async stop() {
+      await bridge.stop()
+      if (contexts) await contexts.closeAll()
     },
   }
 }

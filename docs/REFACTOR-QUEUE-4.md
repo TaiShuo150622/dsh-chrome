@@ -17,6 +17,6 @@
 - [x] Q21 headless login 生命周期拆出
   - 新建 `src/headless-login.js`，迁移 `HeadlessDriver` 的 `loginStart/showVisible/loginFinish/loginStatus` 相关逻辑（必要时注入 CDP/launcher）；
   - `HeadlessDriver` 保留同名 facade，输出/行为不变；全量测试。
-- [ ] Q22 runtime 接管 bridge/install/contexts 生命周期
+- [x] Q22 runtime 接管 bridge/install/contexts 生命周期
   - 扩展 `src/runtime.js`：创建/启停 bridge、install assets、contexts cleanup 的编排（可分小步，不要求一次全搬）；
   - `index.js` 只剩 effect + 注入；清理顺序保持；全量测试。
