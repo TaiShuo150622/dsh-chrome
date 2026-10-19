@@ -5,7 +5,7 @@
 > 状态：**P1 真机可用（40 个工具；含后台 headless Chromium 同套工具面）**（2026-10-17）
 > 版本：扩展 **0.1.93** / provider **0.1.93**；`npm test` **28 个测试文件全过**；CI 绿。
 > 重点能力：桌面 Chrome 可见操作 + `backend:"headless"` 后台无窗口浏览器 + screencast 实时画面 viewer。
-> 最新发布说明：[docs/RELEASE-NOTES-0.1.96.md](docs/RELEASE-NOTES-0.1.96.md)；Windows 外部测试说明：[docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md](docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md)。
+> 最新发布说明：[docs/RELEASE-NOTES-0.1.97.md](docs/RELEASE-NOTES-0.1.97.md)；Windows 外部测试说明：[docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md](docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md)。
 
 Windows 预览包：[v0.1.93-win-preview.1](https://github.com/TaiShuo150622/dsh-chrome/releases/tag/v0.1.93-win-preview.1)。
 
@@ -72,6 +72,7 @@ Windows 预览包：[v0.1.93-win-preview.1](https://github.com/TaiShuo150622/dsh
 - [审批说明：什么动作会问人、你会看到什么、拒绝后怎样](docs/APPROVAL.md)
 - [安装指南（macOS 本地/开发者）](docs/INSTALL.md) · [工具参考（自动生成）](docs/TOOLS.md)
 - [用法示例：典型任务的工具序列](docs/EXAMPLES.md) · [FAQ](docs/FAQ.md)
+- [发布说明 0.1.97（visible-isolated I2）](docs/RELEASE-NOTES-0.1.97.md)
 - [发布说明 0.1.96（验证 artifacts 保留）](docs/RELEASE-NOTES-0.1.96.md)
 - [发布说明 0.1.95（chrome_verify 验证编排）](docs/RELEASE-NOTES-0.1.95.md)
 - [发布说明 0.1.94（隔离浏览器上下文 I1）](docs/RELEASE-NOTES-0.1.94.md)

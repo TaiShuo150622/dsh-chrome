@@ -54,8 +54,8 @@ export class BrowserContextManager {
   async create({ owner = 'default', preset, profileName, cwd = process.cwd() } = {}) {
     if (this.contexts.size >= this.maxContexts) throw new ContextError('CONTEXT_LIMIT', `too many browser contexts (max ${this.maxContexts})`)
     const mode = presetToMode(preset || this.config.browser.preset)
-    if (mode.isolation === 'shared' || mode.visible) {
-      throw new ContextError('UNSUPPORTED_MODE', 'visible/shared contexts are not implemented in I1; use sandbox or sandbox-persistent')
+    if (mode.isolation === 'shared') {
+      throw new ContextError('UNSUPPORTED_MODE', 'shared contexts require tab/window leases (I3); use sandbox/sandbox-persistent/debug')
     }
     const contextId = randomUUID()
     const named = mode.isolation === 'named'
@@ -170,6 +170,7 @@ export class BrowserContextManager {
     const now = this.now()
     const idle = []
     for (const ctx of this.contexts.values()) {
+      if (ctx.visible) continue // visible windows belong to the user; close explicitly
       if (now - ctx.lastUsedAt >= this.idleTimeoutMs) idle.push(ctx.contextId)
     }
     for (const id of idle) await this.close(id)

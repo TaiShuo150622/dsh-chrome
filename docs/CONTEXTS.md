@@ -26,8 +26,8 @@
 |---|---|---|---|
 | `sandbox` | ephemeral | 否 | ✅ 默认，headless |
 | `sandbox-persistent` | named | 否 | ✅ headless + 保留 profile |
-| `debug` | named | 是 | ⏳ 仅建模；visible 隔离后续实现 |
-| `collab` | shared | 是 | ⏳ 后续；需要 tab lease |
+| `debug` | named | 是 | ✅ I2：独立 profile + 可见 Chrome 窗口 |
+| `collab` | shared | 是 | ⏳ I3；需要 tab lease |
 
 ## 4. 配置
 
@@ -63,6 +63,13 @@
 - provider 卸载/停止时关闭所有 context；
 - `maxContexts` 默认 4，超过返回 `CONTEXT_LIMIT`；
 - named profile 同一时间只能被一个 context 使用（`PROFILE_IN_USE`）。
+
+## 5.1 I2 可见隔离（0.1.97）
+
+- `chrome_context {op:"create", preset:"debug"}` 创建**独立 profile + 可见 Chrome 窗口**；`backend:"headless"` 的工具调用会操作这个窗口；
+- visible context 不参与空闲回收（窗口属于用户，必须显式 `close`）；
+- 适合人工登录、CAPTCHA、演示和调试；
+- 仍是独立 profile，不与用户日常 Chrome/其他会话共享 cookie。
 
 ## 6. 当前限制
 

@@ -124,9 +124,13 @@ try {
   assert.equal(fs.existsSync(runB), true)
   assert.equal(fs.existsSync(runC), true)
 
-  // Shared and visible are explicitly not implemented in I1.
+  // I2: visible isolation is a headed Chrome window with its own profile; shared still requires leases.
+  const debug = await manager.create({ owner: 'debug', preset: 'debug' })
+  assert.equal(debug.visible, true)
+  assert.equal(debug.isolation, 'named')
+  assert.equal(created.at(-1).options.visible, true)
+  await manager.closeAll()
   await assert.rejects(() => manager.create({ owner: 'x', preset: 'collab' }), (error) => error.code === 'UNSUPPORTED_MODE')
-  await assert.rejects(() => manager.create({ owner: 'debug', preset: 'debug' }), (error) => error.code === 'UNSUPPORTED_MODE')
   await manager.closeAll()
 
   assert.deepEqual(PRESETS, ['sandbox', 'sandbox-persistent', 'debug', 'collab'])

@@ -1236,8 +1236,10 @@ function pageCall(name, args) {
 
 // ------------------------------------------------------------------ driver
 export class HeadlessDriver {
-  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null } = {}) {
+  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null, visible = false, windowSize = null } = {}) {
     this.home = home
+    this.visible = Boolean(visible)
+    this.windowSize = windowSize || (this.visible ? { width: 1440, height: 900 } : null)
     this.logger = logger
     this.spawnImpl = spawnImpl
     this.profileDir = profileDir || path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'profile')
@@ -1317,17 +1319,14 @@ export class HeadlessDriver {
       const child = spawn(
         executable,
         [
-          '--headless=new',
-          // Every tab is created by the driver through Target.createTarget, so
-          // the startup window/page that Chrome would open is dead weight: it
-          // pins one renderer process (~70-90MB RSS) to an about:blank page
-          // nobody ever drives (docs/HEADLESS.md §4.1.10). Without it Chrome
-          // starts with no tabs and still stays alive (verified: closing the
-          // last session tab does not exit the browser), and the first tab
-          // creates its window with the same 1440x813 viewport because
-          // --window-size still applies to windows created later. The
-          // positional about:blank is kept for a Chrome that ignores the flag.
-          '--no-startup-window',
+          // A visible context is a real headed Chrome window (I2 isolated-visible);
+          // a headless context keeps the compositor-only flags. Both are driven
+          // through the same CDP path.
+          ...(this.visible ? ['--new-window'] : ['--headless=new']),
+          // Every headless tab is created by the driver through Target.createTarget,
+          // so the startup window/page is dead weight. For visible mode we keep
+          // the startup window because the user must see and interact with it.
+          ...(this.visible ? [] : ['--no-startup-window']),
           '--remote-debugging-port=0',
           `--user-data-dir=${profileDir}`,
           '--no-first-run',
@@ -1337,7 +1336,7 @@ export class HeadlessDriver {
           '--disable-sync',
           '--disable-extensions',
           '--mute-audio',
-          '--window-size=1440,900',
+          `--window-size=${this.windowSize?.width || 1440},${this.windowSize?.height || 900}`,
           ...EXTRA_CHROME_ARGS,
           'about:blank',
         ],

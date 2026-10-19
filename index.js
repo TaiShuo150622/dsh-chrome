@@ -57,6 +57,7 @@ export function apply(ctx) {
         profileDir,
         screenshotDir: path.join(profileDir, 'screenshots'),
         downloadDir: path.join(profileDir, 'downloads'),
+        visible: options.visible === true,
       }),
   })
   const headless = headlessSupported() ? new HeadlessContextRouter({ manager: contexts, logger }) : null

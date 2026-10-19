@@ -6,6 +6,7 @@ import path from 'node:path'
 import { DEFAULT_CONFIG } from '../src/config.js'
 import { BrowserContextManager } from '../src/contexts.js'
 import { HeadlessContextRouter } from '../src/headless-contexts.js'
+import { HeadlessDriver } from '../src/headless.js'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-headless-contexts-'))
 const config = {
@@ -29,6 +30,11 @@ const manager = new BrowserContextManager({
 })
 const router = new HeadlessContextRouter({ manager })
 try {
+  const visibleDriver = new HeadlessDriver({ home, visible: true })
+  assert.equal(visibleDriver.visible, true)
+  assert.deepEqual(visibleDriver.windowSize, { width: 1440, height: 900 })
+  const hiddenDriver = new HeadlessDriver({ home })
+  assert.equal(hiddenDriver.visible, false)
   assert.equal(router.connected, false)
   const first = await router.request('tab.goto', { owner: 'a', url: 'https://example.com' })
   assert.equal(first.ok, true)
