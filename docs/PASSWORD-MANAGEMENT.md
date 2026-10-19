@@ -1,10 +1,10 @@
 # 密码与凭据管理（PASSWORD-MANAGEMENT）
 
-> 状态：**设计稿，未实现**。基线提交 `4e652ed`，`package.json` 版本 `0.2.13`（2026-10-19）。
+> 状态：**设计稿，未实现**。当前 HEAD `d948641`（`0.2.14`，2026-10-19）；上一基线 `4e652ed`（`0.2.13`）。
 >
-> **工作树注意**：本文写作时仓库里有并发改动：`src/operation-log.js` 已（未提交）对 `chrome_type` 的 `text` 做工具级脱敏，`test/operation-log.mjs` 同步改了断言；`README.md` 也在改。`package.json` 仍是 `0.2.13`，这些改动尚未提交、尚未发布。本文会区分“基线 0.2.13”和“当前工作树”，**不把未提交改动当成已交付能力**。
+> **版本注意**：`0.2.14` 已包含一项与本文直接相关的修复：`src/operation-log.js` 对 `chrome_type` 的 `text` 做工具级脱敏（`TYPE_TOOLS`），`test/operation-log.mjs` 已同步。**但**这只是一条出口；`chrome_type` 的 `result.value`/render、headless selection、viewer 输入回包、`chrome_verify` steps、capture 的 `pwd/otp/cvv`/fragment 等仍未修。本文按 `0.2.14` 现状记录，不把一项修复扩展成“密码管理已安全”。
 >
-> 范围：本插件的密码/凭据处理、登录自动化边界、与操作系统凭据库的集成方案。本文只做现状核对和方案设计，**没有改任何代码**；唯一变更文件是 `docs/PASSWORD-MANAGEMENT.md`。文中所有“建议新增”“目标”“应”都不是已实现能力。
+> 范围：本插件的密码/凭据处理、登录自动化边界、与操作系统凭据库的集成方案。本文只做现状核对和方案设计；本次任务**没有改任何代码**，作者只新增/修改了本文。文中所有“建议新增”“目标”“应”都不是已实现能力。
 >
 > 安全前提：本文不写任何真实密码、API key、token 或 cookie；示例只用哨兵值（如 `DSH_SENTINEL_PW_DO_NOT_USE`）。
 
@@ -14,7 +14,7 @@
 
 1. **当前没有密码管理器，也没有 autofill、Keychain、Windows Credential Manager、Linux Secret Service 集成。** 登录主要靠用户在**可见的专用 Chrome 窗口**里手动完成（`chrome_headless_login`），或者复用用户日常 Chrome 已有的登录态。插件没有“保存密码/自动填充/读取密码”的工具。
 2. **当前和密码有关的只有“显示层打码”和“网络抓包脱敏”。** 快照对 `type=password`/支付字段显示 `••••`，HTML 的 `value` 属性打码，extension 的选区读取会拒绝敏感字段；抓包对 URL secret 参数、JSON/form 的 secret 键、Bearer/JWT/sk-/AKIA 形态做掩码。这些都不是密码管理，也不覆盖所有出口。
-3. **有一个必须先修的基线缺口：`chrome_type` 会把输入文本写进操作日志，并把字段值返回给模型。** 基线 `0.2.13` 的 `args.text` 不匹配操作日志的键名脱敏规则；当前工作树已有一个**未提交**的 operation-log 修复（`TYPE_TOOLS` 对 `chrome_type.text` 记 `«redacted»`），但 `chrome_type` 的 `result.value`、render、headless 选区、viewer 输入回包等出口仍未修。用临时 `DSH_HOME` + 哨兵值实测：工作树下 `operations.jsonl` 的 `args.text` 已是 `«redacted»`，`result.value` 仍会被 allowlist 丢弃、但 tool result/render 仍会把它交给模型。
+3. **最先要处理的缺口是 `chrome_type` 的明文出口。** `0.2.13` 及更早的 `args.text` 不匹配操作日志的键名脱敏规则；`0.2.14` 已提交 operation-log 对 `chrome_type.text` 的工具级脱敏（`TYPE_TOOLS`），但 `chrome_type` 的 `result.value`/render、headless 选区、viewer 输入回包、`chrome_verify` steps 等仍未修。用临时 `DSH_HOME` + 哨兵值实测：`0.2.14` 下 `operations.jsonl` 的 `args.text` 已是 `«redacted»`，`result.value` 仍会被 operation-log 的 allowlist 丢弃、但 tool result/render 仍会把它交给模型。
 4. **建议的方向：OS 凭据库 + 独立 native helper + 只传“站点/用户名”不传明文。** 模型只能请求“把某站点的已保存凭据填进当前页面”，helper 在内部取密并完成填充，返回回执；provider、`host.mjs`、DSH 会话日志、`operations.jsonl`、`host.log` 都看不到明文。桌面 Chrome 的程序化填充**不作为 MVP 承诺**；headless context 的填充可以做成 helper 内部 CDP 操作。
 5. **分阶段：先修日志/回显泄漏（P0），再做 macOS helper + headless 填充（P1），然后 Windows/Linux 和桌面 native host（P2），最后才是 2FA/TOTP 与 passkey 人工接管（P3）。** passkey 不可导出，不能承诺自动化。
 6. **不要过度承诺：** 当前没有 helper、没有凭据工具、没有截图逐像素脱敏、没有 DSH 会话日志擦除能力、没有 CI secret scan；同用户本机进程、备份/云同步、键盘记录器、已解锁的 Keychain 都不在插件能完全防住的范围内。
@@ -89,23 +89,23 @@
 | 扩展 HTML 读取 | `value="..."` 一律替换为 `value="••••"`；名称像 token/secret/csrf/password 的属性和值也打码 | `extension/background.js:3618-3632` |
 | 扩展选区 | 焦点在 password/hidden/支付/OTP/secret 字段时返回 `SENSITIVE_SELECTION` | `extension/background.js:3801-3816` |
 | 抓包 | 见 §1.1 | `src/headless-redact.js`、`extension/background.js` |
-| 操作日志 | 按键名脱敏、URL 去 userinfo/secret 查询、结果走 allowlist；工作树另对 `chrome_type.text` 做工具级脱敏 | `src/operation-log.js:73-77,300-350,491-503,509-562` |
+| 操作日志 | 按键名脱敏、URL 去 userinfo/secret 查询、结果走 allowlist；`0.2.14` 另对 `chrome_type.text` 做工具级脱敏 | `src/operation-log.js:73-77,300-350,491-503,509-562` |
 | 截图 | **不做逐像素脱敏**；密码框通常原生显示圆点，但页面点“眼睛”后截图会看到明文 | `src/tools-media.js`、`host/host.mjs:447-461` |
 
 这些打码只覆盖“已知字段类型的显示/读取路径”，不能防止用户在普通文本框里输入密码、不能防止页面把密码写进页面正文、不能防止 `chrome_type` 的回显、也不能防止截图。
 
 ### 1.4 当前会泄露明文的路径（P0）
 
-下面这些是**现状实测/代码可证**的问题。凡是标“工作树已修”的，都还没有提交/发布；不要对外说已经交付。
+下面这些是**现状实测/代码可证**的问题。`0.2.14` 只修了 `chrome_type.text` 的 operation-log 一条；其余仍是现状。不要把一条修复当成全部已修。
 
-#### 1.4.1 `chrome_type` 的 `text`：基线会进操作日志，工作树已做工具级脱敏
+#### 1.4.1 `chrome_type` 的 `text`：`0.2.13` 会进操作日志，`0.2.14` 已做工具级脱敏
 
-- 基线 `0.2.13`：`chrome_type` 的参数是 `text`（`src/tools-input.js:288-320`），`execute()` 把 `text` 直接传给 `tab.type`（`src/tools-input.js:346-358`）。`src/operation-log.js:73-77` 只按键名匹配 `pass(word|wd|phrase)?`、`secret`、`token`、`api_key`、`authorization`、`cookie`、`session_id`、`csrf`、`xsrf`、`signature`、`credential`、`private_key`；**`text` 不在其中**，所以 `args.text` 会以最多 160 字符的明文写进 `~/.dsh/cache/dsh-chrome/operations.jsonl`（`src/operation-log.js:382-390`）。
-- 当前工作树（未提交）：`src/operation-log.js:491-503` 新增 `TYPE_TOOLS = new Set(['chrome_type'])`，在 `summarizeArgs(args, tool)` 里把 `chrome_type` 的 `text` 替换成 `«redacted»`；`test/operation-log.mjs` 的断言从“截断到 160 字符”改为“等于 `«redacted»`”。
+- `0.2.13` 及更早：`chrome_type` 的参数是 `text`（`src/tools-input.js:288-320`），`execute()` 把 `text` 直接传给 `tab.type`（`src/tools-input.js:346-358`）。`src/operation-log.js:73-77` 只按键名匹配 `pass(word|wd|phrase)?`、`secret`、`token`、`api_key`、`authorization`、`cookie`、`session_id`、`csrf`、`xsrf`、`signature`、`credential`、`private_key`；**`text` 不在其中**，所以 `args.text` 会以最多 160 字符的明文写进 `~/.dsh/cache/dsh-chrome/operations.jsonl`（`src/operation-log.js:382-390`）。
+- `0.2.14`（提交 `d948641`）：`src/operation-log.js:491-503` 已加入 `TYPE_TOOLS = new Set(['chrome_type'])`，在 `summarizeArgs(args, tool)` 里把 `chrome_type` 的 `text` 替换成 `«redacted»`；`test/operation-log.mjs` 的断言从“截断到 160 字符”改为“等于 `«redacted»`”。`node test/operation-log.mjs` 当前 13 项全过。
 - 实测（临时 `DSH_HOME` + 哨兵值，不写真实密码）：
-  - 基线记录：`"args":{"ref":7,"text":"DSH_SENTINEL_PW_DO_NOT_USE"}`。
-  - 当前工作树记录：`"args":{"ref":7,"text":"«redacted»"}`；`result.value` 仍被 allowlist 丢弃，但 tool result 仍包含它（见 1.4.2）。
-- **不要把工作树修复说成 0.2.14 已发布**：`package.json` 仍是 `0.2.13`，改动未提交；正式版本号以仓库发布为准。
+  - `0.2.13` 记录：`"args":{"ref":7,"text":"DSH_SENTINEL_PW_DO_NOT_USE"}`。
+  - `0.2.14` 记录：`"args":{"ref":7,"text":"«redacted»"}`；`result.value` 仍被 operation-log 的 allowlist 丢弃，但 tool result 仍包含它（见 1.4.2）。
+- **不要把这项修复说成“密码管理已安全”**：它只覆盖 `chrome_type` 的 operation-log args，不覆盖 result/render、DSH 会话日志、headless 选区、viewer、`chrome_verify` steps 或 capture。
 
 #### 1.4.2 `chrome_type` 的字段值返回给模型
 
@@ -117,7 +117,7 @@
 #### 1.4.3 `chrome_verify` 的 `type` 步骤同样带明文
 
 - `chrome_verify` 的步骤 `{action:"type", text:"..."}` 原样传给 `driver.request('tab.type', ...)`（`src/tools-verify.js:141-143`）。
-- 整个 `args.steps` 会被 `operation-log.js` 的通用参数摘要记录；`text` 不敏感，所以同样可能落盘。artifact 的 JSON report 目前不包含 steps（`src/tools-verify.js:82-94`），但操作日志会包含。当前工作树的 `TYPE_TOOLS` 只覆盖 `chrome_type`，不覆盖 `chrome_verify`。
+- 整个 `args.steps` 会被 `operation-log.js` 的通用参数摘要记录；`text` 不敏感，所以同样可能落盘。artifact 的 JSON report 目前不包含 steps（`src/tools-verify.js:82-94`），但操作日志会包含。`0.2.14` 的 `TYPE_TOOLS` 只覆盖 `chrome_type`，不覆盖 `chrome_verify`。
 
 #### 1.4.4 headless 选区没有敏感字段保护
 
@@ -212,11 +212,11 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 |---|---|---|---|---|
 | **模型上下文** | tool args/results、snapshot 文本、a11y、截图、capture body | 模型服务商、DSH 会话 | 打码、capture 脱敏、审批 | `chrome_type` 结果值；截图/页面正文；模型服务商留存 |
 | **DSH 会话日志** | `$DSH_HOME/sessions/<workspace>/<session>/session.v4.jsonl.zstd` | 同用户、备份/云同步 | 无（插件不控制） | 工具参数/结果里的明文会被持久化；压缩≠加密 |
-| **操作日志** | `~/.dsh/cache/dsh-chrome/operations.jsonl`，0600，4 MiB 轮转 | 同用户、备份 | 键名脱敏、URL 去 userinfo/secret、结果 allowlist、单行 2 KiB；工作树对 `chrome_type.text` 脱敏 | `chrome_verify.steps[].text` 仍可能落盘；其他工具的自定义字段 |
+| **操作日志** | `~/.dsh/cache/dsh-chrome/operations.jsonl`，0600，4 MiB 轮转 | 同用户、备份 | 键名脱敏、URL 去 userinfo/secret、结果 allowlist、单行 2 KiB；`0.2.14` 对 `chrome_type.text` 脱敏 | `chrome_verify.steps[].text` 仍可能落盘；其他工具的自定义字段 |
 | **审计日志** | `~/.dsh/cache/dsh-chrome/audit.jsonl`，0600 | 同用户 | 只记 ts/session/tool/origin/tabId/action/decision/reason | action 文本可能含路径/选择器；不应含密码 |
 | **host 日志** | `~/.dsh/cache/dsh-chrome/host.log`，0600 | 同用户 | 只记事件/错误/截图路径，不记 payload | host 进程内存仍会看到 relay 的明文帧；崩溃转储可能包含 |
-| **浏览器 profile** | 日常 Chrome profile；headless `~/.dsh/cache/dsh-chrome/headless/profile`；context `~/.dsh/cache/dsh-chrome/profiles/<id>` | 同用户、Chrome 自身、备份 | headless 独立 profile、0700、ephemeral 关闭时删除（`src/contexts.js:77-115`） | Chrome 的 cookie/Login Data 落盘；Linux 无 keyring 时可能弱加密；备份/同步 |
-| **扩展 storage** | `chrome.storage.local`：`dshSessions`、`dshDiag`、`dshActiveWindows`、`dshSelfHeal`；`chrome.storage.session`：`dshCaptureMeta`；`dshSidePanelUrl` | 能读 profile 的同用户进程 | 不存凭据；只存会话映射/诊断 | `storage.local` 是 profile 里的明文 JSON；不要往里放 secret |
+| **浏览器 profile** | 日常 Chrome profile；headless `~/.dsh/cache/dsh-chrome/headless/profile`；context `~/.dsh/cache/dsh-chrome/profiles/<id>` | 同用户、Chrome 自身、备份 | context profile 显式 0700（`src/contexts.js:77-78`）；ephemeral 关闭时删除（`src/contexts.js:109-115`）；默认 headless profile 由 `mkdir` 创建，权限随 umask（`src/headless.js:302-303`、`src/headless-login.js:22`） | Chrome 的 cookie/Login Data 落盘；Linux 无 keyring 时可能弱加密；备份/同步 |
+| **扩展 storage** | `chrome.storage.local`：`dshSessions`、`dshDiag`、`dshActiveWindows`、`dshSelfHeal`；`chrome.storage.session`：`dshCaptureMeta`；`dshSidePanelUrl` | 能读 profile 的同用户进程 | 不存凭据；只存会话映射/诊断 | `storage.local` 是 profile 里的未加密存储（LevelDB），同 profile 可读；不要往里放 secret |
 | **viewer / screencast** | `context-viewer-token`、`live-token`（0600）；`screencast/latest.jpg`；viewer HTML 内嵌 token+access | 同用户、loopback 请求者、截图观看者 | loopback only + token + per-context access + 不暴露 CDP | token 在 URL/历史里；截图是像素；viewer 输入回包显示 value |
 | **截图/产物** | `~/.dsh/cache/dsh-chrome/screenshots/`、headless/profile 下的 screenshots、`artifacts/verify-*`、PDF | 同用户、备份 | 截图文件 0600、artifact 目录 0700、截图归属台账 | 无像素脱敏；密码“眼睛”切换后可见；artifact 默认保留最近 50 次 |
 | **备份/云同步** | Time Machine、iCloud/Dropbox 等 | 备份服务/设备 | 无 | `.dsh` 目录可能被整体同步；本文不控制 |
@@ -240,7 +240,7 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 ### 3.1 不变量（先定死，后面所有设计都服从）
 
 1. **模型可见的 tool args/results 永远不含明文密码。** 只出现 `origin`、`username`、`credential label`、`filled: true` 这类元数据。
-2. **明文只在 helper 进程内使用。** provider、`host.mjs`、extension（MVP）、`operations.jsonl`、`host.log`、DSH 会话日志都不应持有明文。
+2. **明文只由 helper 读取和使用，helper 的对外 API 不返回明文。** provider、`host.mjs`、extension（MVP）、`operations.jsonl`、`host.log`、DSH 会话日志都不持有明文。DOM 赋值需要把值交给页面：headless 由 helper 自己发起 loopback CDP，把值直接写进目标元素；这条传输不经过 provider/host/日志。桌面未来如果做，helper → 扩展的交接是 P2 的残余风险（见 §3.4）。
 3. **静态存储只用 OS 凭据库**；没有明文 fallback 文件，没有 `.env`，没有配置文件，没有命令行参数，没有环境变量。
 4. **精确 origin + profile scope**：不做通配符、不做“同站近似匹配”、不把 desktop 凭据给 headless sandbox context 用。
 5. **用户在场 + 硬确认**：填充/保存/删除都要用户确认；子代理 fail closed（`DELEGATED_CALLER`）。
@@ -257,9 +257,9 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 | `src/tools-credentials.js`（新） | 只读 `chrome_credentials {op:"status"}`；不提供 list/get/reveal | P1 |
 | `src/tools-input.js`（改） | `chrome_type` 增加 `credential` 参数；敏感字段拒绝裸 `text`；结果不再返回 `value` | P0/P1 |
 | `src/headless-page-actions.js`（改） | `typePage`/`currentSelection` 增加敏感字段判断；不返回明文值 | P0 |
-| `src/operation-log.js`（改） | 工具级敏感字段表：`chrome_type.text`（工作树已有）、`chrome_verify.steps[].text` 等；结果仍走 allowlist | P0 |
+| `src/operation-log.js`（改） | 工具级敏感字段表：`chrome_type.text`（`0.2.14` 已有）、`chrome_verify.steps[].text` 等；结果仍走 allowlist | P0 |
 | `src/headless-events.js` / `extension/background.js`（改） | capture 时发现 credential fill 正在进行 → 拒绝/暂停；补 `pwd/otp/cvv` 等键名 | P0 |
-| `host/credential-helper.mjs`（新） | helper 的 Node 入口/协议层；实际存储调用平台 native 实现 | P1 |
+| `host/credential-helper.mjs`（新） | helper 的协议原型/测试入口；**生产实现应是 native 二进制**，避免 Node 字符串持有明文 | P1 |
 | `native/macos/`（新） | Swift/ObjC + Security.framework：Keychain generic password | P1 |
 | `native/windows/`（新） | C#/Rust + `CredReadW`/`CredWriteW`：Credential Manager | P2 |
 | `native/linux/`（新） | C/Rust + libsecret：Secret Service | P2 |
@@ -287,7 +287,7 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 - **username**：保存时必须写；同一 origin 多个 username 时，填充必须指定 username，不能“取第一条”。
 - **label**：只用于 UI 显示（如“GitHub 工作号”），不是 secret，也不作为查找键。
 - **保存入口**：helper 自己弹 OS 原生安全输入（macOS `SecAccessControl`/安全输入框、Windows `CredUIPromptForCredentials` 或 helper 自带隐藏输入、Linux `pinentry`/libsecret 提示）；或用户用 Keychain Access / Windows Credential Manager / Seahorse 手动添加。**不接受**模型传来的 `secret` 字段，不接受命令行 `--password`，不接受环境变量。
-- **内存**：native helper 用字节缓冲，填充后立即清零；Node 原型只能尽力而为，不作为最终实现承诺。
+- **内存**：生产 helper 用 native 字节缓冲，填充后立即清零；`host/credential-helper.mjs` 只作协议原型/测试夹具，不能作为最终存密实现（Node 字符串无法可靠清零）。
 
 ### 3.4 helper 接口
 
@@ -337,9 +337,10 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 **填充实现（headless，P1）：**
 
 1. provider 解析当前 tab 的真实 origin（`browser.site` 或 driver 的 tab 信息），**不使用模型传入的 origin**；把 origin、target、CDP 地址交给 helper。
-2. helper 在自己的进程内从 OS 凭据库取密；用 CDP `Runtime.callFunctionOn`（或等价的固定函数）把值写进目标元素。**不要**把 secret 拼进 JavaScript 字符串；把它作为参数传入，避免注入/转义问题。
-3. helper 返回 `{filled:true}` 回执；provider 不读取值、不截图、不生成快照。
-4. 填充前如目标 tab 正在 capture，直接 `CREDENTIAL_CAPTURE_ACTIVE`；填充期间暂停 screencast，填充后不要自动截图。
+2. helper 只接受 loopback CDP 地址（`127.0.0.1`/`::1`，端口来自 provider 的 `DevToolsActivePort`），拒绝任意 host/路径；helper 不把 CDP 地址或 secret 写日志。
+3. helper 在自己的进程内从 OS 凭据库取密；用 CDP `Runtime.callFunctionOn`（或等价的固定函数）把值写进目标元素。**不要**把 secret 拼进 JavaScript 字符串；把它作为参数传入，避免注入/转义问题。
+4. helper 返回 `{filled:true}` 回执；provider 不读取值、不截图、不生成快照。
+5. 填充前如目标 tab 正在 capture，直接 `CREDENTIAL_CAPTURE_ACTIVE`；填充期间暂停 screencast，填充后不要自动截图。
 
 **桌面 Chrome（P2 才考虑）：** 扩展通过独立的 native host 向 helper 要值，扩展用原生 setter 填充。这里不可避免地会有一次 helper → 扩展进程的明文交接（DOM 赋值只能由扩展/页面侧完成）。这是本方案明确的残余风险；**MVP 不做桌面程序化填充**，桌面继续用 Chrome 自带密码管理器/手动输入。
 
@@ -417,10 +418,10 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 
 | 数据/出口 | 当前 | 目标 | 落点 |
 |---|---|---|---|
-| `chrome_type.args.text` | 基线原样进 `operations.jsonl`；工作树已对 `chrome_type` 记 `«redacted»`（未提交） | 敏感字段拒绝裸 `text`；普通 text 在操作日志中按工具级脱敏 | `src/tools-input.js:288-358`、`src/operation-log.js:73-77,491-503` |
+| `chrome_type.args.text` | `0.2.13` 原样进 `operations.jsonl`；`0.2.14` 已对 `chrome_type` 记 `«redacted»` | 敏感字段拒绝裸 `text`；普通 text 在操作日志中按工具级脱敏 | `src/tools-input.js:288-358`、`src/operation-log.js:73-77,491-503` |
 | `chrome_type.result.value` | 原样返回/render | 删除；只返回 `filled/origin/username` | `src/tools-input.js:321-344`、`extension/background.js:3337`、`src/headless-page-actions.js:214` |
 | `chrome_verify.steps[].text` | 原样进操作日志 | 工具级脱敏或禁止敏感字段 | `src/tools-verify.js:141-143`、`src/operation-log.js:491-503` |
-| `operation-log.args` | 键名脱敏；`text` 不匹配；工作树有 `chrome_type` 特例 | 增加 `SENSITIVE_ARG_FIELDS_BY_TOOL`：`chrome_type.text`、`chrome_verify.steps[].text`、`chrome_storage.value(s)`、`chrome_evaluate.expression` | `src/operation-log.js:73-77,382-390,491-503` |
+| `operation-log.args` | 键名脱敏；`text` 不匹配；`0.2.14` 有 `chrome_type` 特例 | 增加 `SENSITIVE_ARG_FIELDS_BY_TOOL`：`chrome_type.text`、`chrome_verify.steps[].text`、`chrome_storage.value(s)`、`chrome_evaluate.expression` | `src/operation-log.js:73-77,382-390,491-503` |
 | `operation-log.result` | allowlist，已丢弃 `value` | 保持；新增 `credential` 元数据只留 origin/username | `src/operation-log.js:509-562` |
 | DSH 会话日志 | 下游持久化 | 源头不产生明文；历史记录按 DSH 记录管理清理 | `$DSH_HOME/sessions/.../session.v4.jsonl.zstd` |
 | `audit.jsonl` | 只记元数据 | 保持；action 不含密码；credential fill 记 origin/username/decision | `src/policy.js:70-86` |
@@ -460,7 +461,7 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 
 | 数据 | 当前 | 目标 | 落点 |
 |---|---|---|---|
-| 浏览器 profile | 独立 headless profile；0700；ephemeral 删除 | 保持；不导入用户 profile；磁盘加密；named profile 显式删除 | `src/contexts.js:73-115`、`src/headless-launch.js:20-37` |
+| 浏览器 profile | 独立 headless profile；context profile 0700；ephemeral 删除 | 保持；不导入用户 profile；磁盘加密；named profile 显式删除；默认 headless profile 权限按 umask/父目录收紧 | `src/contexts.js:73-115`、`src/headless-launch.js:20-37` |
 | Chrome cookie/Login Data | Chrome 自己管理 | 插件不读、不导出、不复制；不用 `--password-store=basic` 弱化 | `docs/DESIGN.md:248`、`src/headless-launch.js` |
 | 扩展 storage | 无凭据 | 只存 opaque alias/label；不存 secret/密码/TOTP seed | `extension/background.js:25-81,290,428,1480,1607` |
 | 截图/PDF/artifact | 截图 0600、artifact 目录 0700；无像素脱敏 | 保留；凭据操作不自动产生 artifact；留存可配置 | `host/host.mjs:447-461`、`src/artifact-store.js:26-50` |
@@ -520,7 +521,7 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 
 | 阶段 | 内容 | 退出标准 | 估算 |
 |---|---|---|---|
-| **P0 现状止血**（不依赖 helper） | ① `chrome_type`/`chrome_verify` 的操作日志工具级脱敏（`chrome_type.text` 工作树已有，待提交；`chrome_verify` 未做）；② 敏感字段拒绝裸 `text`；③ `chrome_type` 不返回 `value`/不 render 值；④ headless selection 补敏感检查；⑤ viewer 输入不显示 value；⑥ capture 补 `pwd/otp/cvv`/fragment/键值文本；⑦ 新泄漏扫描测试 | 哨兵值不出现在 `operations.jsonl`/工具结果/render/viewer；`node test/operation-log.mjs`、`node test/capture-parity.mjs`、新测试全绿 | 2–3 天 |
+| **P0 现状止血**（不依赖 helper） | ① `chrome_type`/`chrome_verify` 的操作日志工具级脱敏（`chrome_type.text` `0.2.14` 已有；`chrome_verify` 未做）；② 敏感字段拒绝裸 `text`；③ `chrome_type` 不返回 `value`/不 render 值；④ headless selection 补敏感检查；⑤ viewer 输入不显示 value；⑥ capture 补 `pwd/otp/cvv`/fragment/键值文本；⑦ 新泄漏扫描测试 | 哨兵值不出现在 `operations.jsonl`/工具结果/render/viewer；`node test/operation-log.mjs`、`node test/capture-parity.mjs`、新测试全绿 | 2–3 天 |
 | **P1 macOS helper + headless 填充** | ① `native/macos` Keychain helper；② UDS + token + peer UID；③ `src/credential-broker.js`；④ `chrome_type.credential` schema + 硬确认；⑤ helper 内部 CDP 填充；⑥ 审计；⑦ 测试/fake | macOS 上可保存/填充/删除；provider/日志/模型无明文；origin/scope/capture 负路径正确；helper 不可用 fail closed | 6–10 天 |
 | **P2 跨平台 + 桌面 native host** | ① Windows Credential Manager helper；② Linux Secret Service helper；③ 第二个 native messaging host；④ 扩展直连 helper 的桌面填充（残余风险评审）；⑤ 安装/打包/签名 | Windows/Linux 至少只读 status + headless fill 可用；桌面填充有明确风险说明；安装文档/回滚 | 10–15 天 |
 | **P3 2FA/passkey 边界** | ① TOTP seed（默认关闭）与 helper 生成 code；② passkey/WebAuthn 人工接管 UI/文档；③ 安全 key/SMS/push 提示；④ 可选用户 presence | TOTP 默认关闭；passkey 不导出；所有失败可回到人工 | 4–6 天 |
@@ -536,7 +537,7 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 | 测试 | 覆盖 |
 |---|---|
 | `test/password-management.mjs`（新） | `credential` schema 互斥；fake helper 的 `status/fill`；`fill` 不返回 secret；origin mismatch / ambiguous / unavailable / capture active / delegated caller；确认卡文案包含 origin/username |
-| `test/operation-log.mjs`（扩） | `chrome_type` 的 `text` 哨兵不落盘（工作树已改）；`chrome_verify` steps 的 `text` 不落盘（待加）；`chrome_storage` 敏感键；`credential` 只留 origin/username；结果无 `value` |
+| `test/operation-log.mjs`（扩） | `chrome_type` 的 `text` 哨兵不落盘（`0.2.14` 已改）；`chrome_verify` steps 的 `text` 不落盘（待加）；`chrome_storage` 敏感键；`credential` 只留 origin/username；结果无 `value` |
 | `test/capture-parity.mjs`（扩） | `pwd/otp/cvv` JSON/form；URL fragment；`password=...` 文本；两侧一致；哨兵不出现 |
 | `test/headless.mjs`（扩） | headless selection 对密码字段返回 `SENSITIVE_SELECTION`；`typePage` 不返回敏感值 |
 | `test/extension-logic.mjs`（扩） | 扩展 `typeIntoRef` 对敏感字段拒绝/不返回值；快照打码保持 |
@@ -549,7 +550,7 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 
 一次测试流程结束后读取并断言：
 
-- `~/.dsh/cache/dsh-chrome/operations.jsonl`：不含哨兵；`chrome_type` 记录里 `text` 为 `«redacted»`（工作树）或不存在；`credential` 记录只有 origin/username。
+- `~/.dsh/cache/dsh-chrome/operations.jsonl`：不含哨兵；`chrome_type` 记录里 `text` 为 `«redacted»`（`0.2.14`）或不存在；`credential` 记录只有 origin/username。
 - `~/.dsh/cache/dsh-chrome/audit.jsonl`：不含哨兵；有 `credential-fill` 的 denied/allowed 记录。
 - `~/.dsh/cache/dsh-chrome/host.log`：不含哨兵；没有 payload/密码。
 - 工具 render 输出：不含哨兵；不出现 `value now`。
@@ -596,7 +597,7 @@ npm test
 | 风险 | 影响 | 缓解 |
 |---|---|---|
 | **prompt injection 诱导填充到钓鱼站** | 凭据被送到错误 origin | origin 由 provider 解析、精确匹配；确认卡显示实际 origin/username；不做通配；不自动信任页面指令 |
-| **helper 被替换/注入** | 所有保存的凭据失守 | 代码签名/公证；最小依赖；无网络；UDS 0600 + peer UID + token；安装路径校验；审计 |
+| **helper 被替换/注入** | 所有保存的凭据失守 | 代码签名/公证；最小依赖；不监听 TCP、不访问外网；UDS 0600 + peer UID + token；安装路径校验；审计 |
 | **同用户恶意进程** | 读日志/会话/profile/Keychain | OS 用户边界；文档明确不承诺；敏感账号隔离账户/机器 |
 | **截图/录屏/肩窥** | 眼睛切换后密码可见 | fill 期间暂停 screencast/截图；不要在密码可见时共享屏幕；不做“截图永远安全”的承诺 |
 | **Linux 无 Secret Service** | 无法保存/填充 | 功能关闭；不回退明文；headless 场景建议人工登录 |
@@ -622,7 +623,7 @@ npm test
 - 没有 Windows/Linux helper；没有跨平台签名/公证。
 - 没有对同用户恶意进程、root、键盘记录器、备份/云同步的防护承诺。
 - 没有“抓包一定不含密码”的承诺；capture 只做已知规则脱敏。
-- **工作树里的 `chrome_type.text` operation-log 修复尚未提交/发布**；不要把它写成已交付版本能力。
+- **`0.2.14` 已包含 `chrome_type.text` 的 operation-log 修复**；不要把它扩展成其他出口也已修复，也不要把它说成完整的密码管理。
 
 ### 7.3 开放问题（需要产品/安全拍板）
 
@@ -644,7 +645,7 @@ npm test
 | `src/headless-events.js` | headless capture 事件映射 |
 | `src/tools-capture.js` | capture 工具、硬确认、headers 不采集的说明 |
 | `test/capture-parity.mjs` | 两侧脱敏一致性测试 |
-| `src/operation-log.js` | 操作日志、键名脱敏、allowlist、轮转；工作树含 `chrome_type.text` 特例 |
+| `src/operation-log.js` | 操作日志、键名脱敏、allowlist、轮转；`0.2.14` 含 `chrome_type.text` 特例 |
 | `src/policy.js` | 站点策略/audit 日志 |
 | `host/host.mjs` | native messaging relay、host.log、截图落盘 |
 | `src/tools-login.js` / `src/headless-login.js` | 可见窗口登录 |
@@ -665,4 +666,4 @@ npm test
 
 ## 9. 一句话总结
 
-**当前能做的是“人工登录 + 显示打码 + 抓包脱敏”，不是密码管理。** 下一步先把 `chrome_type`/selection/viewer/capture 的明文出口堵住（P0；工作树已修 operation log 的 `chrome_type.text`，但还未提交/发布，其余仍在），再引入 OS 凭据库 + 独立 helper，让模型只说“填哪个站点的凭据”，由 helper 在内部取密并填充；桌面程序化填充、passkey/2FA 都不做过度承诺。
+**当前能做的是“人工登录 + 显示打码 + 抓包脱敏”，不是密码管理。** 下一步先把 `chrome_type`/selection/viewer/capture 的明文出口堵住（P0；`0.2.14` 已修 operation log 的 `chrome_type.text`，其余仍在），再引入 OS 凭据库 + 独立 helper，让模型只说“填哪个站点的凭据”，由 helper 在内部取密并填充；桌面程序化填充、passkey/2FA 都不做过度承诺。
