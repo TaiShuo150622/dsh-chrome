@@ -209,6 +209,7 @@ try {
       assert.equal(driver.deathReason, 'connection-closed')
       assert.equal(driver.cdp, null)
       assert.equal(driver.chrome, null)
+      assert.deepEqual(child.killedWith, ['SIGTERM'], 'a CDP-only crash kills a still-running child')
       assert.equal(driver.browserVersion, null)
       assert.equal(driver.tabs.size, 0)
       assert.equal(driver.bySession.size, 0)
