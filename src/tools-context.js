@@ -48,7 +48,7 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
           return { ok: true, ...ctx }
         }
         if (op === 'list') {
-          return { ok: true, contexts: contexts.list().filter((ctx) => ctx.owner === owner) }
+          return { ok: true, contexts: contexts.listFor ? contexts.listFor(owner) : contexts.list().filter((ctx) => ctx.owner === owner) }
         }
         if (op === 'current') {
           const ctx = contexts.activeFor(owner)
@@ -66,7 +66,7 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
         }
         if (op === 'close') {
           const contextId = String(args?.contextId || '')
-          const closed = await contexts.close(contextId)
+          const closed = await contexts.closeOwned(contextId, owner)
           return closed ? { ok: true, contextId } : { ok: false, error: 'CONTEXT_NOT_FOUND' }
         }
         return { ok: false, error: `UNKNOWN_OP:${op}` }

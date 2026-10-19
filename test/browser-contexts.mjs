@@ -107,6 +107,16 @@ try {
   assert.equal(fs.existsSync(path.join(home, 'cache', 'dsh-chrome', 'profiles', idle.profileId)), false)
   await idleManager.closeAll()
 
+  // Owner-aware access: another session must neither see nor close the context.
+  const owned = await manager.create({ owner: 'owner-a', preset: 'sandbox' })
+  assert.equal(manager.getOwned(owned.contextId, 'owner-b'), null)
+  assert.equal(manager.driverForOwned(owned.contextId, 'owner-b'), null)
+  assert.equal(await manager.closeOwned(owned.contextId, 'owner-b'), false)
+  assert.ok(manager.get(owned.contextId), 'cross-owner close must not remove the context')
+  assert.ok(manager.driverForOwned(owned.contextId, 'owner-a'))
+  assert.equal(await manager.closeOwned(owned.contextId, 'owner-a'), true)
+  assert.equal(manager.get(owned.contextId), null)
+
   // Artifact runs live outside ephemeral profiles and retention keeps the newest N.
   const runA = await manager.createArtifactRun('run-a')
   const runB = await manager.createArtifactRun('run-b')

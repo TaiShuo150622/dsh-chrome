@@ -58,14 +58,16 @@ export function createVerifyTool({ contexts, ownerOf, fsp, path, randomUUID, out
         const steps = Array.isArray(args?.steps) ? args.steps.slice(0, 50) : []
         if (steps.length === 0) return { ok: false, error: 'STEPS_REQUIRED' }
         let contextId = String(args?.contextId || '')
-        let ctx = contextId ? contexts.get(contextId) : contexts.activeFor(owner)
+        const requested = contextId ? contexts.getOwned(contextId, owner) : contexts.activeFor(owner)
+        let ctx = requested
+        if (contextId && !ctx) return { ok: false, error: 'CONTEXT_NOT_FOUND' }
         if (!ctx) {
           ctx = await contexts.create({ owner, preset: 'sandbox' })
           contextId = ctx.contextId
         } else {
           contextId = ctx.contextId
         }
-        const driver = contexts.driverFor(contextId)
+        const driver = contexts.driverForOwned ? contexts.driverForOwned(contextId, owner) : contexts.driverFor(contextId)
         if (!driver) return { ok: false, error: 'CONTEXT_NOT_FOUND' }
         const artifactDir = typeof contexts.createArtifactRun === 'function'
           ? await contexts.createArtifactRun(runId)

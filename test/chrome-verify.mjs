@@ -26,8 +26,10 @@ const context = { contextId: 'ctx-test', owner: 'session-a' }
 const contexts = {
   activeFor(owner) { return owner === 'session-a' ? context : null },
   get(contextId) { return contextId === 'ctx-test' ? context : null },
+  getOwned(contextId, owner) { return contextId === 'ctx-test' && owner === 'session-a' ? context : null },
   create: async () => context,
   driverFor() { return driver },
+  driverForOwned(contextId, owner) { return contextId === 'ctx-test' && owner === 'session-a' ? driver : null },
   artifactDirFor() { return artifactDir },
 }
 const tools = chromeTools({

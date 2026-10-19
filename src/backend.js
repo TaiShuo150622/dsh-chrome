@@ -28,6 +28,12 @@ const backendStorage = new AsyncLocalStorage()
  */
 export const BACKENDS = ['desktop', 'headless']
 
+// These tools own their browser/context lifecycle instead of routing a
+// browser call through a backend. Adding the generic `backend` parameter
+// would be misleading (and chrome_verify would silently ignore it).
+const HEADLESS_ONLY_TOOLS = new Set(['chrome_verify'])
+
+
 /**
  * Normalize an injected capability override for the headless backend.
  * `null`/`undefined` means "use the declared headless contract".
@@ -164,6 +170,14 @@ export class BackendRouter {
  */
 export function wrapToolsForBackend(tools, router, { leases = null, leaseRequired = false } = {}) {
   return tools.map((tool) => {
+    if (HEADLESS_ONLY_TOOLS.has(tool.name)) {
+      return {
+        ...tool,
+        async execute(args, exec) {
+          return tool.execute(args, exec)
+        },
+      }
+    }
     const parameters = tool.parameters && typeof tool.parameters === 'object' ? tool.parameters : { type: 'object', properties: {} }
     const properties = parameters.properties && typeof parameters.properties === 'object' ? parameters.properties : {}
     return {

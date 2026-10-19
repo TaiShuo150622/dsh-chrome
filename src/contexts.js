@@ -51,6 +51,19 @@ export class BrowserContextManager {
     return ctx ? this.#view(ctx) : null
   }
 
+  /**
+   * Owner-aware lookup: another session must not learn whether a context ID
+   * exists, so both "not found" and "owned by someone else" return null.
+   */
+  getOwned(contextId, owner) {
+    const ctx = this.contexts.get(contextId)
+    return ctx && ctx.owner === owner ? this.#view(ctx) : null
+  }
+
+  listFor(owner) {
+    return [...this.contexts.values()].filter((ctx) => ctx.owner === owner).map((ctx) => this.#view(ctx))
+  }
+
   async create({ owner = 'default', preset, profileName, cwd = process.cwd() } = {}) {
     if (this.contexts.size >= this.maxContexts) throw new ContextError('CONTEXT_LIMIT', `too many browser contexts (max ${this.maxContexts})`)
     const mode = presetToMode(preset || this.config.browser.preset)
@@ -106,6 +119,12 @@ export class BrowserContextManager {
     return true
   }
 
+  async closeOwned(contextId, owner, options = {}) {
+    const ctx = this.contexts.get(contextId)
+    if (!ctx || ctx.owner !== owner) return false
+    return this.close(contextId, options)
+  }
+
   async closeAll() {
     for (const id of [...this.contexts.keys()]) await this.close(id)
   }
@@ -124,6 +143,11 @@ export class BrowserContextManager {
 
   driverFor(contextId) {
     return this.contexts.get(contextId)?.driver || null
+  }
+
+  driverForOwned(contextId, owner) {
+    const ctx = this.contexts.get(contextId)
+    return ctx && ctx.owner === owner ? ctx.driver || null : null
   }
 
   artifactDirFor(contextId) {
