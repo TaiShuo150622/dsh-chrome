@@ -11,7 +11,7 @@
 - [x] Q19 拆出 status/config/policy/audit 工具
   - 新建 `src/tools-status.js`（或按域拆两个文件），迁移 `chrome_status`、`chrome_config`、`chrome_policy`、`chrome_audit`；
   - 保留 `update`/`assets`/`bridge` 注入；全量测试。
-- [ ] Q20 拆出 screencast/overlay 工具
+- [x] Q20 拆出 screencast/overlay 工具
   - 新建 `src/tools-screencast.js`，迁移 `chrome_screencast`、`chrome_pointer`、`chrome_annotate`、`chrome_emulate`（按实际依赖调整）；
   - 不改变截图/光标/注释行为；全量测试。
 - [ ] Q21 headless login 生命周期拆出
