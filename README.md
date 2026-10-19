@@ -7,6 +7,8 @@
 > 重点能力：桌面 Chrome 可见操作 + `backend:"headless"` 后台无窗口浏览器 + screencast 实时画面 viewer。
 > 待做与阻塞项：[docs/BACKLOG.md](docs/BACKLOG.md)；最新发布说明：[docs/RELEASE-NOTES-0.1.93.md](docs/RELEASE-NOTES-0.1.93.md)。
 
+Windows 预览包（需私有仓库权限）：[v0.1.93-win-preview.1](https://github.com/TaiShuo150622/dsh-chrome/releases/tag/v0.1.93-win-preview.1)。
+
 ## 快速开始（macOS）
 
 1. 启用 `dsh-desktop-chrome` bundle（provider 自动写 native host manifest 与 discovery）；
