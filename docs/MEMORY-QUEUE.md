@@ -14,7 +14,7 @@
   - `cleanupTab(tab)` 统一处理：dropShotStream、bySession、consoleBuffers、captureByTab/captures、owner.tabs、tabs、activeTab；`tabs op=close`、`close_session`、context close、target detach、browser exit 全部调用。
   - 最后一个 tab 关闭后删除 owner（无 login/pending）；downloadByGuid 与 downloads 清理/上限；close 清理 idle timer。
   - 补测试：关闭 tab 后各 Map 归零；owner 不泄漏；target detach 走同一清理；浏览器异常退出全部清理。
-- [ ] M3 启动失败/截图/capture 生命周期
+- [x] M3 启动失败/截图/capture 生命周期
   - `ensureStarted` 任一步失败 kill child、清 `chrome/cdp/startPromise`，不留孤儿 Chrome；已存在 context 启动失败进入 crashed 或关闭。
   - `capture_stop` 后保留摘要并设置 TTL/数量上限；`chrome_capture_requests` 读取后释放原始 entries/body；默认 body 不存（H1 已做）。
   - 截图单帧增加字节/像素硬上限，超过不放入 `shot.last`；screencast 关闭时清理。

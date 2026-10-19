@@ -40,8 +40,12 @@ export class HeadlessContextRouter {
       return result
     } catch (error) {
       // A failed first launch (e.g. configured Edge/Brave executable missing)
-      // must not leave a phantom "running" context behind.
-      if (created) {
+      // must not leave a phantom "running" context behind. The same applies to
+      // an existing context whose browser went away: when the request failure
+      // left the driver disconnected (failed restart / crashed browser), close
+      // the context instead of reporting it as usable on the next request.
+      const unavailable = driver.connected === false
+      if (created || unavailable) {
         try { await this.manager.close(ctx.contextId) } catch {}
       }
       throw error

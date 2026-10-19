@@ -47,6 +47,20 @@ const SHOT_JPEG_CROP_ENABLED = process.env.DSH_HEADLESS_JPEG_CROP !== '0'
 const SHOT_JPEG_CROP_MAX_FRAME_BYTES = 2 * 1024 * 1024
 const SHOT_JPEG_CROP_WORLD = 'dsh-shot-crop'
 
+// Hard caps for one cached compositor frame (M3): a frame above either limit is
+// not put into `shot.last`. The byte cap bounds the retained buffer (a
+// full-detail 4K frame is a few MB), the pixel cap bounds a bogus geometry
+// header; both are configurable through the driver options / environment so a
+// test or an unusual display can lower/raise them.
+export const SHOT_FRAME_MAX_BYTES = Math.max(
+  64 * 1024,
+  Number(process.env.DSH_HEADLESS_SHOT_MAX_BYTES) || 8 * 1024 * 1024,
+)
+export const SHOT_FRAME_MAX_PIXELS = Math.max(
+  1,
+  Number(process.env.DSH_HEADLESS_SHOT_MAX_PIXELS) || 16_000_000,
+)
+
 // Viewer screencast materialization (docs/HEADLESS.md §4.1.6): the live viewer
 // polls `/live/frame` every 300ms, so decoding and rewriting latest.<ext> +
 // meta.json for every screencast frame (up to 30/s) is wasted work. Keep only
@@ -77,9 +91,11 @@ export const SHOT_STREAM_METHODS = new Set([
 ])
 
 export class HeadlessScreenshot {
-  constructor(driver, { error }) {
+  constructor(driver, { error, maxFrameBytes = SHOT_FRAME_MAX_BYTES, maxFramePixels = SHOT_FRAME_MAX_PIXELS } = {}) {
     this.driver = driver
     this.error = error
+    this.maxFrameBytes = Number.isFinite(maxFrameBytes) && maxFrameBytes > 0 ? maxFrameBytes : SHOT_FRAME_MAX_BYTES
+    this.maxFramePixels = Number.isFinite(maxFramePixels) && maxFramePixels > 0 ? maxFramePixels : SHOT_FRAME_MAX_PIXELS
   }
 
   // The headless window is fixed for the process lifetime, so innerWidth /
@@ -156,6 +172,24 @@ export class HeadlessScreenshot {
     }
   }
 
+  // Drop the viewer screencast state and every timer it owns without talking
+  // to CDP: `tab.screencast_stop`, a failed start, a closed tab and a browser
+  // exit all need the local cleanup to happen even when the session is gone.
+  dropScreencast(tab) {
+    const state = tab?.screencast
+    if (!state) return null
+    if (state.timer) {
+      clearTimeout(state.timer)
+      state.timer = null
+    }
+    if (state.flushTimer) {
+      clearTimeout(state.flushTimer)
+      state.flushTimer = null
+    }
+    tab.screencast = null
+    return state
+  }
+
   // `Page.screencastFrame`: the live viewer materializes its own frames and
   // the screenshot stream keeps only the newest composited frame. Acking
   // stays in the driver, which owns the CDP session.
@@ -180,6 +214,14 @@ export class HeadlessScreenshot {
       if (Number.isFinite(composedAt) && data) {
         shot.frames += 1
         const buffer = Buffer.from(data, 'base64')
+        // M3 frame caps: an oversized frame never becomes the cached frame and
+        // keeps the previous one (like a wrong-geometry frame), so the next
+        // request falls back to a fresh capture instead of retaining it.
+        if (buffer.byteLength > this.maxFrameBytes) {
+          shot.oversized = (shot.oversized || 0) + 1
+          shot.lastOversizedAt = Date.now()
+          return
+        }
         // Chrome can emit a frame of the wrong geometry right after a
         // capture-with-clip (observed 600x300 and 1440x720 frames where the
         // stream was asked for 1440x813): that is the clip/old surface, not
@@ -188,9 +230,18 @@ export class HeadlessScreenshot {
         // clip path takes its capture fallback immediately instead of waiting
         // a repaint window for a frame it cannot use.
         const pixelSize = shot.format === 'jpeg' ? jpegFrameSize(buffer) : pngFrameSize(buffer)
+        if (!pixelSize) {
+          // Without a parseable geometry the pixel cap cannot be enforced.
+          shot.invalidFrames = (shot.invalidFrames || 0) + 1
+          return
+        }
+        if (pixelSize.width * pixelSize.height > this.maxFramePixels) {
+          shot.oversized = (shot.oversized || 0) + 1
+          shot.lastOversizedAt = Date.now()
+          return
+        }
         const usable =
-          !pixelSize ||
-          (Math.abs(pixelSize.width - shot.maxWidth) <= 2 && Math.abs(pixelSize.height - shot.maxHeight) <= 2)
+          Math.abs(pixelSize.width - shot.maxWidth) <= 2 && Math.abs(pixelSize.height - shot.maxHeight) <= 2
         if (usable) {
           shot.last = {
             buffer,
@@ -224,6 +275,8 @@ export class HeadlessScreenshot {
         startedAt: 0,
         restarts: 0,
         framesAtIdleCheck: 0,
+        oversized: 0,
+        invalidFrames: 0,
         last: null,
         waiters: [],
         stopTimer: null,

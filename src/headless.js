@@ -11,7 +11,13 @@ import path from 'node:path'
 
 import { buildLaunchArgs, parseDevToolsActivePort } from './headless-launch.js'
 import { resolveHeadlessExecutable } from './headless-browsers.js'
-import { HeadlessScreenshot, SHOT_STREAM_FRAME_TIMEOUT_MS, SHOT_STREAM_METHODS } from './headless-screenshot.js'
+import {
+  HeadlessScreenshot,
+  SHOT_FRAME_MAX_BYTES,
+  SHOT_FRAME_MAX_PIXELS,
+  SHOT_STREAM_FRAME_TIMEOUT_MS,
+  SHOT_STREAM_METHODS,
+} from './headless-screenshot.js'
 import { HeadlessVisualProbe, VISUAL_PROBE_ENABLED } from './headless-visual-probe.js'
 import { handleConsoleEvent, handleNetworkEvent } from './headless-events.js'
 import { pageCall } from './headless-page-actions.js'
@@ -92,6 +98,11 @@ export const MAX_TABS_LIMIT = 64
 const MAX_TABS_ENV = 'DSH_HEADLESS_MAX_TABS'
 // Bounded download history; the guid index is pruned with the list (M2).
 const DOWNLOAD_HISTORY_LIMIT = 100
+// Stopped captures stay readable for a bounded time and count (M3). Entries and
+// redacted bodies are freed when a summary expires or is evicted, so a session
+// that starts/stops captures repeatedly cannot pin an unbounded buffer.
+export const CAPTURE_SUMMARY_TTL_MS = 10 * 60 * 1000
+export const CAPTURE_SUMMARY_LIMIT = 8
 
 /** Resolve the tab cap: explicit option, then env, then the default; capped at 64. */
 export function resolveMaxTabs(value, env = process.env) {
@@ -269,7 +280,7 @@ class Cdp {
 
 // ------------------------------------------------------------------ driver
 export class HeadlessDriver {
-  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null, visible = false, windowSize = null, engine = null, executable = null, autoPointer = null, maxTabs = null } = {}) {
+  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null, visible = false, windowSize = null, engine = null, executable = null, autoPointer = null, maxTabs = null, captureSummaryTtlMs = null, captureSummaryLimit = null, shotFrameMaxBytes = null, shotFrameMaxPixels = null } = {}) {
     this.home = home
     this.visible = Boolean(visible)
     this.windowSize = windowSize || (this.visible ? { width: 1440, height: 900 } : null)
@@ -311,7 +322,19 @@ export class HeadlessDriver {
     this.captures = new Map()
     this.captureByTab = new Map()
     this.nextCaptureSeq = 1
-    this.screenshot = new HeadlessScreenshot(this, { error })
+    this.captureSummaryTtlMs =
+      Number.isFinite(captureSummaryTtlMs) && captureSummaryTtlMs > 0 ? captureSummaryTtlMs : CAPTURE_SUMMARY_TTL_MS
+    this.captureSummaryLimit =
+      Number.isFinite(captureSummaryLimit) && captureSummaryLimit >= 1
+        ? Math.min(100, Math.floor(captureSummaryLimit))
+        : CAPTURE_SUMMARY_LIMIT
+    this.screenshot = new HeadlessScreenshot(this, {
+      error,
+      maxFrameBytes:
+        Number.isFinite(shotFrameMaxBytes) && shotFrameMaxBytes > 0 ? shotFrameMaxBytes : SHOT_FRAME_MAX_BYTES,
+      maxFramePixels:
+        Number.isFinite(shotFrameMaxPixels) && shotFrameMaxPixels > 0 ? shotFrameMaxPixels : SHOT_FRAME_MAX_PIXELS,
+    })
     this.visualProbe = new HeadlessVisualProbe(this)
   }
 
@@ -325,43 +348,69 @@ export class HeadlessDriver {
     }
     if (this.cdp) return this
     if (this.startPromise) return this.startPromise
-    this.startPromise = (async () => {
-      const executable = chromeExecutable({ engine: this.engine, executable: this.executable })
-      if (!executable) {
-        throw error('UNSUPPORTED_BACKEND', 'no Chrome/Chromium/Edge/Brave executable found for the headless backend (set DSH_HEADLESS_CHROME or DSH_HEADLESS_ENGINE)')
-      }
-      const profileDir = this.profileDir
-      await fsp.mkdir(profileDir, { recursive: true })
-      const activePortPath = path.join(profileDir, 'DevToolsActivePort')
+    this.startPromise = this.launchBrowser()
+    try {
+      return await this.startPromise
+    } finally {
+      this.startPromise = null
+    }
+  }
 
+  /**
+   * One launch attempt. `ensureStarted` owns the shared `startPromise`; this
+   * method owns every resource of the attempt, and any failure after the child
+   * is spawned goes through `handleStartFailure`, so a half-started Chrome can
+   * never outlive a rejected launch (M3).
+   */
+  async launchBrowser() {
+    const executable = chromeExecutable({ engine: this.engine, executable: this.executable })
+    if (!executable) {
+      throw error('UNSUPPORTED_BACKEND', 'no Chrome/Chromium/Edge/Brave executable found for the headless backend (set DSH_HEADLESS_CHROME or DSH_HEADLESS_ENGINE)')
+    }
+    const profileDir = this.profileDir
+    await fsp.mkdir(profileDir, { recursive: true })
+    const activePortPath = path.join(profileDir, 'DevToolsActivePort')
+    let child = null
+    let cdp = null
+    let portFileOwnedByLaunch = false
+    try {
       // Reuse a headless Chrome left over from a previous provider instance
       // (e.g. provider reload) instead of racing a second process on the same
       // profile. A stale DevToolsActivePort is removed before a fresh launch.
       try {
         const existing = parseDevToolsActivePort(fs.readFileSync(activePortPath, 'utf8'))
         if (existing) {
-          const existingCdp = new Cdp(existing.url)
-          const version = await existingCdp.connect().then(() => existingCdp.send('Browser.getVersion'))
-          this.cdp = existingCdp
-          this.chrome = null
-          this.browserVersion = version?.product || null
-          existingCdp.onMessage((message) => this.onCdpEvent(message))
-          existingCdp.onClose = () => this.handleBrowserExit('connection-closed')
-          await existingCdp
+          cdp = new Cdp(existing.url)
+          await cdp.connect()
+          const version = await cdp.send('Browser.getVersion')
+          cdp.onMessage((message) => this.onCdpEvent(message))
+          cdp.onClose = () => this.handleBrowserExit('connection-closed')
+          await cdp
             .send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: this.downloadDir, eventsEnabled: true })
             .catch(() => {})
+          this.cdp = cdp
+          this.chrome = null
+          this.browserVersion = version?.product || null
           this.startIdleTimer()
           this.logger?.info?.('headless Chrome reused: %s', this.browserVersion || 'unknown')
           return this
         }
       } catch {
+        // Stale or unusable port file: drop the half-connected CDP client and
+        // the file, then launch a fresh child below.
+        try {
+          cdp?.close()
+        } catch {
+          // already closed
+        }
+        cdp = null
         try {
           fs.unlinkSync(activePortPath)
         } catch {
           // stale file already gone
         }
       }
-      const child = spawn(
+      child = this.spawnImpl(
         executable,
         buildLaunchArgs({
           visible: this.visible,
@@ -371,11 +420,23 @@ export class HeadlessDriver {
         }),
         { stdio: ['ignore', 'ignore', 'pipe'] },
       )
+      portFileOwnedByLaunch = true
       child.stderr?.on('data', (chunk) => this.logger?.debug?.('headless chrome: %s', String(chunk).trim().slice(0, 300)))
       this.chrome = child
+      // Watch the child from the moment it exists: a Chrome that exits during
+      // startup must fail the launch immediately (and be visible to the wait
+      // loop) instead of waiting out the 15s port deadline.
+      let childExit = null
+      child.once?.('exit', (code) => {
+        childExit = code
+        if (this.chrome !== child) return
+        this.logger?.warn?.('headless Chrome exited: %s', code)
+        this.handleBrowserExit(code)
+      })
       const deadline = Date.now() + 15000
       let activePort = null
       while (Date.now() < deadline) {
+        if (childExit != null) break
         try {
           activePort = parseDevToolsActivePort(fs.readFileSync(activePortPath, 'utf8'))
           if (activePort) break
@@ -384,16 +445,14 @@ export class HeadlessDriver {
         }
         await new Promise((resolve) => setTimeout(resolve, 150))
       }
+      if (childExit != null) {
+        throw error('HEADLESS_LAUNCH_FAILED', `headless Chrome exited during startup (code ${childExit})`)
+      }
       if (!activePort) throw error('HEADLESS_LAUNCH_FAILED', 'headless Chrome did not expose DevToolsActivePort')
-      const cdp = new Cdp(activePort.url)
+      cdp = new Cdp(activePort.url)
       cdp.onMessage((message) => this.onCdpEvent(message))
       await cdp.connect()
       cdp.onClose = () => this.handleBrowserExit('connection-closed')
-      this.cdp = cdp
-      this.chrome.on('exit', (code) => {
-        this.logger?.warn?.('headless Chrome exited: %s', code)
-        this.handleBrowserExit(code)
-      })
       // These two CDP round trips are independent of each other; on a cold
       // browser each can take tens of milliseconds, so run them together.
       await fsp.mkdir(this.downloadDir, { recursive: true })
@@ -403,15 +462,45 @@ export class HeadlessDriver {
           .send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: this.downloadDir, eventsEnabled: true })
           .catch((error) => this.logger?.warn?.('headless download behavior failed: %s', error?.message || String(error))),
       ])
+      // Commit point: only a fully initialised browser becomes the driver's
+      // connection; every earlier failure is rolled back below.
+      this.cdp = cdp
       this.browserVersion = version?.product || null
       this.startIdleTimer()
       this.logger?.info?.('headless Chrome started: %s', this.browserVersion || 'unknown')
       return this
-    })()
+    } catch (failure) {
+      await this.handleStartFailure({ child, cdp, activePortPath, portFileOwnedByLaunch })
+      throw failure
+    }
+  }
+
+  /**
+   * Roll back one failed launch: close the half-connected CDP client, kill the
+   * child process and remove the port file this attempt created. Best-effort
+   * and never throws; the original launch error is what the caller must see.
+   */
+  async handleStartFailure({ child = null, cdp = null, activePortPath = null, portFileOwnedByLaunch = false } = {}) {
     try {
-      return await this.startPromise
-    } finally {
-      this.startPromise = null
+      cdp?.close()
+    } catch {
+      // already closed
+    }
+    if (this.cdp === cdp) this.cdp = null
+    this.browserVersion = null
+    try {
+      child?.kill?.('SIGTERM')
+    } catch {
+      // child already gone
+    }
+    if (this.chrome === child) this.chrome = null
+    this.stopIdleTimer()
+    if (portFileOwnedByLaunch) {
+      try {
+        fs.unlinkSync(activePortPath)
+      } catch {
+        // the child may already have removed it
+      }
     }
   }
 
@@ -524,6 +613,7 @@ export class HeadlessDriver {
     tab.cleaned = true
     tab.closedReason = reason
     this.dropShotStream(tab)
+    this.dropScreencast(tab)
     this.dropCaptureForTab(tab.tabId)
     if (tab.sessionId != null && this.bySession.get(tab.sessionId) === tab) this.bySession.delete(tab.sessionId)
     this.consoleBuffers.delete(tab.tabId)
@@ -541,10 +631,13 @@ export class HeadlessDriver {
   dropCaptureForTab(tabId) {
     const capture = this.captureByTab.get(tabId)
     if (!capture) return null
-    try {
+    if (capture.timer) {
       clearTimeout(capture.timer)
-    } catch {
-      // timer already fired
+      capture.timer = null
+    }
+    if (capture.expireTimer) {
+      clearTimeout(capture.expireTimer)
+      capture.expireTimer = null
     }
     if (capture.active) {
       capture.active = false
@@ -552,7 +645,69 @@ export class HeadlessDriver {
     }
     if (this.captures.get(capture.captureId) === capture) this.captures.delete(capture.captureId)
     this.captureByTab.delete(tabId)
+    this.releaseCaptureData(capture, { entries: true })
     return capture
+  }
+
+  /**
+   * M3: a stopped capture keeps a readable summary for a bounded time and
+   * count. `armCaptureExpiry` starts the TTL for one summary; `pruneCapture
+   * Summaries` evicts the oldest stopped summaries over the limit. Active
+   * captures are never touched.
+   */
+  armCaptureExpiry(capture) {
+    if (!capture) return
+    if (capture.expireTimer) clearTimeout(capture.expireTimer)
+    capture.stoppedAt = capture.stoppedAt || Date.now()
+    capture.expireTimer = setTimeout(() => {
+      capture.expireTimer = null
+      this.dropCaptureSummary(capture)
+    }, this.captureSummaryTtlMs)
+    capture.expireTimer.unref?.()
+    this.pruneCaptureSummaries()
+  }
+
+  pruneCaptureSummaries() {
+    const stopped = [...this.captures.values()].filter((capture) => !capture.active)
+    if (stopped.length <= this.captureSummaryLimit) return
+    stopped.sort((a, b) => (a.stoppedAt || a.startedAt || 0) - (b.stoppedAt || b.startedAt || 0))
+    while (stopped.length > this.captureSummaryLimit) this.dropCaptureSummary(stopped.shift())
+  }
+
+  /** Free an expired/evicted stopped capture: entries, bodies and indexes. */
+  dropCaptureSummary(capture) {
+    if (!capture) return false
+    if (capture.expireTimer) {
+      clearTimeout(capture.expireTimer)
+      capture.expireTimer = null
+    }
+    if (capture.timer) {
+      clearTimeout(capture.timer)
+      capture.timer = null
+    }
+    if (this.captures.get(capture.captureId) !== capture) return false
+    this.captures.delete(capture.captureId)
+    if (this.captureByTab.get(capture.tabId) === capture) this.captureByTab.delete(capture.tabId)
+    this.releaseCaptureData(capture, { entries: true })
+    return true
+  }
+
+  /**
+   * Release the raw parts of a capture while keeping the already-redacted
+   * `entries` readable: `_postDataRaw` (unredacted request body), the by-id
+   * index (only needed while new Network events arrive) and in-flight body
+   * task handles. Repeated `chrome_capture_requests` calls keep working; the
+   * whole summary is later freed by TTL/count (or by tab/browser teardown).
+   */
+  releaseCaptureData(capture, { entries = false } = {}) {
+    if (!capture) return
+    for (const entry of capture.entries || []) delete entry._postDataRaw
+    capture.byId?.clear()
+    capture.bodyTasksSet?.clear()
+    capture.bodyBytes = 0
+    if (entries) {
+      if (Array.isArray(capture.entries)) capture.entries.length = 0
+    }
   }
 
   /**
@@ -828,6 +983,7 @@ export class HeadlessDriver {
   async ensureShotStream(tab, options) { return this.screenshot.ensureShotStream(tab, options) }
   async stopShotStream(tab, options) { return this.screenshot.stopShotStream(tab, options) }
   dropShotStream(tab, options) { return this.screenshot.dropShotStream(tab, options) }
+  dropScreencast(tab) { return this.screenshot.dropScreencast(tab) }
   touchShotStream(tab, state) { return this.screenshot.touchShotStream(tab, state) }
   resolveShotWaiters(state) { return this.screenshot.resolveShotWaiters(state) }
   waitShotFrame(state, changeAt, timeoutMs) { return this.screenshot.waitShotFrame(state, changeAt, timeoutMs) }
@@ -1259,6 +1415,7 @@ export class HeadlessDriver {
           resourceTypes,
         }
         capture.timer = setTimeout(() => {
+          capture.timer = null
           try {
             this.cdp?.send('Network.disable', {}, tab.sessionId)
           } catch {
@@ -1267,12 +1424,25 @@ export class HeadlessDriver {
           if (capture.active) {
             capture.active = false
             capture.endedReason = 'max-duration'
+            capture.stoppedAt = Date.now()
+            this.releaseCaptureData(capture)
+            this.armCaptureExpiry(capture)
           }
         }, CAPTURE_MAX_DURATION_MS)
         capture.timer.unref?.()
         this.captures.set(capture.captureId, capture)
         this.captureByTab.set(tab.tabId, capture)
-        await this.cdp.send('Network.enable', {}, tab.sessionId)
+        try {
+          await this.cdp.send('Network.enable', {}, tab.sessionId)
+        } catch (failure) {
+          // A capture whose Network domain could not be enabled must not stay
+          // registered (it would never receive entries and would keep a timer).
+          clearTimeout(capture.timer)
+          capture.timer = null
+          if (this.captures.get(capture.captureId) === capture) this.captures.delete(capture.captureId)
+          if (this.captureByTab.get(tab.tabId) === capture) this.captureByTab.delete(tab.tabId)
+          throw failure
+        }
         return {
           captureId: capture.captureId,
           active: true,
@@ -1288,12 +1458,21 @@ export class HeadlessDriver {
         if (capture.active) {
           capture.active = false
           capture.endedReason = capture.endedReason || 'stopped'
-          clearTimeout(capture.timer)
+          capture.stoppedAt = Date.now()
+          if (capture.timer) {
+            clearTimeout(capture.timer)
+            capture.timer = null
+          }
           try {
             await this.cdp.send('Network.disable', {}, this.tabs.get(capture.tabId)?.sessionId)
           } catch {
             // tab gone
           }
+          // The summary stays readable through chrome_capture_requests, but the
+          // raw request-body scratch and the event index are not needed once the
+          // capture is frozen; TTL/count free the rest.
+          this.releaseCaptureData(capture)
+          this.armCaptureExpiry(capture)
         }
         return {
           captureId: capture.captureId,
@@ -1349,6 +1528,11 @@ export class HeadlessDriver {
           }
           return copy
         })
+        if (!capture.active) {
+          // A frozen capture needs no raw event index or request-body scratch
+          // after the read; the redacted entries stay readable for the TTL.
+          this.releaseCaptureData(capture)
+        }
         return {
           available: true,
           lost: false,
@@ -1388,16 +1572,17 @@ export class HeadlessDriver {
           dirReady: false,
         }
         tab.screencast.timer = setTimeout(() => {
-          if (tab.screencast?.flushTimer) clearTimeout(tab.screencast.flushTimer)
-          if (tab.screencast) this.flushScreencastFrame(tab)
+          const state = tab.screencast
+          if (!state) return
+          this.flushScreencastFrame(tab)
           this.cdp?.send('Page.stopScreencast', {}, tab.sessionId).catch(() => {})
-          tab.screencast = null
+          this.dropScreencast(tab)
         }, 10 * 60 * 1000)
         tab.screencast.timer.unref?.()
         try {
           await this.cdp.send('Page.startScreencast', { format, quality, everyNthFrame, maxWidth: 1280, maxHeight: 800 }, tab.sessionId)
         } catch (error) {
-          tab.screencast = null
+          this.dropScreencast(tab)
           throw error
         }
         return { active: true, alreadyActive: false, tabId: tab.tabId, format, everyNthFrame }
@@ -1405,18 +1590,20 @@ export class HeadlessDriver {
       case 'tab.screencast_stop': {
         const tab = await this.ensureTab(owner, params.tabId)
         const state = tab.screencast
-        if (state?.timer) clearTimeout(state.timer)
-        if (state?.flushTimer) clearTimeout(state.flushTimer)
+        const frames = state?.frames || 0
+        const elapsedMs = state ? Date.now() - state.startedAt : 0
         // Write the newest frame synchronously so stopping never loses it
         // (§4.1.6: with the throttle the last frame may still be pending).
         if (state) this.flushScreencastFrame(tab)
-        await this.cdp.send('Page.stopScreencast', {}, tab.sessionId).catch(() => {})
-        tab.screencast = null
+        // Drop every local timer/state before the CDP round trip so a closed or
+        // unresponsive tab cannot keep the screencast timer alive.
+        this.dropScreencast(tab)
+        await this.cdp?.send('Page.stopScreencast', {}, tab.sessionId).catch(() => {})
         return {
           active: false,
           tabId: tab.tabId,
-          frames: state?.frames || 0,
-          elapsedMs: state ? Date.now() - state.startedAt : 0,
+          frames,
+          elapsedMs,
         }
       }
       case 'tab.screencast_status': {
@@ -1571,6 +1758,11 @@ export class HeadlessDriver {
    */
   handleBrowserExit(reason = 'browser-exit') {
     for (const tab of [...this.tabs.values()]) this.cleanupTab(tab, { reason })
+    for (const capture of this.captures.values()) {
+      if (capture.timer) clearTimeout(capture.timer)
+      if (capture.expireTimer) clearTimeout(capture.expireTimer)
+      this.releaseCaptureData(capture, { entries: true })
+    }
     this.owners.clear()
     this.bySession.clear()
     this.consoleBuffers.clear()
