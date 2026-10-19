@@ -8,10 +8,15 @@
  *   - `tabs op=close`, `close_session`, target detach/destroy and browser exit
  *     all remove the tab from every map and clear its capture timer;
  *   - the last tab of an owner releases the owner entry, but only when no
- *     attach is in flight and no login window is open;
+ *     attach is in flight and no login window is open; read-only calls must
+ *     not recreate an empty owner;
  *   - the download history and its guid index stay bounded together and are
  *     dropped with the browser;
- *   - `close()` clears the idle timer.
+ *   - a crashed browser clears every map/timer and marks the driver dead, so
+ *     later requests fail with CONTEXT_CRASHED; a normal close clears the same
+ *     state without marking a crash;
+ *   - `close()` clears the idle timer, captures, downloads and screencast;
+ *   - a visible/debug or login window is never killed by the driver idle sweep.
  */
 import assert from 'node:assert/strict'
 
@@ -99,6 +104,29 @@ const assertTabGone = (driver, tab) => {
   assert.equal(driver.consoleBuffers.size, 0)
   assert.equal(driver.captures.size, 0)
   assert.equal(driver.captureByTab.size, 0)
+
+  // Read-only calls after the last tab closed must not resurrect an empty
+  // owner entry (which would keep `owners` non-zero until browser exit).
+  assert.deepEqual(await driver.tabsRequest('owner-a', { op: 'list' }), {
+    tabs: [],
+    groupId: null,
+    activeTabId: null,
+  })
+  assert.equal(driver.owners.size, 0, 'list does not create an owner')
+  assert.deepEqual(await driver.dispatch('tab.resume', { owner: 'owner-a' }), { ok: true, tabId: null })
+  assert.equal(driver.owners.size, 0, 'resume does not create an owner')
+  await assert.rejects(
+    driver.tabsRequest('owner-a', { op: 'close', tabId: 999 }),
+    (error) => error.code === 'TAB_NOT_FOUND',
+  )
+  assert.equal(driver.owners.size, 0, 'closing an unknown tab does not create an owner')
+  assert.deepEqual(await driver.dispatch('tab.close_session', { owner: 'owner-a' }), { closed: 0 })
+  assert.equal(driver.owners.size, 0, 'close_session does not create an owner')
+  await assert.rejects(
+    driver.tabsRequest('owner-a', { op: 'new', url: 'file:///etc/passwd' }),
+    (error) => error.code === 'PROTECTED_PAGE',
+  )
+  assert.equal(driver.owners.size, 0, 'an invalid new-tab URL does not create an owner')
 }
 
 // -------------------------------------------- close_session closes all tabs
@@ -192,15 +220,23 @@ const assertTabGone = (driver, tab) => {
 {
   const driver = makeDriver()
   attachFake(driver)
+  driver.browserVersion = 'Fake/1.0'
   const entry = driver.ownerEntry('owner-x')
   const tab = await driver.attachTab(entry, 'about:blank')
-  await driver.dispatch('tab.capture_start', { owner: 'owner-x', tabId: tab.tabId })
+  const started = await driver.dispatch('tab.capture_start', { owner: 'owner-x', tabId: tab.tabId })
+  const capture = driver.captures.get(started.captureId)
+  assert.ok(capture?.timer, 'capture max-duration timer armed')
+  const captureTimer = capture.timer
+  await driver.dispatch('tab.screencast_start', { owner: 'owner-x', tabId: tab.tabId })
+  const screencastTimer = tab.screencast.timer
+  const shotTimer = setTimeout(() => {}, 60_000)
+  tab.shotStream = { active: true, waiters: [], stopTimer: shotTimer, last: null }
   driver.onCdpEvent({ method: 'Browser.downloadWillBegin', params: { guid: 'gx', suggestedFilename: 'x.txt' } })
   driver.startIdleTimer()
   assert.ok(driver.idleTimer, 'idle timer armed')
 
   // The child exit handler calls this; a crashed browser must leave nothing
-  // that a later request could mistake for a live tab.
+  // that a later request could mistake for a live tab, and must be terminal.
   driver.handleBrowserExit(1)
   assertTabGone(driver, tab)
   assert.equal(driver.tabs.size, 0)
@@ -213,19 +249,113 @@ const assertTabGone = (driver, tab) => {
   assert.equal(driver.downloadByGuid.size, 0)
   assert.equal(driver.cdp, null)
   assert.equal(driver.chrome, null)
+  assert.equal(driver.browserVersion, null, 'crashed browser version is not reported as current')
   assert.equal(driver.idleTimer, null, 'browser exit stops the idle timer')
+  assert.equal(tab.screencast, null, 'browser exit drops the screencast state')
+  assert.equal(screencastTimer._destroyed, true, 'browser exit clears the screencast timer')
+  assert.equal(captureTimer._destroyed, true, 'browser exit clears the capture timer')
+  assert.equal(shotTimer._destroyed, true, 'browser exit clears the screenshot stream timer')
+  assert.equal(driver.dead, true, 'an unexpected exit marks the driver dead')
+  assert.equal(driver.deathReason, '1')
+  assert.equal(driver.connected, false)
+  await assert.rejects(
+    driver.ensureStarted(),
+    (error) => error.code === 'CONTEXT_CRASHED',
+    'a dead driver must not silently relaunch a browser with stale tab ids',
+  )
 
   // Normal close also stops the idle timer and clears maps.
   const second = makeDriver()
   const cdp = attachFake(second)
+  second.browserVersion = 'Fake/1.0'
   const secondTab = await second.attachTab(second.ownerEntry('owner-c'), 'about:blank')
+  // One stopped summary (TTL timer) plus one active capture (max-duration
+  // timer): close must clear both timers, not just the registry entries.
+  const stoppedCapture = await second.dispatch('tab.capture_start', { owner: 'owner-c', tabId: secondTab.tabId })
+  await second.dispatch('tab.capture_stop', { owner: 'owner-c', captureId: stoppedCapture.captureId })
+  const secondExpireTimer = second.captures.get(stoppedCapture.captureId).expireTimer
+  assert.ok(secondExpireTimer, 'stopped capture summary timer armed')
+  const activeCapture = await second.dispatch('tab.capture_start', { owner: 'owner-c', tabId: secondTab.tabId })
+  const secondCaptureTimer = second.captures.get(activeCapture.captureId).timer
+  await second.dispatch('tab.screencast_start', { owner: 'owner-c', tabId: secondTab.tabId })
+  const secondScreencastTimer = secondTab.screencast.timer
+  second.onCdpEvent({ method: 'Browser.downloadWillBegin', params: { guid: 'gc', suggestedFilename: 'c.txt' } })
   second.startIdleTimer()
   await second.close()
   assertTabGone(second, secondTab)
   assert.equal(second.idleTimer, null, 'close stops the idle timer')
   assert.equal(second.owners.size, 0)
+  assert.equal(second.captures.size, 0, 'close clears captures')
+  assert.equal(second.captureByTab.size, 0, 'close clears the capture index')
+  assert.equal(second.downloads.length, 0, 'close clears the download history')
+  assert.equal(second.downloadByGuid.size, 0, 'close clears the download guid index')
+  assert.equal(secondCaptureTimer._destroyed, true, 'close clears the active capture timer')
+  assert.equal(secondExpireTimer._destroyed, true, 'close clears the stopped capture TTL timer')
+  assert.equal(secondScreencastTimer._destroyed, true, 'close clears the screencast timer')
   assert.equal(second.cdp, null)
+  assert.equal(second.browserVersion, null)
+  assert.equal(second.dead, false, 'an intentional close is not a crash')
   assert.equal(callsOf(cdp, 'Browser.close').length, 1)
+  // A websocket can deliver a final frame/event after close detached the CDP
+  // client (the real-browser suite hit a null send here). Late events must be
+  // ignored, not throw.
+  assert.doesNotThrow(() => {
+    second.onCdpEvent({
+      method: 'Page.screencastFrame',
+      sessionId: secondTab.sessionId,
+      params: { data: '', metadata: { timestamp: 1 } },
+    })
+    second.onCdpEvent({ method: 'Network.loadingFinished', sessionId: secondTab.sessionId, params: {} })
+  })
+}
+
+// ------------------------------------- visible windows are never idle-reaped
+{
+  const visible = makeDriver({ visible: true })
+  const visibleCdp = attachFake(visible)
+  visible.lastActivity = 0
+  assert.equal(await visible.checkIdle(), false, 'a visible driver is not idle-reaped')
+  assert.equal(callsOf(visibleCdp, 'Browser.close').length, 0)
+
+  const handoff = makeDriver()
+  const handoffCdp = attachFake(handoff)
+  handoff.visibleMode = true
+  handoff.lastActivity = 0
+  assert.equal(await handoff.checkIdle(), false, 'a visible handoff window is not idle-reaped')
+  assert.equal(callsOf(handoffCdp, 'Browser.close').length, 0)
+
+  const login = makeDriver()
+  const loginCdp = attachFake(login)
+  login.loginProcess = { pid: 1234 }
+  login.lastActivity = 0
+  assert.equal(await login.checkIdle(), false, 'an open login window is not idle-reaped')
+  assert.equal(callsOf(loginCdp, 'Browser.close').length, 0)
+
+  const hidden = makeDriver()
+  const hiddenCdp = attachFake(hidden)
+  hidden.lastActivity = 0
+  hidden.startIdleTimer()
+  assert.equal(await hidden.checkIdle(), true, 'a hidden idle browser is still reaped')
+  assert.equal(hidden.idleTimer, null)
+  assert.equal(callsOf(hiddenCdp, 'Browser.close').length, 1)
+  assert.equal(hidden.dead, false)
+}
+
+// --------------------- late CDP events are ignored once the client is gone
+{
+  const stale = makeDriver()
+  const staleTab = { tabId: 1, sessionId: 'stale-session', owner: 'stale', shotStream: null }
+  stale.tabs.set(1, staleTab)
+  stale.bySession.set(staleTab.sessionId, staleTab)
+  assert.equal(stale.cdp, null)
+  assert.doesNotThrow(
+    () => stale.onCdpEvent({ method: 'Page.screencastFrame', sessionId: staleTab.sessionId, params: { data: '', metadata: {} } }),
+    'a frame after the client detached must not touch cdp.send',
+  )
+  assert.doesNotThrow(
+    () => stale.onCdpEvent({ method: 'Network.loadingFinished', sessionId: staleTab.sessionId, params: { requestId: 'r1' } }),
+    'a network event after the client detached must not touch cdp.send',
+  )
 }
 
 console.log('TAB LIFECYCLE TEST: PASS')

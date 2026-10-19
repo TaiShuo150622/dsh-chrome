@@ -15,7 +15,7 @@ export function createHeadlessLogin({ chromeExecutable, error }) {
     if (driver.tabs.size > 0) {
       throw error('HEADLESS_BUSY', 'close headless tabs (chrome_close_session {backend:"headless"}) before opening the login window')
     }
-    if (driver.chrome || driver.cdp) await driver.close()
+    if (driver.chrome || driver.cdp || driver.dead) await driver.close()
     const executable = chromeExecutable(driver)
     if (!executable) throw error('UNSUPPORTED_BACKEND', 'no Chrome/Chromium/Edge/Brave executable found (set DSH_HEADLESS_CHROME or DSH_HEADLESS_ENGINE)')
     const target = url && /^https?:\/\//i.test(String(url)) ? String(url) : 'about:blank'
@@ -50,7 +50,7 @@ export function createHeadlessLogin({ chromeExecutable, error }) {
       throw error('PROTECTED_PAGE', 'Only http(s) URLs are allowed.')
     }
     driver.resumeUrl = target && target !== 'about:blank' ? String(target) : null
-    if (driver.chrome || driver.cdp || driver.tabs.size > 0) await driver.close()
+    if (driver.chrome || driver.cdp || driver.tabs.size > 0 || driver.dead) await driver.close()
     driver.visibleMode = true
     const opened = await driver.loginStart({ url: driver.resumeUrl || 'about:blank' })
     return { ...opened, visible: true, url: driver.resumeUrl }
@@ -76,6 +76,9 @@ export function createHeadlessLogin({ chromeExecutable, error }) {
     }
     driver.loginProcess = null
     driver.visibleMode = false
+    // An owner whose last tab closed while the login window was open was kept
+    // only because of that window; now the normal owner-release check can run.
+    for (const entry of driver.owners.values()) driver.maybeReleaseOwner(entry)
     driver.logger?.info?.('headless visible window closed')
     return { running: false, stopped: true, profile: driver.loginProfile, resumeUrl: driver.resumeUrl }
   }

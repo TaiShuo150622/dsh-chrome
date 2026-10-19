@@ -11,6 +11,8 @@
  *     the 15s port deadline;
  *   - an existing context whose browser is gone is closed after a failed
  *     request, while an ordinary request error keeps it alive;
+ *   - a dropped CDP connection (crashed Chrome) clears every map/timer and
+ *     makes the driver terminal: later requests fail with CONTEXT_CRASHED;
  *   - a stopped capture stays readable, then is freed by TTL/count; reading a
  *     frozen capture releases its raw event index and request-body scratch;
  *   - one screenshot frame above the byte/pixel cap never becomes shot.last;
@@ -68,7 +70,11 @@ class FakeWebSocket {
         ? { product: 'Fake/1.0' }
         : message.method === 'Browser.setDownloadBehavior'
           ? {}
-          : {}
+          : message.method === 'Target.createTarget'
+            ? { targetId: 'fake-target' }
+            : message.method === 'Target.attachToTarget'
+              ? { sessionId: 'fake-session' }
+              : {}
     queueMicrotask(() => {
       if (this.closed) return
       this.onmessage?.({ data: JSON.stringify({ id: message.id, result }) })
@@ -153,6 +159,71 @@ try {
       assert.equal(driver.cdp, null)
       assert.equal(driver.idleTimer, null)
       assert.equal(driver.startPromise, null)
+      assert.equal(driver.dead, false, 'a failed launch is retryable, not a crashed context')
+      assert.equal(driver.deathReason, null)
+    } finally {
+      cleanupHome(home)
+    }
+  }
+
+  {
+    // A live browser whose CDP connection drops (Chrome crash): every piece of
+    // per-browser state is released and the driver becomes terminal, so the
+    // next request cannot reuse stale tab/session ids.
+    const home = makeHome('m3-crash')
+    try {
+      let spawns = 0
+      const child = fakeChild()
+      const spawnImpl = (executable, args) => {
+        spawns += 1
+        const profileArg = args.find((arg) => String(arg).startsWith('--user-data-dir='))
+        const profileDir = profileArg.slice('--user-data-dir='.length)
+        fs.mkdirSync(profileDir, { recursive: true })
+        fs.writeFileSync(path.join(profileDir, 'DevToolsActivePort'), '9333\n/devtools/browser/fake\n')
+        return child
+      }
+      const driver = new HeadlessDriver({ home, executable: process.execPath, spawnImpl })
+      await driver.ensureStarted()
+      assert.equal(driver.connected, true)
+      assert.equal(driver.browserVersion, 'Fake/1.0')
+
+      const tab = await driver.attachTab(driver.ownerEntry('crash-owner'), 'about:blank')
+      const started = await driver.dispatch('tab.capture_start', { owner: 'crash-owner', tabId: tab.tabId })
+      const captureTimer = driver.captures.get(started.captureId).timer
+      await driver.dispatch('tab.screencast_start', { owner: 'crash-owner', tabId: tab.tabId })
+      const screencastTimer = tab.screencast.timer
+      driver.onCdpEvent({ method: 'Browser.downloadWillBegin', params: { guid: 'g-crash', suggestedFilename: 'crash.txt' } })
+      driver.startIdleTimer()
+      assert.equal(driver.downloadByGuid.size, 1)
+
+      // The websocket closing is what a killed/crashed Chrome produces.
+      driver.cdp.ws.close()
+
+      assert.equal(driver.dead, true, 'a dropped CDP connection marks the driver dead')
+      assert.equal(driver.deathReason, 'connection-closed')
+      assert.equal(driver.cdp, null)
+      assert.equal(driver.chrome, null)
+      assert.equal(driver.browserVersion, null)
+      assert.equal(driver.tabs.size, 0)
+      assert.equal(driver.bySession.size, 0)
+      assert.equal(driver.owners.size, 0)
+      assert.equal(driver.consoleBuffers.size, 0)
+      assert.equal(driver.captures.size, 0)
+      assert.equal(driver.captureByTab.size, 0)
+      assert.equal(driver.downloads.length, 0)
+      assert.equal(driver.downloadByGuid.size, 0)
+      assert.equal(driver.idleTimer, null)
+      assert.equal(tab.screencast, null, 'crash drops the screencast state')
+      assert.equal(screencastTimer._destroyed, true, 'crash clears the screencast timer')
+      assert.equal(captureTimer._destroyed, true, 'crash clears the capture timer')
+      await assert.rejects(
+        driver.ensureStarted(),
+        (error) => error.code === 'CONTEXT_CRASHED',
+        'later requests fail explicitly instead of relaunching under stale ids',
+      )
+      assert.equal(spawns, 1, 'a dead driver does not silently spawn another Chrome')
+      await driver.close()
+      assert.equal(driver.dead, false, 'an explicit close resets the terminal marker')
     } finally {
       cleanupHome(home)
     }
