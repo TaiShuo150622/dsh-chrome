@@ -29,7 +29,7 @@
   - 新建 `src/artifact-store.js`：`createArtifactRun`、prune、artifact 路径/复制；
   - `BrowserContextManager` 不再管理 verify artifacts；`tools-verify` 注入 artifact store（或 contexts.artifacts 适配层）；
   - 保留现有路径/保留策略；全量测试。
-- [ ] Q12 headless console/network 事件拆出
+- [x] Q12 headless console/network 事件拆出
   - 把 console/network Buffer 与 CDP 事件映射抽到 `src/headless-events.js`；
   - HeadlessDriver 只保留状态字段与 dispatch 调用；
   - 不改输出/截断语义；全量测试。
