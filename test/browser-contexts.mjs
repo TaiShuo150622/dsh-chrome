@@ -20,7 +20,8 @@ try {
   assert.deepEqual(presetToMode('debug'), { isolation: 'named', visible: true })
   assert.deepEqual(defaults.warnings, [])
 
-  // Project config is overridden by the user-level config; secrets/unknown keys are dropped.
+  // Project config overrides canonical user config; legacy cache path still loads.
+  // Secrets/unknown keys are dropped.
   fs.mkdirSync(path.join(cwd, '.dsh-chrome'), { recursive: true })
   fs.mkdirSync(path.join(home, 'cache', 'dsh-chrome'), { recursive: true })
   fs.writeFileSync(path.join(cwd, '.dsh-chrome', 'config.json'), JSON.stringify({
@@ -28,7 +29,7 @@ try {
     browser: { preset: 'sandbox-persistent', maxContexts: 2 },
     verification: { captureNetwork: 'bodies' },
   }))
-  fs.writeFileSync(path.join(home, 'cache', 'dsh-chrome', 'config.json'), JSON.stringify({
+  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({
     version: 1,
     browser: { maxContexts: 3, apiKey: 'sk-CANARY-NOT-ALLOWED' },
     unknownTop: true,
@@ -36,13 +37,15 @@ try {
   }))
   const merged = loadConfig({ home, cwd })
   assert.equal(merged.config.browser.preset, 'sandbox-persistent')
-  assert.equal(merged.config.browser.maxContexts, 3)
-  assert.equal(merged.config.verification.captureNetwork, 'metadata')
+  assert.equal(merged.config.browser.maxContexts, 2, 'project config wins over user config')
+  assert.equal(merged.config.browser.preset, 'sandbox-persistent', 'project preset wins')
+  assert.equal(merged.config.verification.captureNetwork, 'bodies', 'project verification wins')
   assert.ok(merged.warnings.some((line) => line.includes('apiKey')))
   assert.ok(merged.warnings.some((line) => line.includes('unknownTop')))
 
-  // Invalid version falls back to defaults.
-  fs.writeFileSync(path.join(home, 'cache', 'dsh-chrome', 'config.json'), JSON.stringify({ version: 99, browser: { preset: 'nope' } }))
+  // Invalid version falls back to defaults when no project override is present.
+  fs.rmSync(path.join(cwd, '.dsh-chrome', 'config.json'), { force: true })
+  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ version: 99, browser: { preset: 'nope' } }))
   const bad = loadConfig({ home, cwd })
   assert.equal(bad.config.browser.preset, 'sandbox')
   assert.ok(bad.warnings.some((line) => line.includes('version')))

@@ -11,6 +11,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BackendRouter, wrapToolsForBackend } from './src/backend.js'
+import { BrowserContextManager } from './src/contexts.js'
+import { loadConfig } from './src/config.js'
+import { HeadlessContextRouter } from './src/headless-contexts.js'
 import { BridgeServer } from './src/bridge.js'
 import { HeadlessDriver, headlessSupported } from './src/headless.js'
 import { ensureInstallAssets } from './src/install.js'
@@ -39,10 +42,27 @@ export function apply(ctx) {
   const sandboxPolicy = { current: null }
   const userQuestions = { current: null }
   const logger = ctx.logger
-  const headlessDriver = new HeadlessDriver({ home, logger })
+  const configInfo = loadConfig({ home, cwd: process.cwd() })
+  if (configInfo.warnings.length > 0) {
+    for (const warning of configInfo.warnings) logger?.warn?.('dsh-chrome config: %s', warning)
+  }
+  const contexts = new BrowserContextManager({
+    config: configInfo.config,
+    home,
+    logger,
+    createDriver: async ({ profileDir }) =>
+      new HeadlessDriver({
+        home,
+        logger,
+        profileDir,
+        screenshotDir: path.join(profileDir, 'screenshots'),
+        downloadDir: path.join(profileDir, 'downloads'),
+      }),
+  })
+  const headless = headlessSupported() ? new HeadlessContextRouter({ manager: contexts, logger }) : null
   const router = new BackendRouter({
     desktop: bridge,
-    headless: headlessDriver,
+    headless,
     headlessSupported: headlessSupported(),
   })
 
@@ -106,8 +126,9 @@ export function apply(ctx) {
     }
   })()
   logger?.info?.(
-    'dsh-chrome: provider config loaded (allowEvaluate=%s)',
+    'dsh-chrome: provider config loaded (allowEvaluate=%s, browserPreset=%s)',
     providerConfig?.allowEvaluate === true,
+    configInfo.config.browser.preset,
   )
 
   ctx.effect(() => {
@@ -135,6 +156,7 @@ export function apply(ctx) {
     void ready
     return async () => {
       await bridge.stop()
+      await contexts.closeAll()
     }
   })
 
@@ -162,6 +184,7 @@ export function apply(ctx) {
         sessionContext: () => ({ sessions: sessions.current, sandboxPolicy: sandboxPolicy.current }),
         userQuestions: () => userQuestions.current,
         config: () => providerConfig,
+        contexts,
       }),
       router,
     )

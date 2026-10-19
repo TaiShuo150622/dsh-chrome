@@ -1236,10 +1236,11 @@ function pageCall(name, args) {
 
 // ------------------------------------------------------------------ driver
 export class HeadlessDriver {
-  constructor({ home, logger, spawnImpl = spawn } = {}) {
+  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null } = {}) {
     this.home = home
     this.logger = logger
     this.spawnImpl = spawnImpl
+    this.profileDir = profileDir || path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'profile')
     this.chrome = null
     this.cdp = null
     this.browserVersion = null
@@ -1247,10 +1248,10 @@ export class HeadlessDriver {
     this.tabs = new Map() // tabId -> tab (global; ids unique per owner group not guaranteed)
     this.nextTabId = 1
     this.startPromise = null
-    this.screenshotDir = path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'screenshots')
+    this.screenshotDir = screenshotDir || path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'screenshots')
     this.screenshotDirReady = false
     this.screenshotSeq = 0
-    this.downloadDir = path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'downloads')
+    this.downloadDir = downloadDir || path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'downloads')
     this.bySession = new Map()
     this.consoleBuffers = new Map()
     this.screencastDir = path.join(home || '.', 'cache', 'dsh-chrome', 'screencast')
@@ -1259,7 +1260,7 @@ export class HeadlessDriver {
     this.idleTimer = null
     this.lastActivity = Date.now()
     this.loginProcess = null
-    this.loginProfile = path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'profile')
+    this.loginProfile = this.profileDir
     this.resumeUrl = null
     this.visibleMode = false
     this.autoPointerEnabled = process.env.DSH_AUTO_POINTER === '1'
@@ -1283,7 +1284,7 @@ export class HeadlessDriver {
       if (!executable) {
         throw error('UNSUPPORTED_BACKEND', 'no Chrome/Chromium executable found for the headless backend (set DSH_HEADLESS_CHROME)')
       }
-      const profileDir = path.join(this.home || '.', 'cache', 'dsh-chrome', 'headless', 'profile')
+      const profileDir = this.profileDir
       await fsp.mkdir(profileDir, { recursive: true })
       const activePortPath = path.join(profileDir, 'DevToolsActivePort')
 

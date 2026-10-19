@@ -116,11 +116,12 @@ function readJson(file, warnings, fsImpl = fs) {
 
 export function loadConfig({ home = process.env.DSH_HOME || path.join(process.env.HOME || '', '.dsh'), cwd = process.cwd(), fsImpl = fs } = {}) {
   const warnings = []
-  const userPath = path.join(home, 'cache', 'dsh-chrome', 'config.json')
+  const userPath = path.join(home, 'config.json')
+  const legacyPath = path.join(home, 'cache', 'dsh-chrome', 'config.json')
   const projectPath = path.join(cwd, '.dsh-chrome', 'config.json')
   const config = clone(DEFAULT_CONFIG)
-  // Project first, then user: the user-level file has the final say.
-  for (const [source, file] of [['project', projectPath], ['user', userPath]]) {
+  // Lowest to highest precedence: legacy user -> canonical user -> project.
+  for (const [source, file] of [['legacy-user', legacyPath], ['user', userPath], ['project', projectPath]]) {
     const raw = readJson(file, warnings, fsImpl)
     if (!raw) continue
     if (!isPlainObject(raw)) {
@@ -129,7 +130,7 @@ export function loadConfig({ home = process.env.DSH_HOME || path.join(process.en
     }
     merge(config, raw, warnings, '')
   }
-  return { config: sanitize(config, warnings), warnings, files: { userPath, projectPath } }
+  return { config: sanitize(config, warnings), warnings, files: { userPath, legacyPath, projectPath } }
 }
 
 export function presetToMode(preset) {

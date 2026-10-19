@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：42
+> 工具数量：43
 
 ### `chrome_status`
 
@@ -231,6 +231,17 @@ Open a visible, dedicated Chrome window at a human-interaction step (login, CAPT
 |---|---|---|---|
 | `op` | enum(start | show | status | finish) | yes |  |
 | `url` | string | no | start/show: http(s) URL (show defaults to the current headless page). |
+
+### `chrome_context`
+
+Manage isolated browser contexts for sandbox verification: op="create" makes a per-session headless context (default preset sandbox), op="use" switches the session active context, op="list" lists this session contexts, op="current" shows the active one, op="close" closes one. Contexts are isolated (separate profile); backend:"headless" calls route to the session active context.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `op` | enum(create | use | list | current | close) | yes |  |
+| `preset` | enum(sandbox | sandbox-persistent | debug | collab) | no |  |
+| `profile` | string | no | Named profile label for sandbox-persistent/debug. |
+| `contextId` | string | no | Context id for use/close. |
 
 ### `chrome_pointer`
 

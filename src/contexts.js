@@ -33,6 +33,7 @@ export class BrowserContextManager {
     this.now = now
     this.home = home
     this.contexts = new Map()
+    this.activeByOwner = new Map()
     this.maxContexts = config.browser.maxContexts
     this.idleTimeoutMs = config.browser.idleTimeoutMs
     this.profilesRoot = config.browser.profilesDir || path.join(home, 'cache', 'dsh-chrome', 'profiles')
@@ -75,6 +76,7 @@ export class BrowserContextManager {
       driver,
     }
     this.contexts.set(contextId, ctx)
+    this.activeByOwner.set(owner, contextId)
     this.#startReaper()
     return this.#view(ctx)
   }
@@ -83,6 +85,7 @@ export class BrowserContextManager {
     const ctx = this.contexts.get(contextId)
     if (!ctx) return false
     this.contexts.delete(contextId)
+    if (this.activeByOwner.get(ctx.owner) === contextId) this.activeByOwner.delete(ctx.owner)
     try {
       await ctx.driver?.close?.()
     } catch (error) {
@@ -101,6 +104,27 @@ export class BrowserContextManager {
 
   async closeAll() {
     for (const id of [...this.contexts.keys()]) await this.close(id)
+  }
+
+  activeFor(owner) {
+    const contextId = this.activeByOwner.get(owner)
+    return contextId ? this.contexts.get(contextId) || null : null
+  }
+
+  setActive(owner, contextId) {
+    const ctx = this.contexts.get(contextId)
+    if (!ctx || ctx.owner !== owner) throw new ContextError('CONTEXT_NOT_FOUND', `context ${contextId} is not owned by ${owner}`)
+    this.activeByOwner.set(owner, contextId)
+    return this.#view(ctx)
+  }
+
+  driverFor(contextId) {
+    return this.contexts.get(contextId)?.driver || null
+  }
+
+  view(contextId) {
+    const ctx = this.contexts.get(contextId)
+    return ctx ? this.#view(ctx) : null
   }
 
   touch(contextId) {
