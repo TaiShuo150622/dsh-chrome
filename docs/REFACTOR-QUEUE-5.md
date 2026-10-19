@@ -5,7 +5,7 @@
 
 ## 队列
 
-- [ ] Q23 拆出 media 工具
+- [x] Q23 拆出 media 工具
   - 新建 `src/tools-media.js`，迁移 `chrome_screenshot`、`chrome_download`、`chrome_pdf`、`chrome_shots`、`chrome_frames`；
   - attachments/assets/bridge 依赖显式注入；全量测试。
 - [ ] Q24 拆出 misc 工具
