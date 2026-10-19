@@ -11,6 +11,10 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.5] - 2026-10-19
+
+- 新增 docs/CODEX-TASK-STRUCTURE-REVIEW.md：可直接交给 Codex 的结构审查任务书
+
 ## [0.2.4] - 2026-10-19
 
 - popup 的 Auto-update 改名为 Dev reload，避免和 provider 发布更新混淆
