@@ -89,6 +89,7 @@ export function createStatusTools({ bridge, assets, update = null, currentSite, 
           items: { type: 'object', additionalProperties: true },
         },
         error: { type: 'string' },
+        bridgeError: { type: 'string' },
       }),
       render: (_args, value) => {
         const lines = [
@@ -104,6 +105,7 @@ export function createStatusTools({ bridge, assets, update = null, currentSite, 
           `extension id: ${value.extensionId ?? 'unknown'}`,
           `disk version: ${value.diskVersion ?? 'unknown'}  auto-reload: ${value.autoReload ? 'on' : 'off'}`,
           `provider: ${value.providerVersion ?? 'unknown'}  last reload: ${value.updateState?.lastReloadRequestedAt ?? 'never'}`,
+          ...(value.bridgeError ? [`bridge error: ${value.bridgeError}`] : []),
           ...(value.pluginUpdate?.enabled
             ? [`plugin update: current ${value.pluginUpdate.current || '?'}  latest ${value.pluginUpdate.latest || '?'}  ${value.pluginUpdate.available ? 'AVAILABLE' : 'up to date'}${value.pluginUpdate.error ? `  (check failed: ${value.pluginUpdate.error})` : ''}`]
             : []),
@@ -135,6 +137,7 @@ export function createStatusTools({ bridge, assets, update = null, currentSite, 
         backend: bridge.backend || 'desktop',
         headless: typeof bridge.headlessInfo === 'function' ? bridge.headlessInfo() : null,
         provider: 'chrome-extension',
+        bridgeError: bridge.lastError ? String(bridge.lastError.message || bridge.lastError) : null,
         protocol: 1,
         hostVersion: bridge.hostVersion,
         extensionVersion: bridge.extensionVersion,

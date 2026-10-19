@@ -11,6 +11,11 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.16] - 2026-10-19
+
+- Windows bridge 改用命名管道（node:net 不支持普通文件路径），修复 Windows 永远 bridge.json 缺失/NOT_CONNECTED
+- chrome_status 暴露最近一次 bridge 启动错误
+
 ## [0.2.15] - 2026-10-19
 
 - 隐私：chrome_type 结果去值、headless 选区/viewer type 回包脱敏、capture pwd/otp/cvv/fragment 补齐、verify steps 日志脱敏

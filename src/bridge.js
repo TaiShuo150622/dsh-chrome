@@ -8,7 +8,7 @@
 import net from 'node:net'
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
 export const PROTOCOL_VERSION = 1
 const HELLO_TIMEOUT_MS = 5000
@@ -29,11 +29,28 @@ function sameToken(left, right) {
   return timingSafeEqual(a, b)
 }
 
+/**
+ * Windows has no UNIX-domain sockets: Node's `listen()` only accepts a named
+ * pipe (`\\.\pipe\<name>`). The host reads `bridge.json` and connects to
+ * whatever path is recorded there, so the provider can choose per platform.
+ * Include the PID so a stale pipe from a crashed provider cannot collide.
+ */
+export function bridgeSocketPath({ home, platform = process.platform, pid = process.pid } = {}) {
+  if (platform === 'win32') {
+    const hash = createHash('sha256').update(String(home).toLowerCase()).digest('hex').slice(0, 16)
+    return `\\\\.\\pipe\\dsh-chrome-${hash}-${pid}`
+  }
+  return path.join(String(home), 'cache', 'dsh-chrome', 'bridge.sock')
+}
+
 export class BridgeServer {
-  constructor({ home }) {
+  constructor({ home, platform = process.platform, pid = process.pid } = {}) {
     this.home = home
+    this.platform = platform
+    this.pid = pid
     this.dir = path.join(home, 'cache', 'dsh-chrome')
-    this.socketPath = path.join(this.dir, 'bridge.sock')
+    this.socketPath = bridgeSocketPath({ home, platform, pid })
+    this.lastError = null
     this.discoveryPath = path.join(this.dir, 'bridge.json')
     this.token = randomBytes(32).toString('hex')
     this.server = null
@@ -55,10 +72,12 @@ export class BridgeServer {
 
   async start() {
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 })
-    try {
-      fs.unlinkSync(this.socketPath)
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error
+    if (this.platform !== 'win32') {
+      try {
+        fs.unlinkSync(this.socketPath)
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error
+      }
     }
     const server = net.createServer((socket) => this.#accept(socket))
     this.server = server
@@ -69,7 +88,8 @@ export class BridgeServer {
         resolve()
       })
     })
-    fs.chmodSync(this.socketPath, 0o600)
+    if (this.platform !== 'win32') fs.chmodSync(this.socketPath, 0o600)
+    this.lastError = null
     fs.writeFileSync(
       this.discoveryPath,
       JSON.stringify(
@@ -270,7 +290,8 @@ export class BridgeServer {
       this.server = null
       await new Promise((resolve) => server.close(() => resolve()))
     }
-    for (const file of [this.discoveryPath, this.socketPath]) {
+    const files = this.platform === 'win32' ? [this.discoveryPath] : [this.discoveryPath, this.socketPath]
+    for (const file of files) {
       try {
         fs.unlinkSync(file)
       } catch {
