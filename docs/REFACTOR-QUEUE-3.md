@@ -5,7 +5,7 @@
 
 ## 队列
 
-- [ ] Q13 拆出 navigation 工具
+- [x] Q13 拆出 navigation 工具
   - 新建 `src/tools-navigation.js`，迁移 `chrome_goto`、`chrome_history`、`chrome_tabs`、`chrome_close_session`；
   - 工厂只注入实际依赖（bridge/call、guard、ownerOf、sessionLabel、URL 校验、renderText、outputSchema、leases）；
   - 保留 tab/owner/lease 语义；全量测试。
