@@ -17,6 +17,7 @@
 - `chrome_memory_stats`：Node RSS/heap/external/arrayBuffers、对象计数、Chrome 进程树 RSS；
 - 持续采样 ring/JSONL（0600、轮转、2 天）+ alerts（RSS 增长、capture body、pending、tabs/bySession 不一致、孤儿 PID）；
 - 固定 soak：`npm run soak` / `npm run soak:real`；1 轮真实 macOS 结果：Node RSS peak 70.2MiB，Chrome peak 1.66GiB/12 proc，retained +13.48MiB，after-first-round 0，PASS。
+- 20 轮真实基线（Observability 线）：20/20 PASS、0 不变量失败、158.7s；Chrome 峰值 1944MiB/15 进程，每轮关闭后进程树归零；Node heapUsed 排除首轮 +1.8MiB，fake 对照 +0.36MiB，列为候选点而非已确认泄漏。详见 `docs/MEMORY-SOAK.md`。
 
 ## 平台/协议
 

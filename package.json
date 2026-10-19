@@ -52,6 +52,7 @@
     "usage": "node scripts/tool-usage.mjs",
     "test:soak-logic": "node tests/soak/soak-logic.mjs",
     "soak": "node benchmarks/soak.mjs",
-    "soak:real": "node benchmarks/soak.mjs --real"
+    "soak:real": "node benchmarks/soak.mjs --real",
+    "test:soak-real": "node tests/soak/soak-real.mjs"
   }
 }

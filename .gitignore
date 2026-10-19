@@ -6,3 +6,7 @@ coverage/
 *.log
 .DS_Store
 .dsh-local/
+
+# benchmark helper code lives in benchmarks/lib (keep tracked)
+!benchmarks/lib/
+!benchmarks/lib/**

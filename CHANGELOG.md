@@ -17,6 +17,7 @@
 - 内存监控：chrome_memory_stats 快照、持续 ring/JSONL/alerts、Chrome 进程树 RSS、20 轮 soak
 - 团队执行：Headless/Extension/Observability/Platform 四条线合并；bridge 协议版本协商/有界重试；Windows host 版本注入
 - 1 轮真实 soak PASS：Node RSS peak 70.2MiB、Chrome peak 1.66GiB/12proc、retained +13.48MiB、after-first-round 0
+- 20 轮真实 soak 基线：20/20 PASS、0 不变量失败、158.7s；Chrome peak 1944MiB/15proc；Node 首轮后 heapUsed +1.8MiB（候选点）
 
 ## [0.2.21] - 2026-10-19
 
