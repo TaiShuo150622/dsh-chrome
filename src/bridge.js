@@ -209,6 +209,17 @@ export class BridgeServer {
     })
   }
 
+  /** Send an unsolicited provider -> extension event frame (host relays it). */
+  emit(event, params = {}) {
+    if (!this.connected || !this.socket) return false
+    try {
+      this.socket.write(`${JSON.stringify({ event, params })}\n`)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   async stop() {
     if (this.pingTimer) {
       clearInterval(this.pingTimer)
