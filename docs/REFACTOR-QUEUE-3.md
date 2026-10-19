@@ -12,7 +12,7 @@
 - [x] Q14 拆出 capture 工具
   - 新建 `src/tools-capture.js`，迁移 `chrome_capture_start`、`chrome_capture_stop`、`chrome_capture_requests`；
   - 硬确认/approval/错误码语义不变；全量测试。
-- [ ] Q15 拆出只读页面工具
+- [x] Q15 拆出只读页面工具
   - 新建 `src/tools-read.js`，优先迁移 `chrome_snapshot`、`chrome_get_text`、`chrome_find`、`chrome_wait`、`chrome_html`、`chrome_console`、`chrome_network`；
   - schema/render/文本预算不变；全量测试。
 - [ ] Q16 runtime 继续收拢
