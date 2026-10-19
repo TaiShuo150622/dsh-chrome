@@ -79,3 +79,49 @@ status = await checker.check()
 assert.equal(status.autoInstallResult.installed, true)
 assert.deepEqual(fs.readFileSync(path.join(installRoot, 'cache', 'dsh-chrome', 'host', 'dsh-chrome-host.exe')), hostBytes)
 console.log('UPDATE TEST: PASS')
+
+// macOS/Linux: stage plugin tgz + extension zip (no native host exe)
+const stageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-update-stage-'))
+const pkgBytes = Buffer.from('fake-plugin-tgz')
+const extBytes = Buffer.from('fake-extension-zip')
+const pkgSha = crypto.createHash('sha256').update(pkgBytes).digest('hex')
+function makeStageFetch() {
+  return async (url) => {
+    if (String(url).includes('/releases')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return [{
+            tag_name: 'v0.4.0',
+            draft: false,
+            prerelease: false,
+            html_url: 'https://example.test/v0.4.0',
+            assets: [
+              { name: 'dsh-desktop-chrome-0.4.0.tgz', browser_download_url: 'https://example.test/dsh-desktop-chrome-0.4.0.tgz' },
+              { name: 'dsh-desktop-chrome-0.4.0.tgz.sha256', browser_download_url: 'https://example.test/dsh-desktop-chrome-0.4.0.tgz.sha256' },
+              { name: 'dsh-chrome-extension-0.4.0.zip', browser_download_url: 'https://example.test/dsh-chrome-extension-0.4.0.zip' },
+            ],
+          }]
+        },
+      }
+    }
+    if (String(url).endsWith('.tgz.sha256')) return { ok: true, status: 200, async text() { return `${pkgSha}  dsh-desktop-chrome-0.4.0.tgz` } }
+    if (String(url).endsWith('.tgz')) return { ok: true, status: 200, async arrayBuffer() { return pkgBytes } }
+    if (String(url).endsWith('.zip')) return { ok: true, status: 200, async arrayBuffer() { return extBytes } }
+    return { ok: false, status: 404 }
+  }
+}
+const stageChecker = new UpdateChecker({
+  home: stageRoot,
+  currentVersion: '0.2.1',
+  platform: 'darwin',
+  config: { enabled: true, autoInstall: true },
+  fetchImpl: makeStageFetch(),
+})
+const stageStatus = await stageChecker.check()
+assert.equal(stageStatus.autoInstallResult.staged, true)
+assert.equal(stageStatus.autoInstallResult.installed, false)
+assert.ok(fs.existsSync(stageStatus.autoInstallResult.packagePath))
+assert.ok(fs.existsSync(stageStatus.autoInstallResult.extensionPath))
+assert.deepEqual(fs.readFileSync(stageStatus.autoInstallResult.packagePath), pkgBytes)

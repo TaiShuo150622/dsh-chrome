@@ -84,7 +84,7 @@ npm run watch:update: 打印 diskVersion/watcher/lastCheckedAt/lastChangeAt/last
 
 - `enabled`：启动 3 秒后检查一次，之后按小时检查；结果写 `~/.dsh/cache/dsh-chrome/update.json`；
 - `channel`：`stable` 忽略 prerelease；`preview` 包含预览版；
-- `autoInstall`：仅 Windows 自动下载 `dsh-chrome-host-win32-x64.exe`、校验 SHA-256、替换 cache 中的 host exe；**DSH 插件本体仍通过 DSH 插件管理器更新**；
+- `autoInstall`：Windows 自动下载 `dsh-chrome-host-win32-x64.exe`、校验 SHA-256、替换 cache 中的 host exe；macOS/Linux 下载对应 `.tgz`/extension `.zip` 到 `~/.dsh/cache/dsh-chrome/downloads/update-<version>/` 并写入状态，**不热替换正在运行的插件/扩展**；DSH 插件本体仍通过 DSH 插件管理器更新；
 - Chrome 未打包扩展不能自更新；扩展更新仍需重新加载/重新安装；
 - 不开启时 provider 不发起更新请求。
 

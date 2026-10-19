@@ -11,6 +11,11 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.19] - 2026-10-19
+
+- 自动更新跨平台：Windows host 热替换；macOS/Linux 下载 tgz+extension zip 到 cache/downloads（不热替换）
+- 设置 autoInstall 描述与文档同步
+
 ## [0.2.18] - 2026-10-19
 
 - 插件设置 MVP：DSH Config schema + 安全可选字段 + 文件配置优先级

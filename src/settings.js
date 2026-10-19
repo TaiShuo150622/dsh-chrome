@@ -67,7 +67,7 @@ export const SETTING_SPECS = Object.freeze({
     type: 'boolean',
     default: false,
     volatile: false,
-    description: '危险：仅 Windows host 在发现新版本时自动替换 exe；默认关闭，需要重载 provider。',
+    description: '发现新版本时：Windows 自动替换 host exe；macOS/Linux 下载插件+扩展到缓存（不热替换）。默认关闭，需要重载 provider。',
   }),
   'update.checkIntervalHours': Object.freeze({
     type: 'integer',

@@ -13,7 +13,7 @@
  * update-host.js. UpdateChecker only orchestrates the check/install lifecycle.
  */
 import { compareVersions, fetchWithTimeout, parseVersion, pickRelease, releasesUrl } from './update-release.js'
-import { installHost } from './update-host.js'
+import { installUpdate } from './update-host.js'
 import { loadState, saveState } from './update-state.js'
 
 export { parseVersion, compareVersions } from './update-release.js'
@@ -96,7 +96,7 @@ export class UpdateChecker {
       this.state.available = available
       this.state.releaseUrl = picked.release.html_url || null
       if (available && this.config.autoInstall === true) {
-        this.state.autoInstallResult = await installHost({
+        this.state.autoInstallResult = await installUpdate({
           home: this.home,
           platform: this.platform,
           fetchImpl: this.fetchImpl,

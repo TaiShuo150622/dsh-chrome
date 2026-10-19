@@ -33,8 +33,11 @@ async function fetchWithTimeout(fetchImpl, url, options = {}) {
   }
 }
 
-async function readSha(fetchImpl, release) {
-  const asset = (release.assets || []).find((item) => /\.sha256$/i.test(String(item.name || '')))
+async function readSha(fetchImpl, release, targetName = null) {
+  const assets = (release.assets || []).filter((item) => /\.sha256$/i.test(String(item.name || '')))
+  const asset = targetName
+    ? assets.find((item) => String(item.name || '').replace(/\.sha256$/i, '') === String(targetName))
+    : assets[0]
   if (!asset?.browser_download_url) return null
   const response = await fetchWithTimeout(fetchImpl, asset.browser_download_url, { headers: { 'user-agent': 'dsh-chrome-update' } })
   if (!response.ok) return null
