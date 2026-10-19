@@ -844,6 +844,8 @@ export async function runSoak(options = {}) {
     summary,
     artifacts: { json: null, markdown: null },
   }
+  const failed = report.summary.failedRounds > 0 || report.summary.invariantFailures.length > 0
+  if (strict && failed) report.strictFailure = true
   let jsonPath = null
   let markdownPath = null
   if (options.outDir) {
@@ -851,7 +853,5 @@ export async function runSoak(options = {}) {
     jsonPath = written.jsonPath
     markdownPath = written.markdownPath
   }
-  const failed = report.summary.failedRounds > 0 || report.summary.invariantFailures.length > 0
-  if (strict && failed) report.strictFailure = true
   return { report, jsonPath, markdownPath, home, fakeDrivers }
 }

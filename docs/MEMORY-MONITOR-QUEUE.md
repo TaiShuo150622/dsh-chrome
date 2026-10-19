@@ -21,6 +21,12 @@
   - 新增 `src/process-tree.js`：按 chromePid 递归读取子进程 RSS（mac/linux `ps`；Windows 返回 unsupported 或 PowerShell fallback），注入 exec 供测试。
   - `HeadlessDriver.memoryStats()` 增加 chromeRss/processCount（best-effort，失败 null，不阻塞工具）。
   - 测试 fake ps 输出、pid 关闭、Windows unsupported；`chrome_memory_stats` 返回 chrome 侧字段。
+- [x] M9 固定内存压测 `benchmarks/soak.mjs`
+  - 固定 workload：20 轮 ×（1 context、4 tabs、每 tab goto+snapshot+screenshot、capture/screencast 各 10 次启停、关闭 tab/context、等待）；默认输出 JSON+Markdown。
+  - 记录 Node rss/heapUsed/heapTotal/external/arrayBuffers、Chrome 进程树 rss/processCount、对象计数（tabs/bySession/owners/captures/captureBodyBytes/pending/downloadByGuid 等）、每轮 peak/after-close baseline/retainedAfterRun。
+  - 不变量：关闭后 driver map/timer 归零、chromePid 消失、capture body stop 即释放、动作计数完整；CLI strict 失败退出 1。
+  - `tests/soak/soak-logic.mjs`（fake 注入 tab/capture/Chrome 不退三类故障）、`tests/soak/soak-real.mjs`（真实 1 轮）；不改 `package.json`，命令见 `benchmarks/README.md`。
+  - 基线/发现/噪声：`docs/MEMORY-SOAK.md`；20 轮真实基线 0 失败，Node heapUsed 首轮后 +1.8 MiB（fake 对照 +0.4 MiB）列为候选点。
 
 ## 完成后
 
