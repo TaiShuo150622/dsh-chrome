@@ -7,72 +7,16 @@
  * `update.autoInstall` on a Windows host — replaces the native host exe with
  * the release asset after SHA-256 verification. The DSH plugin code itself is
  * updated through DSH's plugin manager, not by this module.
+ *
+ * Q29: release parsing/version comparison live in update-release.js, the state
+ * file paths and persistence in update-state.js, and the Windows host install in
+ * update-host.js. UpdateChecker only orchestrates the check/install lifecycle.
  */
-import crypto from 'node:crypto'
-import fs from 'node:fs'
-import fsp from 'node:fs/promises'
-import path from 'node:path'
+import { compareVersions, fetchWithTimeout, parseVersion, pickRelease, releasesUrl } from './update-release.js'
+import { installHost } from './update-host.js'
+import { loadState, saveState } from './update-state.js'
 
-const RELEASES_URL = 'https://api.github.com/repos'
-const CHECK_TIMEOUT_MS = 15_000
-
-export function parseVersion(value) {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(String(value || '').trim())
-  if (!match) return null
-  return [Number(match[1]), Number(match[2]), Number(match[3])]
-}
-
-export function compareVersions(a, b) {
-  const left = Array.isArray(a) ? a : parseVersion(a)
-  const right = Array.isArray(b) ? b : parseVersion(b)
-  if (!left || !right) return 0
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] < right[index] ? -1 : 1
-  }
-  return 0
-}
-
-function cacheDir(home) {
-  return path.join(home, 'cache', 'dsh-chrome')
-}
-
-function statePath(home) {
-  return path.join(cacheDir(home), 'update.json')
-}
-
-function hostPath(home) {
-  return path.join(cacheDir(home), 'host', 'dsh-chrome-host.exe')
-}
-
-async function fetchWithTimeout(fetchImpl, url, options = {}) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS)
-  try {
-    return await fetchImpl(url, { ...options, signal: controller.signal })
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-async function readSha(fetchImpl, release) {
-  const asset = (release.assets || []).find((item) => /\.sha256$/i.test(String(item.name || '')))
-  if (!asset?.browser_download_url) return null
-  const response = await fetchWithTimeout(fetchImpl, asset.browser_download_url, { headers: { 'user-agent': 'dsh-chrome-update' } })
-  if (!response.ok) return null
-  const body = await response.text()
-  const match = /([a-f0-9]{64})/i.exec(body)
-  return match ? match[1].toLowerCase() : null
-}
-
-function pickRelease(releases, channel) {
-  const candidates = (Array.isArray(releases) ? releases : [])
-    .filter((release) => release && !release.draft)
-    .filter((release) => channel === 'preview' || !release.prerelease)
-    .map((release) => ({ release, version: parseVersion(release.tag_name) }))
-    .filter((item) => item.version)
-    .sort((a, b) => compareVersions(b.version, a.version))
-  return candidates[0] || null
-}
+export { parseVersion, compareVersions } from './update-release.js'
 
 export class UpdateChecker {
   constructor({ home, currentVersion, config, fetchImpl = globalThis.fetch, logger = null, platform = process.platform, now = Date.now } = {}) {
@@ -85,39 +29,24 @@ export class UpdateChecker {
     this.now = now
     this.timer = null
     this.running = null
-    this.state = {
-      enabled: Boolean(this.config.enabled),
-      autoInstall: Boolean(this.config.autoInstall),
-      channel: this.config.channel || 'stable',
-      current: this.currentVersion,
-      latest: null,
-      available: false,
-      checkedAt: null,
-      error: null,
-      autoInstallResult: null,
-      releaseUrl: null,
-    }
-    this.#restore()
-  }
-
-  #restore() {
-    try {
-      const saved = JSON.parse(fs.readFileSync(statePath(this.home), 'utf8'))
-      if (saved && typeof saved === 'object') this.state = { ...this.state, ...saved, current: this.currentVersion }
-    } catch {
-      // no state yet
-    }
+    this.state = loadState(
+      this.home,
+      {
+        enabled: Boolean(this.config.enabled),
+        autoInstall: Boolean(this.config.autoInstall),
+        channel: this.config.channel || 'stable',
+        current: this.currentVersion,
+        latest: null,
+        available: false,
+        checkedAt: null,
+        error: null,
+        autoInstallResult: null,
+        releaseUrl: null,
+      },
+      this.currentVersion,
+    )
     this.state.enabled = Boolean(this.config.enabled)
     this.state.autoInstall = Boolean(this.config.autoInstall)
-  }
-
-  #persist() {
-    try {
-      fs.mkdirSync(cacheDir(this.home), { recursive: true, mode: 0o700 })
-      fs.writeFileSync(statePath(this.home), `${JSON.stringify(this.state, null, 2)}\n`, { mode: 0o600 })
-    } catch (error) {
-      this.logger?.warn?.('dsh-chrome: update state write failed: %s', error?.message || String(error))
-    }
   }
 
   status() {
@@ -149,7 +78,7 @@ export class UpdateChecker {
     const repo = this.config.repository || 'TaiShuo150622/dsh-chrome'
     const headers = { accept: 'application/vnd.github+json', 'user-agent': 'dsh-chrome-update' }
     try {
-      const response = await fetchWithTimeout(this.fetchImpl, `${RELEASES_URL}/${repo}/releases?per_page=20`, { headers })
+      const response = await fetchWithTimeout(this.fetchImpl, releasesUrl(repo), { headers })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const releases = await response.json()
       const picked = pickRelease(releases, this.state.channel)
@@ -159,7 +88,7 @@ export class UpdateChecker {
         this.state.latest = null
         this.state.available = false
         this.state.releaseUrl = null
-        this.#persist()
+        saveState(this.home, this.state, this.logger)
         return this.status()
       }
       const available = compareVersions(picked.version, parseVersion(this.currentVersion) || [0, 0, 0]) > 0
@@ -167,40 +96,22 @@ export class UpdateChecker {
       this.state.available = available
       this.state.releaseUrl = picked.release.html_url || null
       if (available && this.config.autoInstall === true) {
-        this.state.autoInstallResult = await this.#installHost(picked.release)
+        this.state.autoInstallResult = await installHost({
+          home: this.home,
+          platform: this.platform,
+          fetchImpl: this.fetchImpl,
+          release: picked.release,
+        })
       }
-      this.#persist()
+      saveState(this.home, this.state, this.logger)
       if (available) this.logger?.info?.('dsh-chrome: update available: %s -> %s', this.currentVersion, this.state.latest)
       return this.status()
     } catch (error) {
       this.state.error = String(error?.message || error)
       this.state.checkedAt = new Date(this.now()).toISOString()
-      this.#persist()
+      saveState(this.home, this.state, this.logger)
       this.logger?.warn?.('dsh-chrome: update check failed: %s', this.state.error)
       return this.status()
-    }
-  }
-
-  async #installHost(release) {
-    if (this.platform !== 'win32') return { installed: false, reason: 'host-auto-install is Windows-only' }
-    const asset = (release.assets || []).find((item) => String(item.name || '') === 'dsh-chrome-host-win32-x64.exe')
-    if (!asset?.browser_download_url) return { installed: false, reason: 'host asset not found' }
-    try {
-      const expected = await readSha(this.fetchImpl, release)
-      if (!expected) return { installed: false, reason: 'sha256 asset not found' }
-      const response = await fetchWithTimeout(this.fetchImpl, asset.browser_download_url, { headers: { 'user-agent': 'dsh-chrome-update' } })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const data = Buffer.from(await response.arrayBuffer())
-      const actual = crypto.createHash('sha256').update(data).digest('hex')
-      if (actual !== expected) return { installed: false, reason: 'sha256 mismatch' }
-      const target = hostPath(this.home)
-      await fsp.mkdir(path.dirname(target), { recursive: true, mode: 0o700 })
-      const tmp = `${target}.new-${process.pid}`
-      await fsp.writeFile(tmp, data, { mode: 0o755 })
-      await fsp.rename(tmp, target)
-      return { installed: true, path: target, version: parseVersion(release.tag_name)?.join('.') || null }
-    } catch (error) {
-      return { installed: false, reason: String(error?.message || error) }
     }
   }
 }

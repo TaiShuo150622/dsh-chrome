@@ -14,7 +14,7 @@
 - [x] Q28 context-viewer 内部拆分
   - 拆为 `viewer-auth` / `viewer-input` / `viewer-html` 等（按实际依赖），`context-viewer.js` 只做注册/编排；
   - token/access/loopback/输入语义不变；更新 `test/context-viewer.mjs`；全量测试。
-- [ ] Q29 update 内部拆分
+- [x] Q29 update 内部拆分
   - 拆为 release-source / state / host-installer 等；`UpdateChecker` 只做编排；
   - release 解析/版本比较/SHA 校验/写盘行为不变；全量测试。
 - [ ] Q30 tools.js 组装层收尾
