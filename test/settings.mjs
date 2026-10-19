@@ -189,8 +189,9 @@ try {
   assert.equal(providerName, 'dsh-chrome')
   assert.equal(typeof providerApply, 'function')
 
-  // Copied from DSH 0.2.15 `isNativeConfigSchema`; the Loader and the
-  // Config.listConfigs inspect provider both gate on this predicate.
+  // Copied from the installed DSH desktop runtime 0.2.1-rc.2
+  // `isNativeConfigSchema`; the Loader and the Config.listConfigs inspect
+  // provider both gate on this predicate.
   const isNativeConfigSchema = (value) => {
     if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return false
     const meta = Reflect.get(value, 'meta')

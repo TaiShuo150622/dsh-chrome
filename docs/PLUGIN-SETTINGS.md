@@ -6,7 +6,7 @@
 >
 > 已落地（本地）：`src/settings.js` 字段表、`src/config-schema.js` 的 `Config`（4 个 volatile 字段）、`index.js` 导出 `Config` / 读取 `configEditor` override / 监听 `loader/volatile-update`、project 级危险键过滤、`contexts` 与 `ArtifactStore` 的实时读取；`test/settings.mjs` 覆盖 schema、合并与危险键。`npm test` 全绿。
 >
-> 另用本机 DSH 0.2.15 自带的 `@deepseek-ai/schemastery` 3.18.5 离线重建过 `Config.toJSON()` 并跑通 `volatileForm` / `resolveConfig`，但**没有**在运行中的 DSH 里安装过本分支。
+> 另用本机安装的 DSH desktop runtime 0.2.1-rc.2 自带的 `@deepseek-ai/schemastery` 3.18.5 离线重建过 `Config.toJSON()` 并跑通 `volatileForm` / `resolveConfig`，但**没有**在运行中的 DSH 里安装过本分支。
 >
 > **未验证**：真实 DSH 安装中的 Plugins 自动页是否出现并可写、`Config.listConfigs` 的 JSON Schema 投影、profile patch 写入与 `loader/volatile-update` 的时序；`chrome_config` 仍未改。发布前按 §6.5 手工验收逐条走一遍。
 
