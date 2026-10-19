@@ -21,7 +21,7 @@
 - **审批 fail-closed**：approval/agent/site 缺失 → `APPROVAL_DENIED` + denied 审计。
 - **本机文件边界**：`chrome_upload` 硬确认 + cwd/`DSH_CHROME_UPLOAD_ROOTS` 白名单；provider/headless/extension 只允许 http(s)/about:blank。
 - **部分跨会话隔离**：screencast 帧带 owner、截图 owner 表、claim 拒绝他人 tab、带 label 的组标题加 owner 短 id。
-- 残留：页内导航后的读取、downloads/audit 全机、旧截图无 owner、capture/screencast 计时器不 detach、headless CDP 无超时等，见 `docs/SECURITY-FIXES.md` 与 `docs/RISK-REVIEW.md`。
+- 残留：页内导航后的读取、downloads/audit 全机、旧截图无 owner、capture/screencast 计时器不 detach、headless CDP 无超时等，见 `内部安全记录` 与 `内部风险记录`。
 
 ## 测试
 
@@ -29,7 +29,7 @@
 
 ## 公开仓库
 
-仍未公开：见 `docs/PUBLIC-RELEASE-CHECKLIST.md`。剩余阻断项：Windows 真机验证、敏感信息清理、GitHub Actions（含 windows-host）真实跑通。
+仍未公开：见 `内部发布清单`。剩余阻断项：Windows 真机验证、敏感信息清理、GitHub Actions（含 windows-host）真实跑通。
 
 ## 升级注意
 

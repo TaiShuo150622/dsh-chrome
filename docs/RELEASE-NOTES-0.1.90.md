@@ -16,4 +16,4 @@
 ## 其他
 
 - 私有仓库：<https://github.com/TaiShuo150622/dsh-chrome>（private）。
-- 公开前仍需：Windows 真机验证、敏感信息移出/历史清理、GitHub Actions 在公开仓库复核（见 `docs/PUBLIC-RELEASE-CHECKLIST.md`）。
+- 公开前仍需：Windows 真机验证、敏感信息移出/历史清理、GitHub Actions 在公开仓库复核（见 `内部发布清单`）。

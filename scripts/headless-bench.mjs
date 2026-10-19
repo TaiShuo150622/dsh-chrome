@@ -92,7 +92,7 @@
  * `--idle-seconds N` samples the Chrome process tree for N seconds after the
  * active loop and reports idle CPU percent / RSS / processes, so "what does the
  * browser cost while no tool call is in flight" is reproducible instead of hand
- * sampled with `ps` (docs/PERF-LOOP.md §5/§6). Chrome's own launch tail keeps a
+ * sampled with `ps` (内部性能记录 §5/§6). Chrome's own launch tail keeps a
  * short-lived process tree busy for tens of seconds after `ensureStarted`
  * (docs/HEADLESS.md §4.1.10), so an idle window that starts right after a short
  * run measures that tail; `--idle-settle-seconds N` waits N seconds first and
@@ -101,7 +101,7 @@
  * driver-level snapshot response size (`snapshot.bytesMean`/`bytesMax` at
  * `snapshot.maxChars`): the JSON a snapshot returns is the payload that crosses
  * CDP and reaches the model, so its bytes are the leading indicator for a text
- * budget regression (docs/PERF-LOOP.md §6). Bytes are measured after the timed
+ * budget regression (内部性能记录 §6). Bytes are measured after the timed
  * call, so they never inflate `perActionMs.snapshot`.
  */
 import { execSync } from 'node:child_process'

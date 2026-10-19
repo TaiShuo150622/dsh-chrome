@@ -20,7 +20,7 @@
  * Optional:
  *   DSH_HEADLESS_CHROME=/path/to/chrome node test/sandbox-smoke.mjs
  *
- * See docs/SANDBOX-QA.md for the matrix, findings and coverage limits.
+ * See 沙箱测试记录 for the matrix, findings and coverage limits.
  */
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -1220,7 +1220,7 @@ try {
   console.log('')
   console.log(`SANDBOX SMOKE: PASS (${checks} checks, ${tools.length} tools, ${knownGaps.length} recorded gap(s))`)
   if (knownGaps.length > 0) {
-    console.log('Known gaps (recorded in this run; see docs/SANDBOX-QA.md):')
+    console.log('Known gaps (recorded in this run; see 沙箱测试记录):')
     for (const item of knownGaps) console.log(`  - ${item.title}: ${item.detail}`)
   }
 } finally {

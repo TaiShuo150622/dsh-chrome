@@ -42,8 +42,8 @@ scripts/      文档生成与打包
 
 ## 工作记录
 
-每个阶段（P0/P1/P2…）在 `docs/records/` 落一份 record.md + log.md，格式见已有记录；写完跑：
+每个阶段（P0/P1/P2…）在 `内部记录 ` 落一份 record.md + log.md，格式见已有记录；写完跑：
 
 ```bash
-python ~/.dsh/skills/work-record/scripts/check_record.py docs/records/<id>/record.md --fix
+python ~/.dsh/skills/work-record/scripts/check_record.py 内部记录 <id>/record.md --fix
 ```

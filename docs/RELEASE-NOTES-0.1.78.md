@@ -1,7 +1,7 @@
 # 发布说明：0.1.78（批次 A–D 集成）
 
 > 日期：2026-10-17 · 扩展 0.1.78 · provider 0.1.73 · 工具面 37（`allowEvaluate` 开启后 38）
-> 记录：[A](records/2026-10-17-code-batch-a/record.md) · [B](records/2026-10-17-code-batch-b/record.md) · [C](records/2026-10-17-code-batch-c/record.md) · [D](records/2026-10-17-code-batch-d/record.md)
+> 记录：A（内部记录） · B（内部记录） · C（内部记录） · D（内部记录）
 
 ## 这一版带来了什么
 

@@ -5,7 +5,7 @@
 > 状态：**P1 真机可用（40 个工具；含后台 headless Chromium 同套工具面）**（2026-10-17）
 > 版本：扩展 **0.1.93** / provider **0.1.93**；`npm test` **27 个测试文件全过**；私有仓库 CI 绿。
 > 重点能力：桌面 Chrome 可见操作 + `backend:"headless"` 后台无窗口浏览器 + screencast 实时画面 viewer。
-> 待做与阻塞项：[docs/BACKLOG.md](docs/BACKLOG.md)；最新发布说明：[docs/RELEASE-NOTES-0.1.93.md](docs/RELEASE-NOTES-0.1.93.md)。
+> 最新发布说明：[docs/RELEASE-NOTES-0.1.93.md](docs/RELEASE-NOTES-0.1.93.md)；Windows 外部测试说明：[docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md](docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md)。
 
 Windows 预览包（需私有仓库权限）：[v0.1.93-win-preview.1](https://github.com/TaiShuo150622/dsh-chrome/releases/tag/v0.1.93-win-preview.1)。
 
@@ -69,10 +69,6 @@ Windows 预览包（需私有仓库权限）：[v0.1.93-win-preview.1](https://g
 - [设计文档：架构、协议、工具契约、安全模型、里程碑](docs/DESIGN.md)
 - [分阶段实施计划：个人用 → 开源 → 官方，核心工具 → 全工具](docs/ROADMAP.md)
 - [审批说明：什么动作会问人、你会看到什么、拒绝后怎样](docs/APPROVAL.md)
-- [P0 技术验证细化规格：检查点、文件清单、协议契约、验证矩阵](docs/M0.md)
-- [P1 阶段记录：实现、真机验收、通道排障与遗留债](docs/records/2026-10-17-code-p1-core-tools/record.md)
-- [P2 功能规划：竞品能力盘点与待办优先级](docs/P2-PLAN.md)
-- [能力差距与参考项目分析：需求、验收与公开项目借鉴](docs/GAP-ANALYSIS.md)
 - [安装指南（macOS 本地/开发者）](docs/INSTALL.md) · [工具参考（自动生成）](docs/TOOLS.md)
 - [用法示例：典型任务的工具序列](docs/EXAMPLES.md) · [FAQ](docs/FAQ.md)
 - [发布说明 0.1.93（浏览器侧边栏 v1 preview）](docs/RELEASE-NOTES-0.1.93.md)
@@ -82,7 +78,6 @@ Windows 预览包（需私有仓库权限）：[v0.1.93-win-preview.1](https://g
 - [发布说明 0.1.89（Windows host/沙箱 QA/安全收口）](docs/RELEASE-NOTES-0.1.89.md)
 - [发布说明 0.1.88（能力门控/操作记录/性能循环）](docs/RELEASE-NOTES-0.1.88.md)
 - [发布说明 0.1.79–0.1.87（P0/P1/后台浏览器）](docs/RELEASE-NOTES-0.1.87.md)
-- [待做 Backlog（含阻塞项）](docs/BACKLOG.md)
 - [后台浏览器（headless）设计与能力矩阵](docs/HEADLESS.md)
 - [Screencast / viewer spike 记录](docs/SCREENCAST-SPIKE.md)
 - [发布说明 0.1.78（批次 A–D）](docs/RELEASE-NOTES-0.1.78.md)

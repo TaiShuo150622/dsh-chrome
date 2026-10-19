@@ -4,7 +4,7 @@
 > 日期：2026-10-17
 > 目标运行时：DeepSeek Harness Desktop **0.2.1-rc.1**（Electron，profile `desktop`） / Google Chrome **155**（macOS 先行）
 > 文档性质：这是实施前的契约；工具名、配置字段、审批语义在 M0/M1 期间可小改，但架构方向以本文件为准。
-> 关联：[分阶段计划](ROADMAP.md) · [审批说明](APPROVAL.md) · [M0 清单](M0.md)
+> 关联：[分阶段计划](ROADMAP.md) · [审批说明](APPROVAL.md) · M0 清单（内部记录）
 
 ---
 
@@ -131,7 +131,7 @@ Native Host ──connect(socket) + hello{token,version}──▶ Provider Bridg
 - **重连**（P1/P2 实测结论）：
   - **host 常驻**：provider 的 socket 断开时 host 不退出，重读 `bridge.json` 按 0.5s→5s 退避重连；DSH 重启 / 插件重载对扩展透明。
   - **native port 由 offscreen 文档持有**（P2-1，扩展 0.1.13）：SW 被回收时端口会随之死亡，且从濒死上下文里 `connectNative` 拉起的 host 会被 Chrome 一并回收；offscreen 是普通扩展页、生命周期长于 SW，由它 `connectNative` 并负责断线重连（0.5s→5s 退避 + 10s 健康检查）。provider 请求经 host → offscreen → `runtime.sendMessage` → SW `handleRequest` 原路返回；SW 被回收时这条消息会把它唤醒。
-  - 保活策略（0.1.32 CPU 优化后，2026-10-18 收敛）：provider 心跳 20s 经 host 送到 SW（重置 SW 空闲计时）；SW 被回收时由单个 `dsh-chrome-reconnect` alarm（1min）唤醒并在模块启动时 `ensurePort()`；端口健康时该 alarm 不写 diag / 不碰 storage（实测空闲 0 写盘，`docs/PERF-LOOP.md` §5）。不再使用 page.js/offscreen 的 15s tick，也不再创建重复的 watchdog alarm。
+  - 保活策略（0.1.32 CPU 优化后，2026-10-18 收敛）：provider 心跳 20s 经 host 送到 SW（重置 SW 空闲计时）；SW 被回收时由单个 `dsh-chrome-reconnect` alarm（1min）唤醒并在模块启动时 `ensurePort()`；端口健康时该 alarm 不写 diag / 不碰 storage（实测空闲 0 写盘，`内部性能记录` §5）。不再使用 page.js/offscreen 的 15s tick，也不再创建重复的 watchdog alarm。
   - launcher 用**安装时写入的 DSH app 内 Electron-as-Node 绝对路径**，不依赖用户 shell 环境；系统 node（`/opt/homebrew/bin/node`）仅作兜底。
 - 选择理由：无端口冲突/发现；不暴露 loopback 端口；Chrome 按需拉起；与 Claude/Codex 同构（本机已有两份可参照的 host manifest）。
 

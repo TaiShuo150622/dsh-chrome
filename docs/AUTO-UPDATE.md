@@ -40,7 +40,7 @@ SW 比较磁盘版本与运行版本：不一致 → 再 reload（覆盖"host �
 | popup | Auto-update 行（on / reload pending / off）、Self-heal 次数 |
 | `~/.dsh/cache/dsh-chrome/update.log` | 文件变更与 reload 请求的时间线 |
 
-`update-state.json` 由 native host 维护：连接时、检测到版本/mtime 变化时、以及每 10 分钟的心跳（`DSH_UPDATE_STATE_HEARTBEAT_MS`，默认 600000）写盘（`manifestMtimeMs`、`lastCheckedAt`）；轮询发现无变化时不再每 60s 重写（实测空闲写盘 1.18 次/分 → 0，`docs/PERF-LOOP.md` §5）。fs.watch 事件与轮询兜底都会更新 `lastReloadRequestedAt`。
+`update-state.json` 由 native host 维护：连接时、检测到版本/mtime 变化时、以及每 10 分钟的心跳（`DSH_UPDATE_STATE_HEARTBEAT_MS`，默认 600000）写盘（`manifestMtimeMs`、`lastCheckedAt`）；轮询发现无变化时不再每 60s 重写（实测空闲写盘 1.18 次/分 → 0，`内部性能记录` §5）。fs.watch 事件与轮询兜底都会更新 `lastReloadRequestedAt`。
 
 ## 可见性
 

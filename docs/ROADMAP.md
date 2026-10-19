@@ -1,6 +1,6 @@
 # 分阶段实施计划：从个人用到官方
 
-> 日期：2026-10-17　关联：[设计文档](DESIGN.md) · [审批说明](APPROVAL.md) · [M0 清单](M0.md)
+> 日期：2026-10-17　关联：[设计文档](DESIGN.md) · [审批说明](APPROVAL.md) · M0 清单（内部记录）
 > 原则：**阶段门不过不进入下一阶段**；工具从核心到全量；分发从本地到官方；平台第一期只承诺这台 Mac。
 
 ## 1. 两条推进线
@@ -67,8 +67,8 @@
 ### P0 技术验证（这台 Mac，0.5–1 天）
 
 - **范围**：空壳 bundle + 最小扩展 + native host + UNIX socket；4 个工具；截图进附件。
-- **只验证假设**（见 [M0.md](M0.md)）：装得上、provider 注册、原生消息连通、快照/ref、图片回传。
-- **交付物**：可安装的 spike 分支 + `docs/M0.md` 结果记录 + 手动步骤说明。
+- **只验证假设**（见 M0.md（内部记录））：装得上、provider 注册、原生消息连通、快照/ref、图片回传。
+- **交付物**：可安装的 spike 分支 + `内部验证记录` 结果记录 + 手动步骤说明。
 - **Gate**：5 项全过；任一失败先在 M0 内换替代（回环 WS / vendor provider 包 / 附件管线降级），不带着疑点进 P1。
 - **平台边界**：仅 macOS + 本机 Chrome 155 + DSH 0.2.1-rc.1。
 
@@ -85,7 +85,7 @@
   4. 审批卡在 DSH GUI 正常出现、拒绝路径正确；
   5. 卸载/重装不残留（native manifest、host、标签组）。
 
-#### P1 实施结果（2026-10-17，记录见 [records/2026-10-17-code-p1-core-tools](records/2026-10-17-code-p1-core-tools/record.md)）
+#### P1 实施结果（2026-10-17，记录见 records/2026-10-17-code-p1-core-tools（内部记录））
 
 - **已完成**：12 个 `chrome_*` 工具；会话标签组与 owner 隔离；follow-dsh 审批门（先读会话 sandbox 模式）；native host 常驻重连；工具层测试 3 条脚本（`npm test`）；真机全序列验收（状态/导航/快照/输入/点击/等待/滚动/截图/标签新开与关闭/历史/关会话）。
 - **关键实测结论**：后台且折叠标签组上，`executeScript` 与 content-script 消息都会无限挂起；页面动作最终固定走 CDP `Runtime.evaluate`（与截图同通道）。详见 [DESIGN 4.2.1](DESIGN.md)。
@@ -96,7 +96,7 @@
 
 - **目标**：能力上不再需要 Claude/Codex 作为替代；处理复杂任务。
 - **前置（P2-1 稳定性，先于广度）**：扩展自动重连（免人工 ⟳）、CDP 首次动作超时自动重试、`chrome_tabs new` 后台打开、扩展版本/死代码清理、V9/V10（DSH 重启/关闭）验证。
-- **P2 规划文档**：[docs/P2-PLAN.md](P2-PLAN.md)。2026-10-17 探索周期后工具面达到 **25 个**（含 pdf/drag/emulate/storage/a11y），见 [P2 探索记录](records/2026-10-17-code-p2-explore/record.md)。
+- **P2 规划文档**：内部 P2 规划（内部记录）。2026-10-17 探索周期后工具面达到 **25 个**（含 pdf/drag/emulate/storage/a11y），见 P2 探索记录（内部记录）。
 - **范围**：全工具矩阵（约 24 个工具），重点：
   - 调试与数据：`chrome_console` / `chrome_network` / `chrome_html` / `chrome_a11y` / `chrome_find` / `chrome_get_text`；
   - 账号与文件：`chrome_upload` / `chrome_download` / `chrome_dialog` / `chrome_select` / `chrome_evaluate`（默认关）；

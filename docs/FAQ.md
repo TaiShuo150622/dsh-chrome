@@ -23,7 +23,7 @@
 - 嵌在 DSH Desktop 里，由模型通过工具调用驱动，不是 Chrome 侧边栏聊天；
 - 每个 DSH 会话独立标签组与所有权，多会话互不干扰；
 - 全部本机通信，开源（MIT）；
-- 已有虚拟光标、find/get_text/console/network/upload/download/claim/dialog 等能力（对齐见 `docs/P2-PLAN.md`）。
+- 已有虚拟光标、find/get_text/console/network/upload/download/claim/dialog 等能力（对齐见 `内部 P2 规划`）。
 
 ## 支持 Windows / Linux 吗？
 

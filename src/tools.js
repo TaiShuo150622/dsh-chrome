@@ -19,7 +19,7 @@ const MUTATION_TIMEOUT_MS = 45000
 
 // Page-text budget for chrome_snapshot. The snapshot exists for structure and
 // refs, not for dumping a whole page: measured on a page with ~100KB of visible
-// text (docs/PERF-LOOP.md §6), the old 100000-char default put 102.7KB on the
+// text (内部性能记录 §6), the old 100000-char default put 102.7KB on the
 // wire per call (≈26k tokens) and cost 3.41ms in the driver; 20000 chars is
 // 20.8KB / 1.32ms, and on a ~1MB-text page 5.86 -> 4.78ms. Two escapes cover
 // callers that need the rest: maxChars (up to 200000) and chrome_get_text.

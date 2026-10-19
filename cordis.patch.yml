@@ -4,7 +4,7 @@
 # by the desktop app (0.2.1-rc.1) and cannot be imported from a linked local
 # bundle without a resolvable @deepseek-ai/cordis copy. P0 registers its tools
 # directly and feature-detects ctx.browserUse; provider registration is retried
-# in P1 (see docs/M0.md).
+# in P1 (see 内部验证记录).
 - insert:
     - id: dsh-chrome
       name: 'dsh-desktop-chrome'

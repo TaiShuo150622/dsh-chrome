@@ -81,7 +81,7 @@ chrome_close_session {backend:"headless"}  → closed 1
 chrome_status                              → desktop 仍 CONNECTED；headless running Chrome/155
 ```
 
-证据截图：[headless-test-page.png](records/2026-10-17-code-headless/attachments/headless-test-page.png)（1440×813，headless 截图；桌面没有窗口）。
+证据截图：headless-test-page.png（内部记录）（1440×813，headless 截图；桌面没有窗口）。
 
 ## 2.2 一次性登录（持久 profile）
 
@@ -975,7 +975,7 @@ node test/headless.mjs && node test/bench-scenario.mjs
 
 - 不用「miss 后第二次等待减半」之类的重试窗：仍然会周期性白等，且无法区分「慢绘制」与「根本不会画」；退休 + 新帧到达即服务更简单，也更符合既有「窗口过期 = 没画」的断言。
 - 不让干净判定**无条件**退休（不检查标记是否已过窗）：那会把「刚刚发出、可能还在路上的绘制」的授予窗一起取消，等于缩短保守等待。
-- 没有处理 `drag`（28.5ms/次的同类缺口）与 `type` 同值重输，见 `docs/PERF-LOOP.md` §10 的下一步。
+- 没有处理 `drag`（28.5ms/次的同类缺口）与 `type` 同值重输，见 `内部性能记录` §10 的下一步。
 
 ### 4.1.15 2026-10-18 第十六轮：合成 drag 的重绘窗（Ralph 循环第 13 轮）
 

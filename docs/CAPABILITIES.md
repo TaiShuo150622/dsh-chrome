@@ -1,7 +1,7 @@
 # Backend 能力契约（capabilities）
 
 > 2026-10-17 · 基线 provider 0.1.87 / 扩展 0.1.86
-> 相关：`docs/ARCHITECTURE-PLATFORM.md` §1.1（目标抽象）、`docs/HEADLESS.md` §3（headless 暂不支持）、`docs/GAP-ANALYSIS.md` GAP-02（shadow DOM）
+> 相关：`docs/ARCHITECTURE-PLATFORM.md` §1.1（目标抽象）、`docs/HEADLESS.md` §3（headless 暂不支持）、内部 GAP 记录（shadow DOM）
 
 ## 0. 一句话
 
@@ -200,6 +200,6 @@ node test/p2-tools.mjs
 ## 6. 边界与已知差异
 
 - **capability 是契约，不是实现验收**：`supports()` 不逐工具验证；每个工具真正的落点仍看 `src/tools.js` / `src/headless.js`。
-- **headless 的 `shadow`**：桌面扩展有 `__dshDeep` 深查询（open shadow root），headless 的快照/查找目前仍走 `document.querySelectorAll`，不进入 shadow root（见 `docs/GAP-ANALYSIS.md` GAP-02）。契约按「headless 除 pick/pause 外大部分」声明为支持；在把 `shadow` 接进工具层门控之前，要么 headless 补 deep query，要么把 `shadow` 从 headless 集合移除——两者都只在 `src/capabilities.js` 改一行。
+- **headless 的 `shadow`**：桌面扩展有 `__dshDeep` 深查询（open shadow root），headless 的快照/查找目前仍走 `document.querySelectorAll`，不进入 shadow root（见 内部 GAP 记录）。契约按「headless 除 pick/pause 外大部分」声明为支持；在把 `shadow` 接进工具层门控之前，要么 headless 补 deep query，要么把 `shadow` 从 headless 集合移除——两者都只在 `src/capabilities.js` 改一行。
 - **provider 本地工具不受 backend 影响**：`chrome_status` / `chrome_config` / `chrome_policy` / `chrome_audit` / `chrome_shots` / `chrome_headless_login` 不走路由，不在能力矩阵里。
 - **未声明的 backend**：`remote-cloud` / `firefox-extension` 等将来 backend 在声明前，任何 `backendSupports` 查询都安全返回 false（不会误报支持）。

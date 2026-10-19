@@ -121,5 +121,5 @@ host 启动器：macOS/Linux 用 shell wrapper；Windows 用 `.cmd` 或 PowerShe
 
 - capture 一致性（test/capture-parity.mjs + docs/CAPTURE-PARITY.md）：确保两套 backend 语义不漂移，扩平台时新 backend 可按同一套语义测试；
 - headless 性能（src/headless.js + bench）：remote/云 backend 同样受截图/帧成本影响；
-- viewer 自动停真机验证（docs/records/...）：与 backend 无关的行为，扩平台后应复用；
+- viewer 自动停真机验证（内部记录 ...）：与 backend 无关的行为，扩平台后应复用；
 - 本文件：下一轮扩平台的路线图；BACKLOG 里 P1 平台化条目按 §2 拆卡。

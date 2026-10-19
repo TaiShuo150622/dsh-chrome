@@ -40,7 +40,7 @@
 - headless 一次性登录尚未真机登录验证。
 - `chrome_pick` 无 headless 语义；capture 两套引擎尚未合并。
 - Windows/Linux host、Edge/Brave、商店分发、Firefox 尚未开始。
-- 完整待做清单：[BACKLOG.md](BACKLOG.md)。
+- 完整待做清单：BACKLOG.md（内部记录）。
 
 ## 升级注意
 

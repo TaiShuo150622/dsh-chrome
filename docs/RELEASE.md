@@ -13,7 +13,7 @@
 
 - [ ] `npm test` 五条全过
 - [ ] 真机 smoke：`chrome_status` → `chrome_goto` → `chrome_snapshot` → `chrome_screenshot` → `chrome_close_session`
-- [ ] 真机新能力逐项（对照 `docs/P2-PLAN.md` 完成表）
+- [ ] 真机新能力逐项（对照 `内部 P2 规划` 完成表）
 - [ ] 自愈/重连：kill host 后 ≤30s 恢复（或按已知限制记录）
 - [ ] 干净机器/新 profile 安装一遍 `docs/INSTALL.md`，10 分钟内完成
 
@@ -29,7 +29,7 @@
 - [ ] git tag `v<version>`（与扩展 manifest 对齐）
 - [ ] GitHub Release 附件：扩展 zip；正文列出变更、已知限制、安装链接
 - [ ] 回归：老版本用户升级路径（重载扩展 / 重启 Chrome）
-- [ ] 阶段记录：`docs/records/` 对应 record 状态改为 pass 并附真机证据
+- [ ] 阶段记录：`内部记录 ` 对应 record 状态改为 pass 并附真机证据
 
 ## 5. 已知限制（发布正文应包含）
 
