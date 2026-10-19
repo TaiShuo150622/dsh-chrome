@@ -185,7 +185,7 @@ export function wrapToolsForBackend(tools, router, { leases = null, leaseRequire
         const { backend: _backend, ...rest } = args || {}
         const run = () => router.runWithBackend(mode, () => tool.execute(rest, exec))
         if (!leaseRequired) return run()
-        return withWriteLease({ toolName: tool.name, args: rest, exec, mode, router, leases, run })
+        return withWriteLease({ tool, args: rest, exec, mode, router, leases, run })
       },
     }
   })

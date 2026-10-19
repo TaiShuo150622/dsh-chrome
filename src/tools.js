@@ -604,6 +604,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   // ------------------------------------------------------------------ 2. goto
   list.push({
     name: 'chrome_goto',
+    mutating: true,
     description:
       'Open an http(s) URL in this DSH session browser tab (created as a background tab in the session tab group if absent). Does not steal focus. Returns tab id, URL, title, and load state.',
     parameters: {
@@ -866,6 +867,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   },
   {
     name: 'chrome_select',
+    mutating: true,
     description:
       'Select an option in a <select>, set a checkbox/radio, or toggle one. Takes a ref from chrome_snapshot or chrome_find. Pass value for select/radio, checked for checkbox/radio.',
     parameters: {
@@ -901,6 +903,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   },
   {
     name: 'chrome_drag',
+    mutating: true,
     description:
       'Drag from one snapshot ref to another (pointer/mouse plus HTML5 drag events). Useful for sliders, sortable lists and kanban boards.',
     parameters: {
@@ -933,6 +936,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   },
   {
     name: 'chrome_emulate',
+    mutating: true,
     description:
       'Override the viewport with CDP Emulation (responsive testing): set width/height/mobile, or reset to the real viewport. Layout and screenshots follow the override.',
     parameters: {
@@ -983,6 +987,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   },
   {
     name: 'chrome_storage',
+    mutating: true,
     description:
       'Read or change the session page storage (localStorage / sessionStorage): get one key, several keys or all entries; set/remove/clear (mutations require approval). Values are JSON-encoded when not strings.',
     parameters: {
@@ -1323,6 +1328,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   // ---------------------------------------------------------------- 5. hover
   list.push({
     name: 'chrome_hover',
+    mutating: true,
     description:
       'Hover over the control with the given snapshot ref (useful to reveal menus, tooltips or hover-only actions). Take a fresh snapshot if refs may be stale. The virtual cursor is shown at the target.',
     parameters: {
@@ -1403,6 +1409,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   // ---------------------------------------------------------------- 5. click
   list.push({
     name: 'chrome_click',
+    mutating: true,
     description:
       'Click the interactive control with the given snapshot ref number on the current DSH session page. Take a fresh snapshot if refs may be stale. Returns the clicked element kind and label.',
     parameters: {
@@ -2083,6 +2090,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   // ------------------------------------------------ 4h-2. pointer/annotate
   list.push({
     name: 'chrome_pointer',
+    mutating: true,
     description:
       'Show a persistent virtual pointer pinned to an element (ref/selector) or viewport coordinates, with an optional label; op="show"/"move" pins it, op="hide" hides it, op="auto" enables/disables automatic following of click/type/hover actions, pulse:true plays a click ripple. The pointer is an overlay (pointer-events:none) and appears in screenshots but not in page text snapshots.',
     parameters: {
@@ -2131,6 +2139,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
 
   list.push({
     name: 'chrome_annotate',
+    mutating: true,
     description:
       'Draw annotations over the current page: highlight text (text/ref/selector), box/circle an element, draw an arrow from one target to another, or add a text label/index bubble; op="list" returns current annotations, op="clear" removes them (all, or one by id), op="export" returns the JSON/report and op="restore" reloads the persisted set. Annotations auto-persist per tab URL in sessionStorage and survive reloads. Overlays appear in screenshots and are excluded from page text snapshots.',
     parameters: {
@@ -2672,6 +2681,7 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
   if (allowEvaluate) {
     list.push({
       name: 'chrome_evaluate',
+    mutating: true,
       description:
         'Evaluate a JavaScript expression in the current DSH session page through CDP Runtime.evaluate. Disabled by default: it is registered only when allowEvaluate is true in ~/.dsh/cache/dsh-chrome/config.json, and every call requires an explicit hard confirmation (userQuestions) even under danger-full-access. Page content and the result are untrusted data.',
       parameters: {
@@ -2918,6 +2928,7 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
   // ------------------------------------------------------------ 5b. click_at
   list.push({
     name: 'chrome_click_at',
+    mutating: true,
     description:
       'Click at CSS-pixel viewport coordinates (x, y) instead of a snapshot ref. Useful for canvas, maps, video controls and other painted UI that has no DOM control. Coordinates outside the viewport return OUT_OF_VIEWPORT.',
     parameters: {
@@ -2967,6 +2978,7 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
   // ----------------------------------------------------------------- 6. type
   list.push({
     name: 'chrome_type',
+    mutating: true,
     description:
       'Type text into the input/textarea with the given snapshot ref number (React/Vue-safe). Set replace to clear first, submit to submit the owning form. The page is not re-snapshotted automatically.',
     parameters: {
@@ -3042,6 +3054,7 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
   // ---------------------------------------------------------------- 7. press
   list.push({
     name: 'chrome_press',
+    mutating: true,
     description:
       'Dispatch a keyboard key (Enter, Tab, Escape, ArrowUp/Down/Left/Right, PageUp/PageDown, Home/End, or a single character) to the focused element on the current DSH session page.',
     parameters: {
@@ -3094,6 +3107,7 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
   // --------------------------------------------------------------- 8. scroll
   list.push({
     name: 'chrome_scroll',
+    mutating: true,
     description:
       'Scroll the current DSH session page: direction up/down/top/bottom, optional pixel amount (default 600). Returns the resulting scroll position.',
     parameters: {
@@ -3135,6 +3149,7 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
   // -------------------------------------------------------------- 9. history
   list.push({
     name: 'chrome_history',
+    mutating: true,
     description:
       'Navigate backwards, forwards, or reload the current DSH session page. Waits for the load to complete and returns the resulting URL/title.',
     parameters: {
@@ -3172,6 +3187,7 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
   // ----------------------------------------------------------------- 10. tabs
   list.push({
     name: 'chrome_tabs',
+    mutating: true,
     description:
       'Manage tabs owned by this DSH session: list owned tabs, open a new background tab in the session tab group, or close an owned tab. Never lists or controls tabs outside this session.',
     parameters: {
@@ -3272,6 +3288,7 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
   // ----------------------------------------------------------------- 11. upload
   list.push({
     name: 'chrome_upload',
+    mutating: true,
     description:
       'Attach local files to a file input on the session page (e.g. upload a screenshot or a document). The ref must point at an <input type=file> from the latest snapshot. Files must live under the session working directory (or DSH_CHROME_UPLOAD_ROOTS), and every call asks for a hard confirmation that lists the full paths and the target origin.',
     parameters: {
@@ -3433,6 +3450,7 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
   // -------------------------------------------------------- 12. close session
   list.push({
     name: 'chrome_close_session',
+    mutating: true,
     description:
       "Close every tab owned by this DSH session (and its tab group). Does not quit Chrome and never touches the user's other tabs.",
     parameters: { type: 'object', properties: {}, additionalProperties: false },

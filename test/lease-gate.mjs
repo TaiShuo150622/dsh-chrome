@@ -7,6 +7,7 @@ const toolCalls = []
 const tools = [
   {
     name: 'chrome_goto',
+    mutating: true,
     description: 'fake goto',
     parameters: { type: 'object', properties: {}, additionalProperties: true },
     async execute(args, exec) {

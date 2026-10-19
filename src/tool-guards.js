@@ -27,8 +27,9 @@ export const WRITE_TOOLS = Object.freeze(new Set([
   'chrome_annotate',
 ]))
 
-export function isWriteTool(name) {
-  return WRITE_TOOLS.has(name)
+export function isWriteTool(tool) {
+  if (tool && typeof tool === 'object') return tool.mutating === true
+  return WRITE_TOOLS.has(String(tool))
 }
 
 /**
@@ -38,8 +39,8 @@ export function isWriteTool(name) {
  * guard only resolves the tab, acquires/releases the lease, and lets
  * LeaseError bubble to the tool caller.
  */
-export async function withWriteLease({ toolName, args, exec, mode, router, leases, run }) {
-  if (!leases || !isWriteTool(toolName)) return run()
+export async function withWriteLease({ tool, args, exec, mode, router, leases, run }) {
+  if (!leases || !isWriteTool(tool)) return run()
   const owner = exec?.agent?.id ?? 'default'
   let tabId = args?.tabId
   if (tabId == null) {

@@ -11,6 +11,11 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.6] - 2026-10-19
+
+- 写工具显式 mutating 元数据；lease 门控优先读工具元数据，减少 WRITE_TOOLS 漏更新
+- 新增 test/tool-metadata.mjs
+
 ## [0.2.5] - 2026-10-19
 
 - 新增 docs/CODEX-TASK-STRUCTURE-REVIEW.md：可直接交给 Codex 的结构审查任务书
