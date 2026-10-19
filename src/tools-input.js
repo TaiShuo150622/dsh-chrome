@@ -321,7 +321,6 @@ export function createInputTools({
     output: {
       schema: outputSchema({
         ok: { type: 'boolean' },
-        value: { type: 'string' },
         submitted: { type: 'boolean' },
         tabId: { type: 'number' },
         dialogs: {
@@ -340,12 +339,12 @@ export function createInputTools({
       }),
       render: (_args, value) =>
         renderText(
-          `Typed into field${value.submitted ? ' and submitted the form' : ''}; value now ${JSON.stringify(value.value ?? '')}${value.page ? '\n[page snapshot attached]' : ''}`,
+          `Typed into field${value.submitted ? ' and submitted the form' : ''}${value.page ? '\n[page snapshot attached]' : ''}`,
         ),
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_type', `type into ref ${args?.ref}`, { tabId: args?.tabId })
-      return call('tab.type', {
+      const result = await call('tab.type', {
         ref: args?.ref,
         selector: args?.selector,
         frameRef: args?.frameRef,
@@ -357,6 +356,12 @@ export function createInputTools({
         tabId: args?.tabId,
         owner: ownerOf(exec),
       })
+      // Typed text can be a password, OTP or card number, so the field value
+      // must never reach the model. The driver/extension still return it for
+      // their own probes; the tool contract deliberately does not.
+      if (!result || typeof result !== 'object') return result
+      const { value: _fieldValue, ...safe } = result
+      return safe
     },
   }
 

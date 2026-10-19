@@ -505,7 +505,9 @@ try {
     assert.ok(nameControl, `text input not found: ${JSON.stringify(snapshot.controls)}`)
     const value = await run('chrome_type', { ref: nameControl.ref, text: 'smoke', replace: true })
     assert.equal(value.ok, true)
-    assert.equal(value.value, 'smoke')
+    assert.equal(Object.hasOwn(value, 'value'), false, `tool result leaked the field value: ${JSON.stringify(value)}`)
+    // The click below submits '#name' through the fixture handler, which is
+    // what proves the text really reached the field.
   })
 
   await check('chrome_click clicks by ref and the handler runs', async () => {

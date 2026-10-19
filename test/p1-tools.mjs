@@ -138,7 +138,8 @@ check('owner propagates to the extension', requests.at(-1)?.params?.owner === se
 check('click went through approval', approvalCalls.at(-1)?.toolName === 'chrome_click')
 
 const type = await byName.chrome_type.execute({ ref: 2, text: 'hello', replace: true, submit: true }, exec())
-check('chrome_type executes', type.value === 'hello' && type.submitted === true)
+check('chrome_type executes', type.submitted === true)
+check('chrome_type never returns the field value', !Object.hasOwn(type, 'value'), JSON.stringify(type))
 check('type params reach the extension', requests.at(-1)?.params?.text === 'hello' && requests.at(-1)?.params?.submit === true)
 
 const press = await byName.chrome_press.execute({ key: 'Enter' }, exec())
