@@ -28,6 +28,12 @@ import { DEFAULT_CONFIG } from '../src/config.js'
 import { BrowserContextManager } from '../src/contexts.js'
 import { HeadlessContextRouter } from '../src/headless-contexts.js'
 import {
+  CONSOLE_BUFFER_LIMIT,
+  handleConsoleEvent,
+  handleNetworkEvent,
+  recordConsole,
+} from '../src/headless-events.js'
+import {
   CAPTURE_SUMMARY_LIMIT,
   CAPTURE_SUMMARY_TTL_MS,
   HeadlessDriver,
@@ -498,6 +504,173 @@ const shotState = () => ({
   )
   assert.equal(failingTab.screencast, null, 'failed start clears screencast state')
   cleanupHome('/tmp/dsh-m3-screencast-test')
+}
+
+// --------------------------------------------- headless console buffer bounds
+{
+  const buffers = new Map()
+  const tab = { tabId: 31 }
+  for (let index = 0; index < 600; index += 1) {
+    handleConsoleEvent(buffers, tab, 'Runtime.consoleAPICalled', {
+      type: 'log',
+      args: [{ value: `entry-${index}` }],
+    })
+  }
+  assert.equal(CONSOLE_BUFFER_LIMIT, 500, 'the headless console buffer must match CONTRACTS.md (500)')
+  assert.equal(buffers.get(31).length, 500, 'the console buffer is hard-capped at 500 entries')
+  assert.equal(buffers.get(31)[0].text, 'entry-100', 'the newest 500 entries are kept')
+  recordConsole(buffers, tab, { level: 'log', text: 'x'.repeat(5000) })
+  assert.equal(buffers.get(31).at(-1).text.length, 2000, 'one console entry is truncated to 2000 chars')
+  handleConsoleEvent(buffers, tab, 'Runtime.exceptionThrown', {
+    exceptionDetails: { exception: { description: 'e'.repeat(5000) } },
+  })
+  assert.equal(buffers.get(31).at(-1).text.length, 2000, 'exceptions are truncated too')
+}
+
+// ------------------------------------------ headless capture body opt-in/leaks
+{
+  const tab = { tabId: 41, sessionId: 'session-41' }
+  const makeCapture = (overrides = {}) => ({
+    active: true,
+    storeBodies: false,
+    entries: [],
+    byId: new Map(),
+    maxEntries: 10,
+    dropped: 0,
+    bodyBytes: 0,
+    bodiesDropped: 0,
+    bodyTasks: 0,
+    bodyTasksSet: new Set(),
+    resourceTypes: ['fetch'],
+    ...overrides,
+  })
+  const request = (id, extra = {}) =>
+    handleNetworkEvent(tab, current, async () => {
+      throw new Error('send must not be called when bodies are off')
+    }, 'Network.requestWillBeSent', {
+      requestId: id,
+      type: 'Fetch',
+      timestamp: 1,
+      request: { method: 'POST', url: 'https://api.test/x', hasPostData: true, postData: 'token=SECRET', ...extra },
+    })
+  let current = makeCapture()
+  request('n1')
+  const entry = current.entries[0]
+  assert.equal('_postDataRaw' in entry, false, 'storeBodies:false never keeps the raw request body')
+  handleNetworkEvent(tab, current, async () => {
+    throw new Error('send must not be called when bodies are off')
+  }, 'Network.loadingFinished', { requestId: 'n1', timestamp: 1.2 })
+  await sleep(10)
+  assert.equal(entry.responseBody, undefined, 'storeBodies:false never materializes a response body')
+  assert.equal(current.bodyTasks, 0, 'no body task was started')
+
+  // A failed request must release the raw request body as well: it never
+  // reaches loadingFinished, so nothing would consume/delete it.
+  current = makeCapture({ storeBodies: true })
+  request('n2')
+  handleNetworkEvent(tab, current, async () => ({}), 'Network.loadingFailed', {
+    requestId: 'n2',
+    timestamp: 1.5,
+    errorText: 'net::ERR_FAILED',
+  })
+  assert.equal('_postDataRaw' in current.entries[0], false, 'loadingFailed releases the raw request body')
+
+  // A body fetch that throws must release its in-flight slot, not leak one of
+  // the four budget tokens forever.
+  current = makeCapture({ storeBodies: true })
+  request('n3')
+  handleNetworkEvent(tab, current, async () => {
+    throw new Error('body evicted')
+  }, 'Network.loadingFinished', { requestId: 'n3', timestamp: 2 })
+  await sleep(10)
+  assert.equal(current.bodyTasks, 0, 'a thrown body fetch releases the in-flight slot')
+  assert.equal(current.entries[0].bodyUnavailable, 'evicted')
+  assert.equal(current.bodyTasksSet.size, 0, 'body task handles are released')
+
+  // A capture that stops while a body is in flight must not receive the body
+  // after release, and must still account the task as done.
+  current = makeCapture({ storeBodies: true })
+  request('n4')
+  let releaseBody
+  const gate = new Promise((resolve) => {
+    releaseBody = resolve
+  })
+  handleNetworkEvent(tab, current, async () => gate, 'Network.loadingFinished', { requestId: 'n4', timestamp: 2.5 })
+  current.active = false
+  releaseBody({ body: '{"token":"SECRET"}', base64Encoded: false })
+  await sleep(10)
+  assert.equal(current.entries[0].responseBody, undefined, 'a stopped capture never receives the body')
+  assert.equal(current.bodyTasks, 0, 'the in-flight slot is released after stop')
+}
+
+// ------------------------------------ screenshot stream stop/drop reclamation
+{
+  const driver = new HeadlessDriver({ home: '/tmp/dsh-m3-shot-stream-test' })
+  driver.cdp = { send: async () => ({}) }
+  const tab = { tabId: 51 }
+  const state = driver.shotStreamState(tab)
+  state.active = true
+  state.last = { buffer: Buffer.from('cached frame'), composedAt: 1 }
+  const waiter = driver.screenshot.waitShotFrame(state, 2, 5000)
+  const waiterTimer = state.waiters[0].timer
+  await driver.screenshot.stopShotStream(tab)
+  assert.equal(await waiter, null, 'stop resolves pending screenshot waiters with null')
+  assert.equal(waiterTimer._destroyed, true, 'stop clears the waiter timer')
+  assert.equal(state.waiters.length, 0, 'stop clears the waiter list')
+  assert.equal(state.last, null, 'stop releases the cached frame')
+  assert.equal(state.active, false)
+  assert.equal(state.stopTimer, null)
+  cleanupHome('/tmp/dsh-m3-shot-stream-test')
+}
+
+{
+  const driver = new HeadlessDriver({ home: '/tmp/dsh-m3-shot-drop-test' })
+  const tab = { tabId: 52 }
+  const state = driver.shotStreamState(tab)
+  state.active = true
+  state.last = { buffer: Buffer.from('keep me'), composedAt: 1 }
+  driver.touchShotStream(tab, state)
+  const idleTimer = state.stopTimer
+  assert.ok(idleTimer, 'the idle timer is armed')
+  driver.screenshot.dropShotStream(tab, { keepLast: true })
+  assert.equal(idleTimer._destroyed, true, 'drop clears the idle timer')
+  assert.equal(state.stopTimer, null)
+  assert.equal(state.active, false, 'drop marks the stream inactive')
+  assert.deepEqual(state.last?.buffer, Buffer.from('keep me'), 'keepLast preserves the cached frame')
+  driver.screenshot.dropShotStream(tab)
+  assert.equal(state.last, null, 'a later drop releases the cached frame')
+  cleanupHome('/tmp/dsh-m3-shot-drop-test')
+}
+
+// -------------------------------- screencast pending frame cap / drop release
+{
+  const driver = new HeadlessDriver({
+    home: '/tmp/dsh-m3-screencast-frame-test',
+    shotFrameMaxBytes: 64,
+    shotFrameMaxPixels: 100 * 100,
+  })
+  const tab = {
+    tabId: 61,
+    screencast: {
+      active: true,
+      frames: 0,
+      format: 'jpeg',
+      pending: null,
+      flushTimer: null,
+      lastWriteAt: 0,
+      dirReady: false,
+      owner: 'owner-frame',
+    },
+  }
+  driver.screenshot.handleFrame(tab, { data: 'A'.repeat(400), metadata: { timestamp: 1 } })
+  assert.equal(tab.screencast.pending, null, 'an oversized screencast frame never becomes pending')
+  assert.equal(tab.screencast.oversized, 1)
+  tab.screencast.pending = { data: 'small' }
+  const dropped = driver.screenshot.dropScreencast(tab)
+  assert.equal(dropped?.pending, null, 'dropScreencast releases the pending frame bytes')
+  assert.equal(dropped?.active, false)
+  assert.equal(tab.screencast, null)
+  cleanupHome('/tmp/dsh-m3-screencast-frame-test')
 }
 
 console.log('MEMORY LIFECYCLE TEST: PASS')

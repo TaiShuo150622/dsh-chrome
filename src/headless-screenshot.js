@@ -186,6 +186,10 @@ export class HeadlessScreenshot {
       clearTimeout(state.flushTimer)
       state.flushTimer = null
     }
+    // Release the newest frame bytes too: a late flush or a caller holding the
+    // returned state must not keep a full compositor frame alive.
+    state.pending = null
+    state.active = false
     tab.screencast = null
     return state
   }
@@ -198,6 +202,16 @@ export class HeadlessScreenshot {
     if (state) {
       state.frames += 1
       state.lastAt = Date.now()
+      // A screencast frame is retained until the throttled flush writes it.
+      // Bound that retained base64 string before decoding: a bogus/huge frame
+      // must not allocate a buffer or stay pending until the next flush.
+      const data = String(params.data || '')
+      if (!data) return
+      if (data.length > Math.ceil(this.maxFrameBytes * 4 / 3) + 4) {
+        state.oversized = (state.oversized || 0) + 1
+        state.lastOversizedAt = Date.now()
+        return
+      }
       // Decode + atomic write happen on flush, not per frame (§4.1.6).
       state.pending = params
       this.scheduleScreencastFlush(tab)
@@ -213,10 +227,15 @@ export class HeadlessScreenshot {
       const data = String(params.data || '')
       if (Number.isFinite(composedAt) && data) {
         shot.frames += 1
+        // M3 frame caps: reject an oversized encoded frame before decoding it,
+        // so a bogus geometry/telemetry frame cannot force a large allocation.
+        // The exact byte check after decode still applies.
+        if (data.length > Math.ceil(this.maxFrameBytes * 4 / 3) + 4) {
+          shot.oversized = (shot.oversized || 0) + 1
+          shot.lastOversizedAt = Date.now()
+          return
+        }
         const buffer = Buffer.from(data, 'base64')
-        // M3 frame caps: an oversized frame never becomes the cached frame and
-        // keeps the previous one (like a wrong-geometry frame), so the next
-        // request falls back to a fresh capture instead of retaining it.
         if (buffer.byteLength > this.maxFrameBytes) {
           shot.oversized = (shot.oversized || 0) + 1
           shot.lastOversizedAt = Date.now()
@@ -342,9 +361,12 @@ export class HeadlessScreenshot {
   async stopShotStream(tab, { keepLast = false } = {}) {
     const state = tab?.shotStream
     if (!state) return
+    // Read `active` before drop: drop local state first so a closed/unresponsive
+    // tab never keeps the timer, waiters or cached frame alive, then tell CDP
+    // to stop the stream we just owned.
+    const wasActive = state.active
     this.dropShotStream(tab, { keepLast })
-    if (!state.active) return
-    state.active = false
+    if (!wasActive) return
     try {
       await this.driver.cdp?.send('Page.stopScreencast', {}, tab.sessionId)
     } catch {
@@ -361,6 +383,7 @@ export class HeadlessScreenshot {
       clearTimeout(state.stopTimer)
       state.stopTimer = null
     }
+    state.active = false
     for (const waiter of state.waiters.splice(0)) {
       clearTimeout(waiter.timer)
       waiter.resolve(null)
@@ -373,7 +396,10 @@ export class HeadlessScreenshot {
     state.framesAtIdleCheck = state.frames
     state.stopTimer = setTimeout(async () => {
       state.stopTimer = null
-      if (!state.active) return
+      // The tab may have been closed, the stream stopped, or a new stream
+      // started while this timer was queued; never re-arm a timer on a dead
+      // state object.
+      if (!state.active || tab.shotStream !== state) return
       // A screenshot is in flight: the frame it is waiting for is not an
       // "unattended" repaint, so keep the stream for it.
       if (state.waiters.length > 0) {
@@ -386,12 +412,10 @@ export class HeadlessScreenshot {
       // composited, so their cached frame may predate page changes that happened
       // while hidden; drop it instead of serving it later.
       const idleFrames = state.frames - state.framesAtIdleCheck
-      if (
-        SHOT_STREAM_KEEPALIVE &&
-        state.served > 0 &&
-        idleFrames === 0 &&
-        (await this.pageVisible(tab))
-      ) {
+      const keepAlive = SHOT_STREAM_KEEPALIVE && state.served > 0 && idleFrames === 0
+      const visible = keepAlive ? await this.pageVisible(tab) : false
+      if (!state.active || tab.shotStream !== state) return
+      if (keepAlive && visible) {
         this.touchShotStream(tab, state)
         return
       }

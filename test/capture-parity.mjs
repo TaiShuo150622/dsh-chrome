@@ -478,10 +478,15 @@ function createHeadlessHarness(driver, owner) {
 // order; bodies come from the same maps.
 async function runSyntheticScenario(ext, head, scenario) {
   const { capture = {}, events = [], responseBodies = {}, requestBodies = {}, seedBodyBytes = null } = scenario
+  // These scenarios assert body redaction/budget; the production default is
+  // metadata-only (storeBodies:false, H1/M3). Opt in explicitly so the parity
+  // contract is compared on the body path; the default is covered by
+  // test/extension-logic.mjs.
+  const captureParams = capture.storeBodies === undefined ? { ...capture, storeBodies: true } : capture
   await ext.stopActiveSilently()
   await head.stopActiveSilently()
-  const extStart = await ext.startCapture(capture)
-  const headStart = await head.startCapture(capture)
+  const extStart = await ext.startCapture(captureParams)
+  const headStart = await head.startCapture(captureParams)
   ext.setBodies(responseBodies, requestBodies)
   head.setBodies(responseBodies, requestBodies)
   if (Number.isFinite(seedBodyBytes)) {
@@ -557,8 +562,8 @@ async function runParityChecks(ext, head) {
   // Lifecycle: request -> response -> finished, failure, cache, and the
   // start/stop response shape.
   console.log('\n--- capture lifecycle (synthetic CDP events, same on both) ---')
-  const lifecycleStartExt = await ext.startCapture({ maxEntries: 50 })
-  const lifecycleStart = await head.startCapture({ maxEntries: 50 })
+  const lifecycleStartExt = await ext.startCapture({ maxEntries: 50, storeBodies: true })
+  const lifecycleStart = await head.startCapture({ maxEntries: 50, storeBodies: true })
   check(
     'capture_start returns a capture id and active=true on both',
     typeof lifecycleStartExt.captureId === 'string' &&
@@ -1335,8 +1340,10 @@ async function runParityChecks(ext, head) {
   // ------------------------------------------------------------------ S12
   // Errors / owner isolation / unknown captureId / no capture.
   console.log('\n--- errors, owner isolation, unknown captureId ---')
-  const knownCaptureExt = freezeScenario.extStart.captureId
-  const knownCaptureHead = freezeScenario.headStart.captureId
+  // Use the newest stopped summary: stopped captures are bounded (TTL + count
+  // limit 8) on both backends, so an older scenario's id may already be gone.
+  const knownCaptureExt = storeScenario.extStart.captureId
+  const knownCaptureHead = storeScenario.headStart.captureId
   const extOtherOwner = await ext.errorOf('tab.capture_requests', { owner: 's2', captureId: knownCaptureExt })
   const headOtherOwner = await head.errorOf('tab.capture_requests', { owner: 'other', captureId: knownCaptureHead })
   check(

@@ -13,6 +13,10 @@
   const COLORS = ['#007aff', '#ff3b30', '#34c759', '#ff9f0a', '#af52de', '#5ac8fa']
   const state = { annotations: new Map(), seq: 1, auto: true }
   const STORAGE_KEY = '__dsh_annotations_v1__'
+  // One page can carry many annotations, but the DOM/state must stay bounded:
+  // restore() re-adds the persisted list on every reload/op, and without a cap
+  // a crafted sessionStorage value could pin thousands of nodes.
+  const MAX_ANNOTATIONS = 200
   const targetSpec = (t = {}) => {
     const out = {}
     for (const key of ['ref', 'selector', 'text', 'x', 'y']) if (t[key] != null) out[key] = t[key]
@@ -32,13 +36,29 @@
     } catch {}
   }
   const restore = () => {
+    let restored = 0
     try {
       const raw = sessionStorage.getItem(STORAGE_KEY)
-      if (!raw) return
+      if (!raw) return 0
       const saved = JSON.parse(raw)
-      if (!saved || saved.url !== location.href || !Array.isArray(saved.annotations)) return
-      for (const spec of saved.annotations) add(spec.kind, { ...(spec.target || {}), from: spec.from, color: spec.color, label: spec.label, index: spec.index, restoring: true })
+      if (!saved || saved.url !== location.href || !Array.isArray(saved.annotations)) return 0
+      // Reload the persisted set instead of appending a second copy: calling
+      // op="restore" twice used to duplicate every annotation (DOM + state +
+      // sessionStorage) on each call.
+      clearAll()
+      for (const spec of saved.annotations.slice(0, MAX_ANNOTATIONS)) {
+        const result = add(spec.kind, {
+          ...(spec.target || {}),
+          from: spec.from,
+          color: spec.color,
+          label: spec.label,
+          index: spec.index,
+          restoring: true,
+        })
+        if (result.ok) restored += 1
+      }
     } catch {}
+    return restored
   }
 
   const root = () => {
@@ -271,6 +291,9 @@
   const nextId = () => `a${state.seq++}`
 
   const add = (kind, params) => {
+    if (state.annotations.size >= MAX_ANNOTATIONS) {
+      return { ok: false, error: 'RESOURCE_LIMIT', kind, limit: MAX_ANNOTATIONS }
+    }
     const el = root()
     const color = colorFor(params.color, state.seq)
     const ann = {

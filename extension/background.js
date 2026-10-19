@@ -398,11 +398,17 @@ function scheduleExtensionReload() {
   if (extensionReloadTimer) clearTimeout(extensionReloadTimer)
   extensionReloadTimer = setTimeout(() => {
     extensionReloadTimer = null
-    try {
-      chrome.runtime.reload()
-    } catch (error) {
-      log('extension reload failed', error?.message || error)
-    }
+    // A reload tears the worker down; detach every debuggee first so Chrome
+    // does not keep a "being debugged" session that no worker owns.
+    prepareForReload()
+      .catch(() => {})
+      .finally(() => {
+        try {
+          chrome.runtime.reload()
+        } catch (error) {
+          log('extension reload failed', error?.message || error)
+        }
+      })
   }, 800)
 }
 
@@ -444,11 +450,15 @@ async function maybeSelfHeal() {
   diag('self-heal-reload', { attempts })
   selfHealTimer = setTimeout(() => {
     selfHealTimer = null
-    try {
-      chrome.runtime.reload()
-    } catch (error) {
-      log('self-heal reload failed', error?.message || error)
-    }
+    prepareForReload()
+      .catch(() => {})
+      .finally(() => {
+        try {
+          chrome.runtime.reload()
+        } catch (error) {
+          log('self-heal reload failed', error?.message || error)
+        }
+      })
   }, 1200)
 }
 
@@ -549,6 +559,10 @@ function ensurePort() {
     diag('disconnect', { error: lastError?.message || '' })
     if (port === nativePort) port = null
     finish(null)
+    // The provider that owned these captures/screencasts is gone: drop every
+    // debuggee now instead of leaving Chrome attached to a tab no live client
+    // can read. The next provider starts from a clean session table.
+    releaseAllDebuggerSessions('provider-disconnected').catch(() => {})
     // Do NOT reconnect from inside this dying worker context: Chrome tears
     // down the freshly spawned host together with the old context. A fresh
     // wake-up (alarm / keepalive message / tab update) reconnects instead.
@@ -976,6 +990,105 @@ async function detachOrphanedTargets() {
   }
 }
 
+// A screencast owns a 10-minute auto-stop timer and (for the local frame
+// state) nothing else. Clearing the state and its timer is the single path
+// used by stop, start-failure, tab close, debugger detach, provider disconnect
+// and extension reload, so no timer can outlive its session.
+function clearSessionScreencast(session) {
+  if (!session) return null
+  const state = session.screencast
+  if (state?.timer) {
+    clearTimeout(state.timer)
+    state.timer = null
+  }
+  session.screencast = null
+  return state
+}
+
+// Detach the debugger only when nothing else owns the session. The stop timer
+// of a capture/screencast calls this after it releases its state; without it
+// a timed-out capture would leave the "Chrome is being debugged" session
+// attached for the rest of the worker's life.
+function releaseDebuggerIfIdle(tabId, { detach = true } = {}) {
+  const session = debuggerSessions.get(tabId)
+  if (!session || session.refs > 0 || session.capture || session.screencast) return false
+  debuggerSessions.delete(tabId)
+  if (detach) {
+    try {
+      Promise.resolve(chrome.debugger.detach(session.target)).catch(() => {})
+    } catch {
+      // already detached
+    }
+  }
+  return true
+}
+
+// Release one tab's debugger session. Capture data is discarded for tab
+// close / provider disconnect (nobody can read it anymore); a debugger detach
+// keeps the frozen summary so chrome_capture_requests still works.
+async function releaseDebuggerSession(tabId, reason, { detach = true } = {}) {
+  const session = debuggerSessions.get(tabId)
+  if (!session) return false
+  // Remove the map entry first: an in-flight response for this generation must
+  // not resurrect or reuse the session we are tearing down.
+  debuggerSessions.delete(tabId)
+  if (session.capture) {
+    if (reason === 'tab-closed' || reason === 'provider-disconnected' || reason === 'extension-reload') {
+      discardCapture(session.capture, reason)
+    } else {
+      endCapture(session.capture, reason)
+    }
+  }
+  clearSessionScreencast(session)
+  if (detach) {
+    try {
+      await chrome.debugger.detach(session.target)
+    } catch {
+      // target/tab already gone
+    }
+  }
+  return true
+}
+
+// Provider disconnect / extension reload: every session and every capture
+// belongs to the process that is going away, so drop the state before the
+// native port dies. Detaches are best effort (a closed tab has no target).
+async function releaseAllDebuggerSessions(reason) {
+  const targets = []
+  for (const [tabId, session] of [...debuggerSessions.entries()]) {
+    debuggerSessions.delete(tabId)
+    if (session.capture) discardCapture(session.capture, reason)
+    clearSessionScreencast(session)
+    targets.push(session.target)
+  }
+  for (const capture of [...captures.values()]) discardCapture(capture, reason)
+  clearCaptureMeta()
+  await Promise.allSettled(
+    targets.map((target) => {
+      try {
+        return Promise.resolve(chrome.debugger.detach(target)).catch(() => {})
+      } catch {
+        return Promise.resolve()
+      }
+    }),
+  )
+}
+
+async function prepareForReload() {
+  // Detach before chrome.runtime.reload(): a reload tears down the worker but
+  // the debuggee can stay attached, and the next worker would then have to
+  // recover an orphan it cannot attribute to any live capture/screencast.
+  await releaseAllDebuggerSessions('extension-reload')
+}
+
+function clearCaptureMeta() {
+  try {
+    Promise.resolve(chrome.storage?.session?.set?.({ dshCaptureMeta: null })).catch(() => {})
+  } catch {
+    // session storage unavailable; metadata is optional
+  }
+}
+
 async function withDebugger(tabId, fn, options = {}) {
   const session = sessionFor(tabId)
   const { interceptDialogs = false, dialogOptions = null } = options
@@ -1216,13 +1329,17 @@ async function startScreencast(owner, params) {
     // whole screencast (Chrome sends no further frames until ack).
     session.screencast = { active: true, format, frames: 0, startedAt: Date.now(), lastAt: null, owner: ownerKey(owner) }
     session.screencast.timer = setTimeout(() => {
+      const state = clearSessionScreencast(session)
+      if (!state) return
       try {
         chrome.debugger.sendCommand(session.target, 'Page.stopScreencast').catch(() => {})
       } catch {
         // target already gone
       }
-      session.screencast = null
-      diag('screencast-auto-stop', { owner: ownerShort(owner), tabId })
+      // A screencast keeps the debugger attached by itself; once the auto-stop
+      // releases it, an idle session must not stay attached forever.
+      releaseDebuggerIfIdle(tabId)
+      diag('screencast-auto-stop', { owner: ownerShort(owner), tabId, frames: state.frames })
     }, 10 * 60 * 1000)
     session.screencast.timer.unref?.()
     try {
@@ -1234,7 +1351,8 @@ async function startScreencast(owner, params) {
         everyNthFrame,
       })
     } catch (error) {
-      session.screencast = null
+      // The armed auto-stop timer must not outlive a failed start.
+      clearSessionScreencast(session)
       throw error
     }
     diag('screencast-start', {
@@ -1252,10 +1370,8 @@ async function startScreencast(owner, params) {
 async function stopScreencast(owner) {
   const tabId = await resolveOwnedTabId(owner)
   return withDebugger(tabId, async (session) => {
-    const state = session.screencast
-    if (state?.timer) clearTimeout(state.timer)
+    const state = clearSessionScreencast(session)
     await chrome.debugger.sendCommand(session.target, 'Page.stopScreencast').catch(() => {})
-    session.screencast = null
     diag('screencast-stop', { owner: ownerShort(owner), tabId, frames: state?.frames || 0 })
     return {
       active: false,
@@ -1316,6 +1432,12 @@ let nextCaptureSeq = 1
 const CAPTURE_MAX_DURATION_MS = 10 * 60 * 1000
 const CAPTURE_DEFAULT_MAX_ENTRIES = 300
 const CAPTURE_HARD_MAX_ENTRIES = 1000
+// A stopped capture keeps its redacted entries readable for a bounded time and
+// count (mirrors HeadlessDriver CAPTURE_SUMMARY_TTL_MS / CAPTURE_SUMMARY_LIMIT).
+// Without both, a session that start/stops captures in a loop pins every
+// entries map (and every body byte) for the life of the worker.
+const CAPTURE_SUMMARY_TTL_MS = 10 * 60 * 1000
+const CAPTURE_SUMMARY_LIMIT = 8
 // Query/form/JSON key names that must never carry a value into a capture.
 // `pwd`/`otp`/`cvv` match as whole key segments (delimited, exact or trailing)
 // so ordinary words such as `author` stay readable. This list is shared with
@@ -1448,7 +1570,7 @@ function materializeCaptureBody(capture, raw, mimeType, maxChars) {
 }
 
 function scheduleCaptureBodies(capture, session, entry, requestId) {
-  if (!capture.storeBodies) return
+  if (!capture?.active || !capture.storeBodies) return
   if (!['xhr', 'fetch', 'document'].includes(entry.resourceType)) return
   if (entry.bodyScheduled) return
   entry.bodyScheduled = true
@@ -1456,11 +1578,17 @@ function scheduleCaptureBodies(capture, session, entry, requestId) {
     entry.bodyUnavailable = 'burst'
     return
   }
+  // One request can be dropped by maxEntries while its body fetch is still in
+  // flight; writing into an entry no longer in the buffer would keep that
+  // body (and its bytes) alive through a reference the capture no longer
+  // indexes. The active check covers stop/timeout.
+  const stillCurrent = () => capture.active && capture.requests.get(String(requestId)) === entry
   const task = (async () => {
     try {
       const response = await chrome.debugger.sendCommand(session.target, 'Network.getResponseBody', {
         requestId,
       })
+      if (!stillCurrent()) return
       const raw = response?.base64Encoded ? decodeBase64Body(response.body) : String(response?.body ?? '')
       const materialized = materializeCaptureBody(capture, raw, entry.mimeType, CAPTURE_RESPONSE_BODY_CHARS)
       if (materialized) {
@@ -1469,18 +1597,20 @@ function scheduleCaptureBodies(capture, session, entry, requestId) {
         entry.redacted = true
       }
     } catch {
-      entry.bodyUnavailable = 'evicted'
+      if (stillCurrent()) entry.bodyUnavailable = 'evicted'
     }
+    if (!stillCurrent()) return
     if (entry.postDataRaw == null && entry.hasPostData) {
       try {
         const request = await chrome.debugger.sendCommand(session.target, 'Network.getRequestPostData', {
           requestId,
         })
-        if (request?.postData) entry.postDataRaw = String(request.postData)
+        if (request?.postData && stillCurrent()) entry.postDataRaw = String(request.postData)
       } catch {
         // request body unavailable
       }
     }
+    if (!stillCurrent()) return
     if (entry.postDataRaw != null) {
       const requestMime = /^{|^\[/.test(String(entry.postDataRaw).trim())
         ? 'application/json'
@@ -1502,23 +1632,121 @@ function captureForSession(session) {
   return capture && capture.active ? capture : null
 }
 
-function endCapture(capture, reason) {
-  if (!capture || !capture.active) return capture
-  capture.active = false
-  capture.endedAt = Date.now()
-  capture.endedReason = String(reason || 'stopped')
+function clearCaptureTimers(capture) {
+  if (!capture) return
   if (capture.timer) {
     clearTimeout(capture.timer)
     capture.timer = null
   }
+  if (capture.expireTimer) {
+    clearTimeout(capture.expireTimer)
+    capture.expireTimer = null
+  }
+}
+
+// Free the raw parts of a capture while keeping the already-redacted entries
+// readable: the unredacted request-body scratch, the by-id event index and
+// in-flight body-task handles are only needed while Network events arrive.
+// `entries: true` also frees the entries themselves (summary expiry, tab close,
+// provider disconnect), so nothing keeps a body buffer alive after its TTL.
+function releaseCaptureData(capture, { entries = false } = {}) {
+  if (!capture) return
+  for (const entry of capture.requests?.values?.() || []) {
+    delete entry.postDataRaw
+    delete entry._postDataRaw
+  }
+  capture.bodyBytes = 0
+  capture.bodyTasks?.clear()
+  if (entries) {
+    capture.requests?.clear()
+    if (Array.isArray(capture.order)) capture.order.length = 0
+  }
+}
+
+function armCaptureExpiry(capture) {
+  if (!capture || capture.active) return
+  if (capture.expireTimer) clearTimeout(capture.expireTimer)
+  capture.stoppedAt = capture.stoppedAt || Date.now()
+  capture.expireTimer = setTimeout(() => {
+    capture.expireTimer = null
+    dropCaptureSummary(capture)
+  }, CAPTURE_SUMMARY_TTL_MS)
+  capture.expireTimer.unref?.()
+  pruneCaptureSummaries()
+}
+
+function dropCaptureSummary(capture) {
+  if (!capture) return false
+  clearCaptureTimers(capture)
+  if (captures.get(capture.captureId) !== capture) return false
+  captures.delete(capture.captureId)
   const session = debuggerSessions.get(capture.tabId)
   if (session?.capture === capture) session.capture = null
-  try {
-    chrome.storage.session.set({ dshCaptureMeta: null })
-  } catch {
-    // optional metadata only
+  releaseCaptureData(capture, { entries: true })
+  releaseDebuggerIfIdle(capture.tabId)
+  return true
+}
+
+// Drop an expired stopped summary lazily as well: the TTL timer is unref'd, so
+// a worker kept alive by other work must not serve a capture past its TTL just
+// because the timer has not fired yet.
+function pruneExpiredCaptures(now = Date.now()) {
+  for (const capture of [...captures.values()]) {
+    if (capture.active) continue
+    const stoppedAt = capture.stoppedAt || capture.endedAt || capture.startedAt || 0
+    if (now - stoppedAt >= CAPTURE_SUMMARY_TTL_MS) dropCaptureSummary(capture)
   }
-  diag('capture-stop', { owner: ownerShort(capture.owner), tabId: capture.tabId, entries: capture.order.length, dropped: capture.dropped, reason: capture.endedReason })
+}
+
+function pruneCaptureSummaries() {
+  const stopped = [...captures.values()].filter((capture) => !capture.active)
+  if (stopped.length <= CAPTURE_SUMMARY_LIMIT) return
+  stopped.sort((a, b) => (a.stoppedAt || a.startedAt || 0) - (b.stoppedAt || b.startedAt || 0))
+  while (stopped.length > CAPTURE_SUMMARY_LIMIT) dropCaptureSummary(stopped.shift())
+}
+
+// Tab close / provider disconnect / reload: nobody can read this buffer after
+// the tab or provider is gone, so remove the summary and every entry now.
+function discardCapture(capture, reason) {
+  if (!capture) return false
+  const wasActive = capture.active
+  clearCaptureTimers(capture)
+  capture.active = false
+  capture.endedReason = capture.endedReason || String(reason || 'discarded')
+  if (captures.get(capture.captureId) === capture) captures.delete(capture.captureId)
+  const session = debuggerSessions.get(capture.tabId)
+  if (session?.capture === capture) session.capture = null
+  releaseCaptureData(capture, { entries: true })
+  // The stored metadata claims an active debug/capture session; clearing it is
+  // the observable half of "tab closed / provider gone" for the next worker.
+  if (wasActive) clearCaptureMeta()
+  return true
+}
+
+function endCapture(capture, reason) {
+  if (!capture || !capture.active) return capture
+  capture.active = false
+  capture.endedAt = Date.now()
+  capture.stoppedAt = capture.endedAt
+  capture.endedReason = String(reason || 'stopped')
+  clearCaptureTimers(capture)
+  const session = debuggerSessions.get(capture.tabId)
+  if (session?.capture === capture) session.capture = null
+  // The redacted entries stay readable through chrome_capture_requests until
+  // the TTL/count prunes this summary; raw scratch and body-task handles go now.
+  releaseCaptureData(capture)
+  armCaptureExpiry(capture)
+  clearCaptureMeta()
+  diag('capture-stop', {
+    owner: ownerShort(capture.owner),
+    tabId: capture.tabId,
+    entries: capture.order.length,
+    dropped: capture.dropped,
+    reason: capture.endedReason,
+  })
+  // The stop timer runs outside withDebugger(): without this the debugger
+  // would stay attached after a 10-minute auto-stop.
+  releaseDebuggerIfIdle(capture.tabId)
   return capture
 }
 
@@ -1548,9 +1776,19 @@ function routeNetworkEvent(session, method, params) {
     entry.documentURL = params.documentURL ? redactUrl(params.documentURL) : entry.documentURL
     entry.wallTime = Number(params.wallTime) || null
     entry.hasPostData = Boolean(request.hasPostData)
-    if (typeof request.postData === 'string') entry.postDataRaw = request.postData
+    // A request body is the most sensitive part of a capture: only keep the
+    // raw text when this capture explicitly opted into bodies. Otherwise the
+    // unredacted postData would sit in memory until the entry is evicted even
+    // though chrome_capture_requests would never return it.
+    if (capture.storeBodies && typeof request.postData === 'string') entry.postDataRaw = request.postData
+    else delete entry.postDataRaw
     while (capture.order.length > capture.maxEntries) {
       const droppedId = capture.order.shift()
+      const dropped = capture.requests.get(droppedId)
+      if (dropped) {
+        delete dropped.postDataRaw
+        delete dropped._postDataRaw
+      }
       capture.requests.delete(droppedId)
       capture.dropped += 1
     }
@@ -1577,6 +1815,11 @@ function routeNetworkEvent(session, method, params) {
     } else {
       entry.durationMs = entry.startTime ? Math.max(0, entry.finishedAt - entry.startTime) : null
     }
+    if (!capture.storeBodies) {
+      // No body will be materialized, so the raw request text has no reader.
+      delete entry.postDataRaw
+      return
+    }
     scheduleCaptureBodies(capture, session, entry, requestId)
     return
   }
@@ -1584,6 +1827,9 @@ function routeNetworkEvent(session, method, params) {
     entry.failed = true
     entry.errorText = String(params.errorText || '').slice(0, 300)
     entry.canceled = Boolean(params.canceled)
+    // A failed request never reaches loadingFinished, so its raw request body
+    // would otherwise stay in the buffer until TTL/eviction.
+    delete entry.postDataRaw
     return
   }
   if (method === 'Network.requestServedFromCache') {
@@ -1599,6 +1845,7 @@ function normalizeResourceTypes(value) {
 
 async function startCapture(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
+  pruneExpiredCaptures()
   const maxEntries = Number.isFinite(params.maxEntries)
     ? Math.max(1, Math.min(CAPTURE_HARD_MAX_ENTRIES, Math.trunc(params.maxEntries)))
     : CAPTURE_DEFAULT_MAX_ENTRIES
@@ -1623,6 +1870,7 @@ async function startCapture(owner, params) {
       tabId,
       startedAt: Date.now(),
       endedAt: null,
+      stoppedAt: null,
       active: true,
       endedReason: null,
       maxEntries,
@@ -1633,8 +1881,12 @@ async function startCapture(owner, params) {
       bodiesDropped: 0,
       bodyBytes: 0,
       bodyTasks: new Set(),
-      storeBodies: params.storeBodies !== false,
+      // H1/M3: bodies are explicit opt-in. The tool layer always sends false
+      // unless the caller asked for bodies; a direct bridge caller must send
+      // storeBodies:true as well, otherwise the capture is metadata-only.
+      storeBodies: params.storeBodies === true,
       timer: null,
+      expireTimer: null,
     }
     capture.timer = setTimeout(() => endCapture(capture, 'timeout'), CAPTURE_MAX_DURATION_MS)
     capture.timer?.unref?.()
@@ -1645,7 +1897,7 @@ async function startCapture(owner, params) {
     } catch {
       // optional
     }
-    diag('capture-start', { owner: ownerShort(owner), tabId, maxEntries })
+    diag('capture-start', { owner: ownerShort(owner), tabId, maxEntries, storeBodies: capture.storeBodies })
     return {
       captureId: capture.captureId,
       tabId,
@@ -1659,6 +1911,9 @@ async function startCapture(owner, params) {
 }
 
 function findCapture(owner, params) {
+  // A stopped capture is only readable within its TTL; drop anything older
+  // before lookup so an unref'd timer cannot leave an expired buffer visible.
+  pruneExpiredCaptures()
   const captureId = params.captureId ? String(params.captureId) : ''
   if (captureId) {
     const capture = captures.get(captureId)
@@ -1678,7 +1933,12 @@ function findCapture(owner, params) {
 
 async function stopCapture(owner, params) {
   const capture = findCapture(owner, params)
-  if (!capture.active) return captureSummary(capture, false)
+  if (!capture.active) {
+    // Idempotent stop: make sure a frozen summary still has a TTL (e.g. after
+    // a worker wake that restored the object without its timer).
+    armCaptureExpiry(capture)
+    return captureSummary(capture, false)
+  }
   const tabId = capture.tabId
   return withDebugger(tabId, async (session) => {
     if (capture.bodyTasks.size > 0) {
@@ -1739,6 +1999,11 @@ function captureRequests(owner, params) {
       }
     }
     entries.push(copy)
+  }
+  if (!capture.active) {
+    // A frozen capture's read never needs the unredacted scratch or in-flight
+    // body handles again; the redacted entries themselves stay until TTL.
+    releaseCaptureData(capture)
   }
   return {
     available: true,
@@ -4022,22 +4287,27 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 chrome.debugger.onDetach.addListener((source, reason) => {
   const tabId = source?.tabId
   if (tabId == null) return
-  const session = debuggerSessions.get(tabId)
-  if (session?.capture) endCapture(session.capture, `debugger-detached:${reason}`)
-  debuggerSessions.delete(tabId)
+  // The target is already gone; keep the frozen capture summary readable but
+  // clear the screencast timer that would otherwise fire against a dead
+  // session. Do not call detach again: onDetach is the detach itself.
+  releaseDebuggerSession(tabId, `debugger-detached:${reason}`, { detach: false }).catch(() => {})
 })
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  const session = debuggerSessions.get(tabId)
-  if (session?.capture) endCapture(session.capture, 'tab-closed')
-  debuggerSessions.delete(tabId)
+  // Tab close is terminal: discard the capture (no reader can reach it) and
+  // clear the screencast timer before deleting the session.
+  releaseDebuggerSession(tabId, 'tab-closed').catch(() => {})
   frameRegistry.delete(tabId)
 })
 
 chrome.runtime.onInstalled.addListener(() => {
   ensureReconnectAlarm()
   ensurePort().catch(() => {})
-initActiveWindows().catch(() => {})
+  // A reload/update starts with an empty in-memory table; recover any debugger
+  // target the previous worker left attached and clear stale capture metadata.
+  detachOrphanedTargets().catch(() => {})
+  clearCaptureMeta()
+  initActiveWindows().catch(() => {})
 })
 chrome.runtime.onStartup.addListener(() => {
   ensureReconnectAlarm()
@@ -4061,6 +4331,10 @@ chrome.runtime.onConnect.addListener((keepalivePort) => {
 // reload race a dead worker with no alarm would never wake again.
 ensureReconnectAlarm()
 detachOrphanedTargets().catch(() => {})
+// A worker start means captures from the previous generation are gone (the
+// in-memory table is empty); a dshCaptureMeta left in session storage would
+// claim an active capture that no longer exists.
+clearCaptureMeta()
 initActiveWindows().catch(() => {})
 if (!port) forceReconnect().catch(() => {})
 
