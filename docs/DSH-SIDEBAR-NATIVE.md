@@ -1,7 +1,8 @@
 # DSH 右侧边栏原生浏览器面板（Native Sidebar Browser）
 
-> **状态：设计稿（2026-10-19）。未实现、未改代码、未提交、未发布。**
-> 本文只描述计划与验收口径；文中“当前”指仓库现状，“拟/计划”指尚未落地的设计。任何一节在对应测试通过之前都不得当成已实现。
+> **状态（2026-10-19，`feat/native-sidebar`）：A0 spike 的组件 1 已通过——client bundle 能从本 provider 包加载，`kind:"dsh-chrome"` 的右栏 tab 已注册并显示占位内容；A/B/C 主体仍未实现。**
+> 已新增 `client/index.js`、`test/client-bundle.mjs` 与 `package.json` 的 `dsh.client` / `exports["./client"]` 声明；已在一次性 `DSH_HOME` 的 DSH `0.2.1-rc.2` 实例里确认 guide 入口和 tab 正文（见 §6.0.1）。**未**验证 `/api` exact Fetch 路由、流式 Response、`sessionId → owner`；**未**装进用户现有 profile；未发布、未改版本。
+> 本文其余部分仍是设计与验收口径；文中“当前”指仓库现状，“拟/计划”指尚未落地的设计。任何一节在对应测试通过之前都不得当成已实现。
 >
 > **基线**：仓库 `docs/DSH-SIDEBAR.md` 的方案 A viewer 已存在；DSH 安装包版本 `0.2.1-rc.2`（包内 README 为准）。
 > **只读约束**：调查期间仓库里存在并行会话的未提交改动（`src/headless.js`、`src/headless-screenshot.js`）。本文不改它们；行号以当前工作树为准，重构后以函数/符号名为准。
@@ -256,7 +257,7 @@ DSH 右栏 tab 类型 "dsh-chrome"
 
 - `dsh.client.platform` 用 `web`（DSH Desktop 的 UI 也是 web 壳）。
 - `inject` 是**包级激活顺序**，不是运行时服务列表；运行时服务列表写在 bundle 的 `inject` 导出里（`slots`、`locale`、`sidebarRight`、`sidebarRightTabs`、`connection`）。
-- 不新增 `external`：假定 `react`、`@deepseek-ai/dsh-client-store` 在 DSH 的共享模块表里（A0 验证；不在则 A 先用 React state）；不引入 `dsh-client-ui-primitives`，图标用内联 SVG，减少对未承诺导出的依赖。
+- 不新增 `external`：**A0 已确认** `react`、`@deepseek-ai/dsh-client-store`、`@deepseek-ai/dsh-client-ui-slots` 在 DSH 的共享模块表里（见 §6.0.1）；A 先用 React state，不引入 `dsh-client-ui-primitives`，图标用内联 SVG，减少对未承诺导出的依赖。
 - `client/index.js` 是**已构建 bundle**（DSH 文档要求 Host 提供构建产物）。为了不引入 esbuild/TS，拟采用与随包 bundle 相同的 loader 包装、手写 `React.createElement`（不用 JSX）；如果后续 UI 变大，再加一个最小 `scripts/build-client.mjs`（esbuild）并把 `client/index.js` 变成产物。这个取舍写进 PR 描述。
 
 #### 4.2.2 bundle 形状
@@ -968,7 +969,7 @@ URL 规则：
 
 ### 6.0 前置 spike A0（0.5–1 天，必须先做）
 
-在写 A 的 UI 之前，用最小的临时 client bundle + 临时 Host 模块验证四件事（不并入正式代码，验证完删）：
+在写 A 的 UI 之前，用最小的临时 client bundle + 临时 Host 模块验证四件事（原计划验证完删；A0-1 的 client bundle 按本轮任务保留为可审查骨架，Host 临时模块仍未创建）：
 
 1. **client plugin 能从本 provider 包加载**：`package.json` 加 `dsh.client` + `exports["./client"]`，把包重新装进当前 DSH profile，刷新页面，确认浏览器控制台/插件页出现该 bundle；`ctx.sidebarRightTabs.register` 成功（临时注册一个空 tab）。同时确认 bundle 能 `require('react')` 与 `@deepseek-ai/dsh-client-store`；如果 store 不在共享表，A 先用 React state，C 再补持久化。
 2. **exact Fetch 路由可被浏览器带 cookie 调用**：临时注册 `POST /api/dsh-chrome/native/ping`，页面 `fetch` 返回 200；无 cookie 的 `curl` 返回 401；`Origin: http://evil` 返回 403。
@@ -981,6 +982,84 @@ A0 任一项失败的处理：
 - 2 失败 → 不能用 `/api` exact route，退回带 cap 的自建 loopback 路由（但要重新设计 cookie/CSRF，成本上升，需重新评审）；
 - 3 失败 → A 单帧；B 只在支持流的载体上启用 push，其他载体 3fps 轮询；
 - 4 失败 → 先做 owner 解析（agents/sessions），A 不合并。
+
+#### 6.0.1 A0 spike 结果（2026-10-19，`feat/native-sidebar`）
+
+**结论：组件 1 通过（真实 DSH 实例里可见、可打开）；组件 2–4 未验证。**
+
+| 组件 | 结果 | 证据 |
+|---|---|---|
+| 1. client plugin 从本 provider 包加载，并注册右栏 tab | **PASS** | 真实 DSH `0.2.1-rc.2` 以一次性 `DSH_HOME` 启动；Network 里 `/plugins/…dsh-desktop-chrome/client.js…` 返回 200；右栏 guide 出现 “DSH Chrome / 隔离浏览器的原生右栏面板（A0 占位）”；点击后 tab 正文显示 “DSH Chrome sidebar spike” 与占位说明；见下图 |
+| 2. `/api` exact Fetch route（cookie/401/403） | **NOT RUN** | 本轮没有注册 Host 路由；没有改 `index.js`/`connection` 注入 |
+| 3. 流式 Response 是否穿过载体 | **NOT RUN** | 同上，没有流式路由 |
+| 4. `sessionId → context.owner` | **NOT RUN** | 只观察到正文拿到了 `sessionId`（界面显示 `会话: session-…`），没有与 `context.owner` 对比 |
+
+![A0：DSH 右栏里的原生占位 tab](./assets/dsh-sidebar-native-a0.png)
+
+**实际验证方式（可复现，使用一次性 profile，不碰用户现有 profile）**
+
+1. 用应用内置的 `0.2.1-rc.2` CLI（全局 `dsh` 是 `0.2.0-rc.2`，不要混用）初始化一次性 profile 并 link 本 worktree：
+   ```bash
+   DSH_HOME=/tmp/dsh-a0-home \
+   ELECTRON_RUN_AS_NODE=1 "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+     --expose-internals "/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" \
+     plugin --profile web add /Users/taishuo/projects/dsh-chrome-wt/sidebar
+   # dsh: initialized profile web at /tmp/dsh-a0-home/profiles/web
+   # + dsh-desktop-chrome 0.2.15 <- ../../../../../Users/taishuo/projects/dsh-chrome-wt/sidebar
+   ```
+2. 启动同一个一次性 profile（端口 0 让系统挑）：
+   ```bash
+   DSH_HOME=/tmp/dsh-a0-home \
+   ELECTRON_RUN_AS_NODE=1 "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness" \
+     --expose-internals "/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" \
+     web --no-open --port 0
+   # dsh web: http://127.0.0.1:<port>/?token=…
+   ```
+3. 浏览器打开该 URL；展开右栏，guide 出现本插件的 entry；点开后的可见文本：
+   ```text
+   DSH Chrome
+   DSH Chrome sidebar spike
+   A0
+   原生右栏 tab 已注册；当前只显示占位内容。
+   不嵌 iframe，也不控制浏览器。
+   会话: session-…
+   A0 · 未连接浏览器 context
+   ```
+   关闭该 tab 后侧栏收起；重新展开，guide 仍在（关闭 tab 不注销 tab 类型）。
+4. 浏览器 Console 没有本 bundle 相关错误；只有一条 DSH 的 `[connection] connection lost, retry #1`（临时实例的宿主连接重试，与本插件无关）。
+
+**包/API 事实（来自安装包，不是猜的）**
+
+- `@deepseek-ai/dsh-client-modules` 的 Host 扫描器（`lib/index.js` 的 `resolveMeta`/`processOne`）只接受 `dsh.client.platform === "web"`，从包根的 `exports["./client"]` 取 bundle 路径；`clientExportOf` 接受字符串或带 `default` 字符串的对象。
+- bundle 形状是 `window.__ModuleLoader__.load({ id: <package name>, factory })`，factory 返回 `{ apply, inject }`；包级 `dsh.client.inject` 只决定客户端模块的到达顺序，不是运行时服务列表。
+- `ctx.sidebarRightTabs.register({ id, kind, priority, multiple, keepMounted, title, guide })` 是本轮真正调用的注册面；`id` 用 `dsh-desktop-chrome/native-browser`，`kind` 用 `dsh-chrome`，真实实例接受了它（没有与 builtin 冲突）。
+- 正文/标题走 `ctx.slots.inject('sidebar.right.pane.tab' | 'sidebar.right.pane.tab.title', () => ctx.slots.register({ name, key: id, locale, inject }, Component))`；本轮正文拿到 `inject(sessionId)`，标题拿到 locale 字典。
+- `react` 在 DSH Web 前端的冻结共享模块表 `PLATFORM_MODULES` 里（同一张表还含 `@deepseek-ai/dsh-client-store`、`@deepseek-ai/dsh-client-ui-slots`、`@deepseek-ai/dsh-client-ui-primitives`、`@deepseek-ai/dsh-client-ui-dockkit`）；因此 A0 bundle 只 `require('react')`，不需要 `dsh.client.external`。A 如果只用 React state，不依赖 `dsh-client-store`。
+
+**自动化测试**
+
+```bash
+node test/client-bundle.mjs
+# CLIENT BUNDLE TEST: PASS
+```
+
+该测试做三件事：校验 `package.json` 的 `dsh.client`/`exports["./client"]`/打包声明；在 VM 里用假 `window.__ModuleLoader__` + 假 Cordis client ctx 执行 bundle，断言 `kind:"dsh-chrome"`、guide、两个 slot 与清理；用极简 React stub 渲染正文/标题，断言占位文本、`sessionId` 和“无 iframe”。它不能替代真实安装，所以上面另做了真实实例验证。
+
+另做了一次**只读的 Host 扫描器集成测试**（不提交，脚本在 `/tmp/dsh-a0/index.mjs`）：从 app.asar 解出 `@deepseek-ai/dsh-client-modules`/`cordis`，用真实 `ClientModuleRegistry` + 假 Loader entry 扫描本包，得到：
+```text
+row = { id: "dsh-desktop-chrome", url: "plugins/??dsh-desktop-chrome/client.js&rev=…",
+        inject: ["@deepseek-ai/dsh-client-ui-sidebar-right"] }
+clientPath = /Users/taishuo/projects/dsh-chrome-wt/sidebar/client/index.js
+fetchBundle(GET) -> 200, bundleChars = 10141
+DSH HOST SCANNER TEST: PASS
+```
+（`rev` 由 bundle 的 mtime/ctime/size 生成，每次 checkout 不同；bundleChars 也会随注释变化。）
+
+**阻塞点 / 没做什么**
+
+- **没有装进用户现有 profile**：`~/.dsh/profiles/desktop/package.json` 仍把 `dsh-desktop-chrome` link 到主检出 `/Users/taishuo/projects/dsh-chrome`。本轮遵守“只改 worktree”，只在 `/tmp/dsh-a0-home` 的一次性 profile 里安装验证；没有改主 profile、没有改主检出、没有重启用户 GUI。若要在现有 GUI 里看到它，需要把 desktop profile 重新 link 到本 worktree（`dsh plugin --profile desktop add <worktree>`）并刷新/重启 DSH——这会改变用户环境，需单独授权。
+- **A0-2/3/4 没跑**：没有新增 Host 路由，因此“带 cookie 200 / 无 cookie 401 / 跨站 403”“流式 Response 穿过 Web/Desktop 载体”“sessionId 与 context.owner 在根/子代理下是否一致”都还没有证据。A 的完整 UI 仍不能按 §6.0 的门槛开工；可以先做 A 的 Host 控制面骨架或继续 A0-2/3/4。
+- 本轮没有改 `index.js`、`src/tools*.js`、`src/context-viewer.js`、`src/liveview.js`、`extension/sidepanel.*`；provider 既有工具面/行为未动。
 
 ### 6.1 A 阶段：只读画面 + 地址栏/刷新
 
@@ -1249,7 +1328,7 @@ const contexts = {
 
 ## 11. 开放问题（需要拍板/验证）
 
-1. **A0 四项结果**：client bundle 能否从本包加载？`/api` exact route 是否可被页面带 cookie 调用？Desktop shell 是否支持流式 Response？`sessionId` 与 `owner` 的映射在根/子代理下是否一致？
+1. **A0 四项结果**：**组件 1 已通过**（client bundle 从本包加载、`kind:"dsh-chrome"` tab 可注册/打开，见 §6.0.1）；`/api` exact route 是否可被页面带 cookie 调用、Desktop shell 是否支持流式 Response、`sessionId` 与 `owner` 的映射在根/子代理下是否一致，**仍未验证**。
 2. **控制模式的产品语义**：默认 `unlock` 是否合适？确认条放正文顶部还是 DSH 全局 modal？5 分钟自动锁是否太短/太长？
 3. **桌面端**：B 是否接受“只 2fps 轮询、不做 push、不抢焦点”？还是要为桌面做 host→provider 的 screencast 转发（会改 `host/host.mjs` 并重建 host）？
 4. **typed Remote**：是否值得把控制面升级成 `ctx.remote.chromeBrowser`（需要自带 Typert 构建并与 DSH 版本对齐）？还是长期接受 exact Fetch + 手写校验？
@@ -1265,11 +1344,13 @@ const contexts = {
 
 ## 12. 文件清单（拟）
 
+> **A0 已落地**：`client/index.js`、`test/client-bundle.mjs`，以及 `package.json` 的 `exports["./client"]`、`files` 的 `client/**/*.js`、`dsh.client`、`npm test` 链。其余条目仍是设计清单，未创建。
+
 ### 12.1 新增
 
 | 文件 | 作用 |
 |---|---|
-| `client/index.js` | 手写 loader bundle：tab 类型、正文、标题、工具栏、输入映射、store、样式 |
+| `client/index.js` | **已落地（A0 占位）**：手写 loader bundle；只注册 tab 类型/guide/正文/标题，不嵌 iframe、不控制浏览器 |
 | `src/native-panel.js` | `NativePanelRegistry`、控制路由、cap/owner/mode/审计、生命周期 |
 | `src/native-frames.js` | `NativeFrameHub`、单帧/多段流、订阅/背压/退避 |
 | `src/native-capability.js` | cap 签发/哈希/校验/撤销/TTL |
@@ -1280,14 +1361,14 @@ const contexts = {
 | `test/native-panel-input.mjs` | 输入/映射/控制门单测 |
 | `test/native-panel-stream.mjs` | 多段流单测 |
 | `test/native-panel-multi.mjs` | C 多面板单测 |
-| `test/client-bundle.mjs` | client bundle VM 加载/注册/清理 |
+| `test/client-bundle.mjs` | **已落地**：client bundle VM 加载/注册/清理；真实安装验证见 §6.0.1 |
 
 ### 12.2 修改（拟）
 
 | 文件 | 改动 |
 |---|---|
 | `index.js` | `ctx.inject(['connection'], ...)` 创建/销毁 native panel runtime；日志；fail-soft |
-| `package.json` | `exports["./client"]`、`files` 加 `client/**/*`、`dsh.client`、test 链 |
+| `package.json` | **A0 已落地**：`exports["./client"]`、`files` 加 `client/**/*.js`、`dsh.client`、test 链；其余 `nativePanel` 配置未加 |
 | `src/config.js` | `nativePanel` 默认值/`KNOWN`/sanitize |
 | `src/headless.js` | `tab.frame`；`subscribeFrames()`（B）；不改变 `tab.screenshot` 契约 |
 | `extension/background.js` | `tab.frame` 分发（JPEG，不落盘） |
@@ -1301,7 +1382,7 @@ const contexts = {
 
 ### 12.3 明确不改
 
-`src/context-viewer.js`、`src/liveview.js`、`extension/sidepanel.html`、`extension/sidepanel.js`、`extension/sidepanel.css`、`host/host.mjs`（除非 C+ 决定做桌面 push）、`src/tools-context.js`（除非 C 加 tool view 按钮）。本文件是唯一新增的文档；不提交、不发版。
+`src/context-viewer.js`、`src/liveview.js`、`extension/sidepanel.html`、`extension/sidepanel.js`、`extension/sidepanel.css`、`host/host.mjs`（除非 C+ 决定做桌面 push）、`src/tools-context.js`（除非 C 加 tool view 按钮）。A0 新增的是 `client/index.js`、`test/client-bundle.mjs` 和证据图 `docs/assets/dsh-sidebar-native-a0.png`；不发布、不 bump 版本、不合并 main。
 
 ---
 
@@ -1324,6 +1405,8 @@ const contexts = {
 - `@deepseek-ai/dsh-client-ui-sidebar-terminal` README：`registerCloseHandler` 与 `keepMounted` 的实例。
 - `@deepseek-ai/dsh-client-ui-schedule` README：右栏不保存 params 时的 tab 绑定做法（本设计 §4.5.3 的先例）。
 - `@deepseek-ai/dsh-client-modules` README：`dsh.client` 声明、`./client` bundle、`window.__ModuleLoader__.load`。
+- `@deepseek-ai/dsh-client-modules` 实现（`lib/index.js`）：`resolveMeta`/`processOne` 扫描 Loader entry 的 `dsh.client`、`clientExportOf` 解析 `exports["./client"]`、`graphRow` 的 `inject` 字段；A0 的 Host 扫描器测试直接用了这个实现。
+- `@deepseek-ai/dsh-web-frontend/dist/assets/index-*.js`：前端冻结共享模块表 `PLATFORM_MODULES`，含 `react`、`react/jsx-runtime`、`@deepseek-ai/dsh-client-store`、`@deepseek-ai/dsh-client-ui-slots`、`@deepseek-ai/dsh-client-ui-primitives`、`@deepseek-ai/dsh-client-ui-dockkit`；A0 因此只 `require('react')`，不声明 `external`。
 - `@deepseek-ai/dsh-client-connection` README：cookie/启动 token、Host/Origin fence、exact Fetch route、共享 Fetch handler、流式请求体/响应。
 - `@deepseek-ai/dsh-api-gateway` / `@deepseek-ai/dsh-api-remotes` README：为什么 typed `ctx.remote` namespace 是构建期选择、第三方包不能运行时新增。
 - `@deepseek-ai/dsh-host-webserver` README：`register`/`registerUpgrade`、`/api` 路由归属、shell 载体差异。
