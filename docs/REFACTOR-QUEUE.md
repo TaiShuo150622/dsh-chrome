@@ -34,7 +34,7 @@
   - 新建 `src/headless-redact.js`：`maskSecretsInText`、`redactUrl`、`redactJsonValue`、`redactBodyText`、`materializeCaptureBody` 及 capture 常量；
   - `headless.js` 改为 import；脱敏规则/预算不变；
   - 全量测试。
-- [ ] Q7 抽出 `chrome_headless_login` 工具
+- [x] Q7 抽出 `chrome_headless_login` 工具
   - 新建 `src/tools-login.js`：工厂注入 `bridge`、`hardConfirmAsk`、`evaluateConfirmTimeoutMs`、`renderText`、`outputSchema`（按实际依赖）；
   - `tools.js` 只组装；工具 schema/render/确认文案不变；
   - 全量测试。
