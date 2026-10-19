@@ -11,6 +11,13 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.22] - 2026-10-19
+
+- 生命周期/内存加固（M1–M8）：tab 事务回滚、统一 cleanup、capture TTL、启动失败回收、下载/owner 清理、maxTabs/maxContexts 用户配置
+- 内存监控：chrome_memory_stats 快照、持续 ring/JSONL/alerts、Chrome 进程树 RSS、20 轮 soak
+- 团队执行：Headless/Extension/Observability/Platform 四条线合并；bridge 协议版本协商/有界重试；Windows host 版本注入
+- 1 轮真实 soak PASS：Node RSS peak 70.2MiB、Chrome peak 1.66GiB/12proc、retained +13.48MiB、after-first-round 0
+
 ## [0.2.21] - 2026-10-19
 
 - 虚拟 cursor 改为 DSH 鲸鱼/鱼形 logo（品牌尾巴），保留点击波纹/动作标签
