@@ -71,6 +71,17 @@ export class BridgeServer {
   }
 
   async start() {
+    try {
+      return await this.#start()
+    } catch (error) {
+      // Record the failure for chrome_status. Without this, a failed listen
+      // looks identical to "extension never connected".
+      this.lastError = error
+      throw error
+    }
+  }
+
+  async #start() {
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 })
     if (this.platform !== 'win32') {
       try {

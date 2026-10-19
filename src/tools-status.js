@@ -132,12 +132,13 @@ export function createStatusTools({ bridge, assets, update = null, currentSite, 
     },
     async execute() {
       const info = assets() ?? {}
+      const bridgeError = typeof bridge.bridgeError === 'function' ? bridge.bridgeError() : bridge.lastError || null
       const value = {
         connected: bridge.connected,
         backend: bridge.backend || 'desktop',
         headless: typeof bridge.headlessInfo === 'function' ? bridge.headlessInfo() : null,
         provider: 'chrome-extension',
-        bridgeError: bridge.lastError ? String(bridge.lastError.message || bridge.lastError) : null,
+        bridgeError: bridgeError ? String(bridgeError.message || bridgeError) : null,
         protocol: 1,
         hostVersion: bridge.hostVersion,
         extensionVersion: bridge.extensionVersion,

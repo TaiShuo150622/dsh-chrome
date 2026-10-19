@@ -66,7 +66,9 @@ const report = {
     pid: bridge?.pid ?? null,
     pidAlive: processAlive(bridge?.pid),
     socketPath: bridge?.socketPath ?? null,
-    socketPresent: bridge ? fs.existsSync(bridge.socketPath) : false,
+    socketKind: process.platform === 'win32' ? 'named-pipe' : 'unix',
+    // A Windows named pipe is not a filesystem object; don't report it as missing.
+    socketPresent: process.platform === 'win32' ? null : bridge ? fs.existsSync(bridge.socketPath) : false,
     startedAt: bridge?.startedAt ? new Date(bridge.startedAt).toISOString() : null,
   },
   nativeHost: {

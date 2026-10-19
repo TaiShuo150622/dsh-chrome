@@ -54,7 +54,7 @@ DEFAULT_CONFIG
 | `browser.maxContexts` | `4` | `src/contexts.js:37,66` | ✅ 生效（构造时缓存） |
 | `browser.idleTimeoutMs` | `300000` | `src/contexts.js:38,166` | ✅ 生效（构造时缓存） |
 | `browser.profilesDir` | `null` | `src/contexts.js:39` | ✅ 生效 |
-| `browser.headless.chromeExecutable` | `null` | 无 | ⚠️ **未接线**；实际路径来自 `DSH_HEADLESS_CHROME` 或 `src/headless.js:30-38` 的候选列表 |
+| `browser.headless.chromeExecutable` | `null` | 无 | ✅ 0.2.17 起接线；也可用 `DSH_HEADLESS_CHROME`/`DSH_HEADLESS_ENGINE`，优先级见 headless-browsers |
 | `browser.headless.viewport` | `1440x900` | 无 | ⚠️ **未接线**；`HeadlessDriver` 的 `windowSize` 走构造参数，`index.js:69-77` 没传 |
 | `browser.shared.enabled` | `false` | `index.js:228` → `wrapToolsForBackend({leaseRequired})` | ✅ 只控制“隐式写 lease”，**不等于 collab 可用** |
 | `browser.shared.requireLease` | `true` | 无 | ⚠️ **未接线**，且语义误导（见 §1.4） |

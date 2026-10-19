@@ -26,13 +26,26 @@ export class HeadlessContextRouter {
   async request(method, params = {}) {
     const owner = params?.owner || 'default'
     let ctx = this.manager.activeFor(owner)
+    const created = !ctx
     if (!ctx) ctx = await this.manager.create({ owner })
     this.manager.touch(ctx.contextId)
     const driver = this.manager.driverFor(ctx.contextId)
-    if (!driver) throw Object.assign(new Error(`context ${ctx.contextId} has no driver`), { code: 'CONTEXT_NOT_FOUND' })
-    const result = await driver.request(method, params)
-    if (driver.browserVersion) this.lastBrowserVersion = driver.browserVersion
-    return result
+    if (!driver) {
+      if (created) await this.manager.close(ctx.contextId)
+      throw Object.assign(new Error(`context ${ctx.contextId} has no driver`), { code: 'CONTEXT_NOT_FOUND' })
+    }
+    try {
+      const result = await driver.request(method, params)
+      if (driver.browserVersion) this.lastBrowserVersion = driver.browserVersion
+      return result
+    } catch (error) {
+      // A failed first launch (e.g. configured Edge/Brave executable missing)
+      // must not leave a phantom "running" context behind.
+      if (created) {
+        try { await this.manager.close(ctx.contextId) } catch {}
+      }
+      throw error
+    }
   }
 
   async close() {

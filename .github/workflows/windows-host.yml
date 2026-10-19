@@ -13,6 +13,9 @@ on:
       - 'scripts/build-windows-host.mjs'
       - 'src/install.js'
       - 'src/platform.js'
+      - 'src/bridge.js'
+      - 'test/p0-bridge.mjs'
+      - 'test/bridge-windows.mjs'
       - 'test/platform-windows-host.mjs'
       - 'docs/WINDOWS-HOST.md'
       - '.github/workflows/windows-host.yml'
@@ -22,6 +25,9 @@ on:
       - 'scripts/build-windows-host.mjs'
       - 'src/install.js'
       - 'src/platform.js'
+      - 'src/bridge.js'
+      - 'test/p0-bridge.mjs'
+      - 'test/bridge-windows.mjs'
       - 'test/platform-windows-host.mjs'
       - 'docs/WINDOWS-HOST.md'
       - '.github/workflows/windows-host.yml'
@@ -76,6 +82,13 @@ jobs:
 
       - name: Install-layout integration (manifest path -> host.exe)
         run: node test/platform-windows-host.mjs --require-built
+
+      - name: Bridge named-pipe protocol (real BridgeServer + host)
+        run: |
+          $env:DSH_HOME = Join-Path $env:RUNNER_TEMP 'dsh-p0-bridge'
+          Remove-Item -Recurse -Force $env:DSH_HOME -ErrorAction Ignore
+          node test/p0-bridge.mjs
+          node test/bridge-windows.mjs
 
       - name: Record artifact size and SHA-256
         run: |

@@ -10,7 +10,7 @@
  *
  * Selection precedence (highest first):
  *   1. `executable` argument / `DSH_HEADLESS_CHROME` — an explicit binary path;
- *   2. `engine` argument / `DSH_CHROME_BROWSER` — a named engine whose
+ *   2. `engine` argument / `DSH_HEADLESS_ENGINE` — a named engine whose
  *      candidates are probed;
  *   3. default — the legacy probe order Chrome -> Chromium.
  *
@@ -31,7 +31,7 @@ import { browserPaths, getPlatform } from './platform.js'
 
 export const HEADLESS_ENGINES = Object.freeze(['chrome', 'chromium', 'edge', 'brave'])
 
-export const HEADLESS_ENGINE_ENV = 'DSH_CHROME_BROWSER'
+export const HEADLESS_ENGINE_ENV = 'DSH_HEADLESS_ENGINE'
 export const HEADLESS_EXECUTABLE_ENV = 'DSH_HEADLESS_CHROME'
 
 /** Default probe order when neither engine nor executable was configured. */

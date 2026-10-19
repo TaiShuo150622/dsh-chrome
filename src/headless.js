@@ -151,7 +151,7 @@ const HEADLESS_ACTIONS = createHeadlessActions({
  * Resolve the executable for a headless launch (multi-engine MVP).
  *
  * Explicit selection (`engine` / `executable`, or the environment selectors
- * `DSH_CHROME_BROWSER` / `DSH_HEADLESS_CHROME`) never falls back to another
+ * `DSH_HEADLESS_ENGINE` / `DSH_HEADLESS_CHROME`) never falls back to another
  * engine: a missing explicitly selected Edge install throws
  * `HEADLESS_EXECUTABLE_NOT_FOUND` instead of silently launching Chrome.
  * Without a selection the legacy Chrome -> Chromium probe order is unchanged.
@@ -298,7 +298,7 @@ export class HeadlessDriver {
     this.startPromise = (async () => {
       const executable = chromeExecutable({ engine: this.engine, executable: this.executable })
       if (!executable) {
-        throw error('UNSUPPORTED_BACKEND', 'no Chrome/Chromium/Edge/Brave executable found for the headless backend (set DSH_HEADLESS_CHROME or DSH_CHROME_BROWSER)')
+        throw error('UNSUPPORTED_BACKEND', 'no Chrome/Chromium/Edge/Brave executable found for the headless backend (set DSH_HEADLESS_CHROME or DSH_HEADLESS_ENGINE)')
       }
       const profileDir = this.profileDir
       await fsp.mkdir(profileDir, { recursive: true })

@@ -494,7 +494,7 @@ new HeadlessDriver({ ..., onExit: (code) => manager.markCrashed(contextId, code)
 
 1. **桌面 bridge 是单 socket**：`BridgeServer.#accept()` 在新连接到来时会 `destroy` 旧 socket（`src/bridge.js:90-95`）。Chrome 和 Edge 各自拉起 native host 时，第二个连接会把第一个踢掉。因此“同时连两个浏览器”不是配置问题，是架构问题。
 2. **安装器一次只装一个浏览器**：`ensureInstallAssets({ browser = process.env.DSH_CHROME_BROWSER || 'chrome' })`（`src/install.js:316-320`）每次只写一个浏览器的 manifest/注册表。没有“给所有已安装浏览器都装”的循环，也没有运行时浏览器选择。
-3. **headless 候选已表驱动（MVP），但没有 per-context engine**：`src/headless-browsers.js` 复用 `browserPaths().executableCandidates`，覆盖 Chrome/Chromium/Edge/Brave × mac/linux/win，并解析 `DSH_CHROME_BROWSER`、config `browser.engine` / `browser.headless.chromeExecutable`、`DSH_HEADLESS_CHROME`；仍缺 `chrome_context create {engine}`、`chrome_status` 的 engine 字段和真机启动验证。
+3. **headless 候选已表驱动（MVP），但没有 per-context engine**：`src/headless-browsers.js` 复用 `browserPaths().executableCandidates`，覆盖 Chrome/Chromium/Edge/Brave × mac/linux/win，并解析 `DSH_HEADLESS_ENGINE`、config `browser.engine` / `browser.headless.chromeExecutable`、`DSH_HEADLESS_CHROME`；仍缺 `chrome_context create {engine}`、`chrome_status` 的 engine 字段和真机启动验证。
 4. **`headlessSupported()` 在 provider 启动时一次性判定**：没有 Chrome/Chromium 时 `headless = null`；之后装了浏览器也不会自动恢复，需要重载 provider。
 5. **没有引擎身份**：`BridgeServer` 的 hello 只带 `hostVersion`，`chrome_status` 不报告 engine；`chrome_*` 工具没有 `engine` 参数；没有 `chrome_browsers` 工具（`docs/ROADMAP.md` 只把它列为 P3 设想）。
 6. **`browser.headless.chromeExecutable` 已接线但仍为全局**：显式路径/引擎不存在时报 `HEADLESS_EXECUTABLE_NOT_FOUND`，不会静默回退；但解析结果属于 provider 级配置，不是 per-context engine，也没有 `chrome_status` 的 engine/实际路径字段。
@@ -965,7 +965,7 @@ node test/install-platform.mjs
 **已实现（只到可执行文件解析/选择）**
 
 - `src/headless-browsers.js`：复用 `src/platform.js` 的 4 浏览器 × 3 平台候选表，解析 Chrome / Chromium / Microsoft Edge（`msedge`）/ Brave；Linux 裸命令名按 `PATH` 查找，Windows 路径由 `%PROGRAMFILES%` 等变量展开，mac/win 均为表内绝对路径。
-- 选择来源：`DSH_CHROME_BROWSER=chrome|chromium|edge|brave`、`DSH_HEADLESS_CHROME`（显式路径）、config `browser.engine` / `browser.headless.chromeExecutable`；环境变量覆盖 config。
+- 选择来源：`DSH_HEADLESS_ENGINE=chrome|chromium|edge|brave`、`DSH_HEADLESS_CHROME`（显式路径）、config `browser.engine` / `browser.headless.chromeExecutable`；环境变量覆盖 config。
 - 显式指定但不存在时报 `HEADLESS_EXECUTABLE_NOT_FOUND`（错误里列出候选路径），未知引擎报 `HEADLESS_ENGINE_UNKNOWN`；**不会**静默回退到 Chrome。
 - 未指定时保持旧行为：Chrome → Chromium；两者都不存在时返回 null（`headlessSupported()` 为 false）。
 - 解析结果接到 `HeadlessDriver`（含交互登录窗口），provider 启动时一次性判定；测试 `test/headless-browsers.mjs` 已接入 `npm test`。

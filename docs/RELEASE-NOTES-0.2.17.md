@@ -6,7 +6,7 @@
 
 - **多引擎 headless 候选**：`browser.engine` / `browser.headless.chromeExecutable` / `DSH_CHROME_BROWSER`；支持 Chrome/Chromium/Edge/Brave 的 mac/linux/win 候选，显式指定不存在时明确报错；
 - **密码 P1 基础**：`src/credentials.js`，opaque credentialId、macOS Keychain adapter、Windows/Linux NOT_SUPPORTED、fake exec 测试；**未接 autofill/UI**；
-- **DSH 原生侧边栏 A0**：`client/` bundle 骨架与 `kind:"dsh-chrome"` 注册，**未安装、未验证真机**。
+- **DSH 原生侧边栏 A0**：`client/` bundle 骨架与 `kind:"dsh-chrome"` 注册；A0 占位会随包加载，但**不嵌 iframe、不控制浏览器、未在正式安装包复跑**。
 
 ## 测试
 

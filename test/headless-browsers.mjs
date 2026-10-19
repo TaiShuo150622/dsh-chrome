@@ -191,15 +191,15 @@ check('headlessSupported follows the default probe (true/false, no throw)', () =
 // 3) explicit engine selection (env and config)
 // ---------------------------------------------------------------------------
 
-check('DSH_CHROME_BROWSER=edge picks Edge, not Chrome', () => {
+check('DSH_HEADLESS_ENGINE=edge picks Edge, not Chrome', () => {
   const selected = resolveHeadlessExecutable({
     ...MAC,
-    env: { DSH_CHROME_BROWSER: 'edge' },
+    env: { DSH_HEADLESS_ENGINE: 'edge' },
     isExecutable: fakeExecutables(MAC_CHROME, MAC_EDGE),
   })
   assert.equal(selected.engine, 'edge')
   assert.equal(selected.executable, MAC_EDGE)
-  assert.equal(selected.source, 'env:DSH_CHROME_BROWSER')
+  assert.equal(selected.source, 'env:DSH_HEADLESS_ENGINE')
   assert.equal(selected.explicit, true)
   return selected.executable
 })
@@ -216,10 +216,10 @@ check('config engine=brave picks Brave', () => {
   return selected.executable
 })
 
-check('DSH_CHROME_BROWSER=msedge alias works', () => {
+check('DSH_HEADLESS_ENGINE=msedge alias works', () => {
   const selected = resolveHeadlessExecutable({
     ...MAC,
-    env: { DSH_CHROME_BROWSER: 'msedge' },
+    env: { DSH_HEADLESS_ENGINE: 'msedge' },
     isExecutable: fakeExecutables(MAC_EDGE),
   })
   assert.equal(selected.engine, 'edge')
@@ -230,7 +230,7 @@ check('env selector overrides config engine', () => {
   const selected = resolveHeadlessExecutable({
     ...MAC,
     engine: 'brave',
-    env: { DSH_CHROME_BROWSER: 'edge' },
+    env: { DSH_HEADLESS_ENGINE: 'edge' },
     isExecutable: fakeExecutables(MAC_EDGE, MAC_BRAVE),
   })
   assert.equal(selected.engine, 'edge')
@@ -264,7 +264,7 @@ check('DSH_HEADLESS_CHROME wins over config executable and engine', () => {
     ...MAC,
     engine: 'brave',
     executable: '/opt/dsh/from-config',
-    env: { DSH_HEADLESS_CHROME: fromEnv, DSH_CHROME_BROWSER: 'edge' },
+    env: { DSH_HEADLESS_CHROME: fromEnv, DSH_HEADLESS_ENGINE: 'edge' },
     isExecutable: fakeExecutables(fromEnv, '/opt/dsh/from-config', MAC_EDGE),
   })
   assert.equal(selected.executable, fromEnv)
@@ -293,7 +293,7 @@ checkThrows(
   () =>
     resolveHeadlessExecutable({
       ...MAC,
-      env: { DSH_CHROME_BROWSER: 'edge' },
+      env: { DSH_HEADLESS_ENGINE: 'edge' },
       isExecutable: fakeExecutables(MAC_CHROME),
     }),
   'HEADLESS_EXECUTABLE_NOT_FOUND',
@@ -317,7 +317,7 @@ checkThrows(
   () =>
     resolveHeadlessExecutable({
       ...MAC,
-      env: { DSH_CHROME_BROWSER: 'chrome' },
+      env: { DSH_HEADLESS_ENGINE: 'chrome' },
       isExecutable: fakeExecutables(MAC_CHROMIUM),
     }),
   'HEADLESS_EXECUTABLE_NOT_FOUND',
@@ -341,7 +341,7 @@ checkThrows(
   () =>
     headlessChromeExecutable({
       ...MAC,
-      env: { DSH_CHROME_BROWSER: 'brave' },
+      env: { DSH_HEADLESS_ENGINE: 'brave' },
       isExecutable: () => false,
     }),
   'HEADLESS_EXECUTABLE_NOT_FOUND',
@@ -350,7 +350,7 @@ checkThrows(
 
 check('headlessSupported stays true for an explicit miss so launch can explain it', () => {
   assert.equal(
-    headlessSupported({ ...MAC, env: { DSH_CHROME_BROWSER: 'edge' }, isExecutable: () => false }),
+    headlessSupported({ ...MAC, env: { DSH_HEADLESS_ENGINE: 'edge' }, isExecutable: () => false }),
     true,
   )
   return 'diagnostic error surfaces at launch'
@@ -361,7 +361,7 @@ checkThrows(
   () =>
     resolveHeadlessExecutable({
       ...MAC,
-      env: { DSH_CHROME_BROWSER: 'netscape' },
+      env: { DSH_HEADLESS_ENGINE: 'netscape' },
       isExecutable: fakeExecutables(MAC_CHROME),
     }),
   'HEADLESS_ENGINE_UNKNOWN',
@@ -388,7 +388,7 @@ check('Linux bare command names resolve through PATH (edge)', () => {
   const selected = resolveHeadlessExecutable({
     platform: 'linux',
     home: '/home/dsh',
-    env: { DSH_CHROME_BROWSER: 'edge', PATH: '/opt/dsh/bin:/usr/bin' },
+    env: { DSH_HEADLESS_ENGINE: 'edge', PATH: '/opt/dsh/bin:/usr/bin' },
     isExecutable: fakeExecutables('/opt/dsh/bin/microsoft-edge'),
   })
   assert.equal(selected.engine, 'edge')
@@ -400,7 +400,7 @@ check('Linux falls back to the absolute table candidate when PATH misses', () =>
   const selected = resolveHeadlessExecutable({
     platform: 'linux',
     home: '/home/dsh',
-    env: { DSH_CHROME_BROWSER: 'brave', PATH: '/nonexistent' },
+    env: { DSH_HEADLESS_ENGINE: 'brave', PATH: '/nonexistent' },
     isExecutable: fakeExecutables('/opt/brave.com/brave/brave'),
   })
   assert.equal(selected.executable, '/opt/brave.com/brave/brave')
@@ -410,7 +410,7 @@ check('Linux falls back to the absolute table candidate when PATH misses', () =>
 check('Windows engine selection uses the platform table (Edge)', () => {
   const selected = resolveHeadlessExecutable({
     ...WIN,
-    env: { ...WIN_ENV, DSH_CHROME_BROWSER: 'edge' },
+    env: { ...WIN_ENV, DSH_HEADLESS_ENGINE: 'edge' },
     isExecutable: fakeExecutables(WIN_EDGE, WIN_CHROME),
   })
   assert.equal(selected.engine, 'edge')
@@ -434,7 +434,7 @@ checkThrows(
   () =>
     resolveHeadlessExecutable({
       ...WIN,
-      env: { ...WIN_ENV, DSH_CHROME_BROWSER: 'edge' },
+      env: { ...WIN_ENV, DSH_HEADLESS_ENGINE: 'edge' },
       isExecutable: fakeExecutables(WIN_CHROME),
     }),
   'HEADLESS_EXECUTABLE_NOT_FOUND',
@@ -495,7 +495,7 @@ check('resolution errors are HeadlessBrowserError instances', () => {
   const error = captureError(() =>
     resolveHeadlessExecutable({
       ...MAC,
-      env: { DSH_CHROME_BROWSER: 'edge' },
+      env: { DSH_HEADLESS_ENGINE: 'edge' },
       isExecutable: () => false,
     }),
   )

@@ -11,11 +11,16 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.18] - 2026-10-19
+
+- 插件设置 MVP：DSH Config schema + 安全可选字段 + 文件配置优先级
+- chrome_status bridgeError 真正从 BridgeServer 读取（审查发现）
+
 ## [0.2.17] - 2026-10-19
 
 - 多引擎 headless 候选（Chrome/Chromium/Edge/Brave，含 Windows）
 - 密码 P1 基础：opaque credentialId + macOS Keychain adapter（未接填充 UI）
-- DSH 原生侧边栏 A0 client bundle 骨架（未安装）
+- DSH 原生侧边栏 A0 client bundle 骨架（A0 占位随包加载；不控制浏览器，未正式安装复跑）
 
 ## [0.2.16] - 2026-10-19
 

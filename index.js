@@ -148,6 +148,10 @@ export function apply(ctx, config) {
     headless,
     headlessSupported: headlessSupportedNow,
   })
+  // chrome_status receives the router, not the raw BridgeServer. Expose the
+  // bridge start failure through the router so Windows testers can tell
+  // "extension disconnected" from "provider bridge failed to listen".
+  router.bridgeError = () => bridge.lastError || null
 
   ctx.inject(['attachments'], (scoped) => {
     attachments.current = scoped.get('attachments')

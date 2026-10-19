@@ -17,7 +17,7 @@ export function createHeadlessLogin({ chromeExecutable, error }) {
     }
     if (driver.chrome || driver.cdp) await driver.close()
     const executable = chromeExecutable(driver)
-    if (!executable) throw error('UNSUPPORTED_BACKEND', 'no Chrome/Chromium/Edge/Brave executable found (set DSH_HEADLESS_CHROME or DSH_CHROME_BROWSER)')
+    if (!executable) throw error('UNSUPPORTED_BACKEND', 'no Chrome/Chromium/Edge/Brave executable found (set DSH_HEADLESS_CHROME or DSH_HEADLESS_ENGINE)')
     const target = url && /^https?:\/\//i.test(String(url)) ? String(url) : 'about:blank'
     await fsp.mkdir(driver.loginProfile, { recursive: true })
     const child = driver.spawnImpl(
