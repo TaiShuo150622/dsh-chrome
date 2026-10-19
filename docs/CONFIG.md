@@ -30,6 +30,10 @@
 - 拒绝 → `APPROVAL_DENIED`；超时 → `APPROVAL_TIMEOUT`；子代理会话 → `DELEGATED_CALLER`；
 - 确认服务不可用 → fail-closed（拒绝）。
 
+## 可选自动更新
+
+`~/.dsh/config.json` 的 `update.enabled`（默认 false）开启发布检查；`update.autoInstall` 仅 Windows 自动更新 host exe。详见 [AUTO-UPDATE.md](AUTO-UPDATE.md)。
+
 ## 数据边界
 
 - `chrome_evaluate`：表达式与返回值会进入会话日志/模型上下文（页面内容不可信）。

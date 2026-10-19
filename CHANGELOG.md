@@ -11,6 +11,10 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.2] - 2026-10-19
+
+- 可选自动更新检查：update.enabled/channel/autoInstall；GitHub Release 检查、状态文件、Windows host 自动安装（SHA-256）
+
 ## [0.2.1] - 2026-10-19
 
 - 版本号规则：普通改动只升第三位；minor 变化需先告知用户

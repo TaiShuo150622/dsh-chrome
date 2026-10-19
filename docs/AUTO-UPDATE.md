@@ -65,3 +65,27 @@ npm run watch:update: 打印 diskVersion/watcher/lastCheckedAt/lastChangeAt/last
 2. 不行 → `chrome://extensions` → 卡片 ⟳；
 3. 再不行 → 完全退出 Chrome 再打开（native messaging manifest 只在启动时读取）；
 4. 诊断：`npm run status`、`tail ~/.dsh/cache/dsh-chrome/host.log`。
+
+## 可选发布更新检查（0.2.2+）
+
+除上面的开发期自动 reload 外，provider 还可以检查 GitHub Release。默认关闭：
+
+```json
+{
+  "update": {
+    "enabled": false,
+    "autoInstall": false,
+    "channel": "stable",
+    "checkIntervalHours": 24,
+    "repository": "TaiShuo150622/dsh-chrome"
+  }
+}
+```
+
+- `enabled`：启动 3 秒后检查一次，之后按小时检查；结果写 `~/.dsh/cache/dsh-chrome/update.json`；
+- `channel`：`stable` 忽略 prerelease；`preview` 包含预览版；
+- `autoInstall`：仅 Windows 自动下载 `dsh-chrome-host-win32-x64.exe`、校验 SHA-256、替换 cache 中的 host exe；**DSH 插件本体仍通过 DSH 插件管理器更新**；
+- Chrome 未打包扩展不能自更新；扩展更新仍需重新加载/重新安装；
+- 不开启时 provider 不发起更新请求。
+
+`chrome_status` 的 `pluginUpdate` 字段显示当前/最新版本、是否可用、最后检查错误。

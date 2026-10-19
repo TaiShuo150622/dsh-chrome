@@ -141,7 +141,7 @@ function normalizeLeaseError(error) {
   return new BridgeError('INTERNAL', error?.message || String(error))
 }
 
-export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null, contextViewer = null }) {
+export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null, contextViewer = null, update = null }) {
   const list = []
   const ownerOf = (exec) => exec?.agent?.id ?? 'default'
   const releaseOwnedLeases = (exec) => {
@@ -512,6 +512,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         backend: { type: 'string' },
         headless: { type: 'object', additionalProperties: true },
         updateState: { type: 'object', additionalProperties: true },
+        pluginUpdate: { type: 'object', additionalProperties: true },
         groupCount: {},
         alarms: {
           type: 'array',
@@ -537,6 +538,9 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           `extension id: ${value.extensionId ?? 'unknown'}`,
           `disk version: ${value.diskVersion ?? 'unknown'}  auto-reload: ${value.autoReload ? 'on' : 'off'}`,
           `provider: ${value.providerVersion ?? 'unknown'}  last reload: ${value.updateState?.lastReloadRequestedAt ?? 'never'}`,
+          ...(value.pluginUpdate?.enabled
+            ? [`plugin update: current ${value.pluginUpdate.current || '?'}  latest ${value.pluginUpdate.latest || '?'}  ${value.pluginUpdate.available ? 'AVAILABLE' : 'up to date'}${value.pluginUpdate.error ? `  (check failed: ${value.pluginUpdate.error})` : ''}`]
+            : []),
           `session tab groups: ${value.groupCount ?? 'unknown'}`,
         ]
         if (Array.isArray(value.alarms) && value.alarms.length > 0) {

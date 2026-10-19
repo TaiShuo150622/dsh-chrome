@@ -15,6 +15,7 @@ import { BrowserContextManager } from './src/contexts.js'
 import { loadConfig } from './src/config.js'
 import { HeadlessContextRouter } from './src/headless-contexts.js'
 import { BrowserLeaseManager } from './src/lease.js'
+import { createUpdateChecker } from './src/update.js'
 import { registerContextViewer } from './src/context-viewer.js'
 import { BridgeServer } from './src/bridge.js'
 import { HeadlessDriver, headlessSupported } from './src/headless.js'
@@ -46,6 +47,16 @@ export function apply(ctx) {
   const contextViewer = { current: null }
   const logger = ctx.logger
   const configInfo = loadConfig({ home, cwd: process.cwd() })
+  let packageVersion = '0.0.0'
+  try {
+    packageVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version || packageVersion
+  } catch {}
+  const updateChecker = createUpdateChecker({
+    home,
+    currentVersion: packageVersion,
+    config: configInfo.config.update,
+    logger,
+  })
   if (configInfo.warnings.length > 0) {
     for (const warning of configInfo.warnings) logger?.warn?.('dsh-chrome config: %s', warning)
   }
@@ -166,6 +177,11 @@ export function apply(ctx) {
   })
 
   ctx.effect(() => {
+    updateChecker.start()
+    return () => updateChecker.stop()
+  })
+
+  ctx.effect(() => {
     const ready = bridge.start().catch((error) => {
       logger?.warn?.('dsh-chrome: bridge listen failed: %s', error?.message || String(error))
     })
@@ -211,6 +227,7 @@ export function apply(ctx) {
         contexts,
         leases,
         contextViewer: () => contextViewer.current,
+        update: updateChecker,
       }),
       router,
       {

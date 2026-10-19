@@ -36,11 +36,18 @@ export const DEFAULT_CONFIG = Object.freeze({
     claude: { preset: 'debug' },
     codex: { preset: 'debug' },
   },
+  update: {
+    enabled: false,
+    autoInstall: false,
+    channel: 'stable',
+    checkIntervalHours: 24,
+    repository: 'TaiShuo150622/dsh-chrome',
+  },
   safety: { allowedOrigins: null },
 })
 
 const SECRET_KEY = /(password|passwd|secret|token|api[-_]?key|credential|private[-_]?key)/i
-const KNOWN = new Set(['version', 'browser', 'verification', 'externalAgents', 'safety'])
+const KNOWN = new Set(['version', 'browser', 'verification', 'externalAgents', 'update', 'safety'])
 
 const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 
@@ -89,6 +96,11 @@ function sanitize(config, warnings) {
   config.verification.screenshotFormat = ['png', 'jpeg'].includes(config.verification.screenshotFormat) ? config.verification.screenshotFormat : 'png'
   config.verification.maxArtifactBytes = clampInt(config.verification.maxArtifactBytes, 1_048_576, 2_147_483_648, 52_428_800, warnings, 'verification.maxArtifactBytes')
   config.verification.artifactRetentionRuns = clampInt(config.verification.artifactRetentionRuns, 1, 1000, 50, warnings, 'verification.artifactRetentionRuns')
+  if (!['stable', 'preview'].includes(config.update.channel)) {
+    warnings.push('invalid update.channel; using stable')
+    config.update.channel = 'stable'
+  }
+  config.update.checkIntervalHours = clampInt(config.update.checkIntervalHours, 1, 168, 24, warnings, 'update.checkIntervalHours')
   for (const name of ['claude', 'codex']) {
     if (!PRESETS.includes(config.externalAgents[name].preset)) {
       warnings.push(`unknown externalAgents.${name}.preset; using debug`)
