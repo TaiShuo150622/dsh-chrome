@@ -1910,8 +1910,14 @@ export class HeadlessDriver {
     this.cdp = null
     for (const tab of [...this.tabs.values()]) this.cleanupTab(tab, { reason })
     for (const capture of this.captures.values()) {
-      if (capture.timer) clearTimeout(capture.timer)
-      if (capture.expireTimer) clearTimeout(capture.expireTimer)
+      if (capture.timer) {
+        clearTimeout(capture.timer)
+        capture.timer = null
+      }
+      if (capture.expireTimer) {
+        clearTimeout(capture.expireTimer)
+        capture.expireTimer = null
+      }
       this.releaseCaptureData(capture, { entries: true })
     }
     this.owners.clear()

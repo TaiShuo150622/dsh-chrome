@@ -273,10 +273,12 @@ const assertTabGone = (driver, tab) => {
   // timer): close must clear both timers, not just the registry entries.
   const stoppedCapture = await second.dispatch('tab.capture_start', { owner: 'owner-c', tabId: secondTab.tabId })
   await second.dispatch('tab.capture_stop', { owner: 'owner-c', captureId: stoppedCapture.captureId })
-  const secondExpireTimer = second.captures.get(stoppedCapture.captureId).expireTimer
+  const stoppedRecord = second.captures.get(stoppedCapture.captureId)
+  const secondExpireTimer = stoppedRecord.expireTimer
   assert.ok(secondExpireTimer, 'stopped capture summary timer armed')
   const activeCapture = await second.dispatch('tab.capture_start', { owner: 'owner-c', tabId: secondTab.tabId })
-  const secondCaptureTimer = second.captures.get(activeCapture.captureId).timer
+  const activeRecord = second.captures.get(activeCapture.captureId)
+  const secondCaptureTimer = activeRecord.timer
   await second.dispatch('tab.screencast_start', { owner: 'owner-c', tabId: secondTab.tabId })
   const secondScreencastTimer = secondTab.screencast.timer
   second.onCdpEvent({ method: 'Browser.downloadWillBegin', params: { guid: 'gc', suggestedFilename: 'c.txt' } })
@@ -290,7 +292,9 @@ const assertTabGone = (driver, tab) => {
   assert.equal(second.downloads.length, 0, 'close clears the download history')
   assert.equal(second.downloadByGuid.size, 0, 'close clears the download guid index')
   assert.equal(secondCaptureTimer._destroyed, true, 'close clears the active capture timer')
+  assert.equal(activeRecord.timer, null, 'close forgets the active capture timer handle')
   assert.equal(secondExpireTimer._destroyed, true, 'close clears the stopped capture TTL timer')
+  assert.equal(stoppedRecord.expireTimer, null, 'close forgets the stopped capture TTL timer handle')
   assert.equal(secondScreencastTimer._destroyed, true, 'close clears the screencast timer')
   assert.equal(second.cdp, null)
   assert.equal(second.browserVersion, null)
