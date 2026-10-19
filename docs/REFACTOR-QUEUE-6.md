@@ -5,7 +5,7 @@
 
 ## 队列
 
-- [ ] Q26 headless 截图/screencast 状态拆出
+- [x] Q26 headless 截图/screencast 状态拆出
   - 新建 `src/headless-screenshot.js` 或等价模块，迁移 screenshot 缓存/帧处理/screencast 状态中相对自洽的部分；
   - HeadlessDriver 保留 facade；全量测试。
 - [ ] Q27 headless 视觉探针拆出
