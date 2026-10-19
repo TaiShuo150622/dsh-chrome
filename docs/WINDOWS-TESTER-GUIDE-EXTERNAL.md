@@ -1,18 +1,18 @@
-# Windows 预览版测试说明（0.1.93）
+# Windows 预览版测试说明（0.1.99）
 
 感谢帮忙测试！这是 DSH Desktop Chrome 插件的 **Windows 预览版**，主要验证 Windows 上 Chrome 能否正常拉起 native host，以及基础浏览器工具是否可用。
 
 ## 1. 获取测试包
 
 - **仓库（已公开）**：<https://github.com/TaiShuo150622/dsh-chrome>
-- **预览 Release**：<https://github.com/TaiShuo150622/dsh-chrome/releases/tag/v0.1.93-win-preview.1>
+- **预览 Release**：<https://github.com/TaiShuo150622/dsh-chrome/releases/tag/v0.1.99-win-preview.1>
 
 如果打不开 GitHub，请让管理员把下面文件直接发给你：
 
 | 文件 | 用途 |
 |---|---|
-| `dsh-desktop-chrome-0.1.93.tgz` | DSH 插件包（内含 Windows host.exe） |
-| `dsh-chrome-extension-0.1.93.zip` | Chrome 扩展 |
+| `dsh-desktop-chrome-0.1.99.tgz` | DSH 插件包（内含 Windows host.exe） |
+| `dsh-chrome-extension-0.1.99.zip` | Chrome 扩展 |
 | `WINDOWS-TESTER-GUIDE-EXTERNAL.md` | 本文 |
 
 > 不需要安装 Node；host.exe 自带运行环境。
@@ -32,7 +32,7 @@ DSH 的「插件 → 添加插件」支持 **GitHub 仓库地址** 或 **本地�
 
 **推荐（Windows，自带 host.exe）：用本地目录**
 
-1. 下载并解压 `dsh-desktop-chrome-0.1.93.tgz`。
+1. 下载并解压 `dsh-desktop-chrome-0.1.99.tgz`。
 2. DSH → **插件** → **添加插件** → 输入解压后的 `package` 目录的**绝对路径**（含 `package.json`、`cordis.patch.yml` 的那一层）。
 3. 安装完成后确认插件目录里存在：
    ```text
@@ -54,7 +54,7 @@ DSH 的「插件 → 添加插件」支持 **GitHub 仓库地址** 或 **本地�
 
 ### 3.2 安装 Chrome 扩展
 
-1. 解压 `dsh-chrome-extension-0.1.93.zip`。
+1. 解压 `dsh-chrome-extension-0.1.99.zip`。
 2. Chrome 打开 `chrome://extensions`。
 3. 右上角打开 **Developer mode / 开发者模式**。
 4. 点 **Load unpacked / 加载已解压的扩展程序**，选择解压出来的 `dsh-chrome-extension` 目录。
@@ -101,7 +101,7 @@ DSH 的「插件 → 添加插件」支持 **GitHub 仓库地址** 或 **本地�
 5. **完全退出 Chrome 再打开**，点扩展图标。
 6. 仍失败请发：`INSTALL.md`、manifest 内容、`reg query` 输出、`host.log`、扩展 ID。
 
-> 0.1.93 的包需要手动执行第 3 步；0.1.99 起 provider 会自动注册。
+> 0.1.99 起 provider 会在真实 Windows 上自动注册 HKCU；如果仍报错，按第 3 步手动兜底。
 
 ## 4. 需要测试什么（请逐项打勾）
 
