@@ -34,6 +34,17 @@ let socketBuffer = ''
 let stdinEnded = false
 let retryTimer = null
 let retryDelay = 500
+// M5: the host is a relay, not a request store. Bound the in-flight request
+// table so a peer that stops answering cannot grow the host without limit, and
+// expire a single entry so an unanswered request does not stay forever. The
+// provider has its own 30s call timeout; this one is deliberately longer so a
+// normal slow call is not rejected twice. Tests can shorten it.
+const MAX_PENDING = 64
+const configuredPendingTimeoutMs = Number(process.env.DSH_HOST_PENDING_TIMEOUT_MS)
+const PENDING_TIMEOUT_MS =
+  Number.isFinite(configuredPendingTimeoutMs) && configuredPendingTimeoutMs > 0
+    ? configuredPendingTimeoutMs
+    : 60_000
 const pending = new Map()
 
 function log(line) {
@@ -299,23 +310,32 @@ function handleNativeMessage(message) {
   }
   let outgoing = message
   if (message?.id != null) {
-    const method = pending.get(String(message.id))
-    if (method && message.method == null) {
-      pending.delete(String(message.id))
-      if (message.error) {
-        outgoing = { id: message.id, error: message.error }
-      } else if (method === 'tab.screenshot') {
-        try {
-          outgoing = { id: message.id, result: materializeScreenshot(message.result) }
-        } catch (error) {
-          outgoing = {
-            id: message.id,
-            error: { code: 'INTERNAL', message: `screenshot materialization failed: ${error.message}` },
+    if (message.method == null) {
+      // Reply from the extension to a provider-originated request: release
+      // its capacity/slot and materialize a screenshot result as before.
+      const entry = clearPending(message.id)
+      if (entry) {
+        if (message.error) {
+          outgoing = { id: message.id, error: message.error }
+        } else if (entry.method === 'tab.screenshot') {
+          try {
+            outgoing = { id: message.id, result: materializeScreenshot(message.result) }
+          } catch (error) {
+            outgoing = {
+              id: message.id,
+              error: { code: 'INTERNAL', message: `screenshot materialization failed: ${error.message}` },
+            }
           }
         }
       }
-    } else if (typeof message.method === 'string') {
-      pending.set(String(message.id), message.method)
+    } else {
+      // Request from the extension to the provider. Bound the in-flight table
+      // before forwarding; over the cap the caller gets a normal error frame.
+      const method = String(message.method)
+      if (!trackPending(message.id, method, 'extension')) {
+        rejectOverLimit(message.id, method, 'extension')
+        return
+      }
     }
   }
   socket.write(`${JSON.stringify(outgoing)}\n`)
@@ -348,8 +368,58 @@ process.stdin.on('end', () => {
 process.stdin.on('error', (error) => fail(`stdin error: ${error.message}`))
 
 // --------------------------------------------------------------------- bridge
+// M5 pending table: one entry per request crossing the host, bounded in count
+// and lifetime. `origin` decides which side receives a rejection/timeout in the
+// same wire shape that side already understands (id + error), so the protocol
+// is unchanged.
+function clearPending(id) {
+  const key = String(id)
+  const entry = pending.get(key)
+  if (!entry) return null
+  pending.delete(key)
+  if (entry.timer) clearTimeout(entry.timer)
+  return entry
+}
+
 function forgetPending() {
+  for (const entry of pending.values()) {
+    if (entry.timer) clearTimeout(entry.timer)
+  }
   pending.clear()
+}
+
+function sendPendingError(origin, id, code, message) {
+  if (origin === 'extension') {
+    // The request came from the extension, so answer on the native channel.
+    writeNative({ id, error: { code, message } })
+    return
+  }
+  // The request came from the provider, so answer with one bridge JSON line.
+  if (authed && socket && !socket.destroyed) {
+    socket.write(`${JSON.stringify({ id, error: { code, message } })}\n`)
+  }
+}
+
+function trackPending(id, method, origin) {
+  if (pending.size >= MAX_PENDING) return false
+  const key = String(id)
+  const entry = { method, origin, timer: null }
+  entry.timer = setTimeout(() => {
+    if (pending.get(key) !== entry) return
+    pending.delete(key)
+    const message = `native host request ${method} timed out after ${PENDING_TIMEOUT_MS}ms`
+    log(`pending ${origin} request ${method} (${key}) timed out`)
+    sendPendingError(origin, id, 'TIMEOUT', message)
+  }, PENDING_TIMEOUT_MS)
+  entry.timer.unref?.()
+  pending.set(key, entry)
+  return true
+}
+
+function rejectOverLimit(id, method, origin) {
+  const message = `native host has too many pending requests (max ${MAX_PENDING})`
+  log(`rejecting ${origin} request ${method} (${id}): pending table full`)
+  sendPendingError(origin, id, 'RESOURCE_LIMIT', message)
 }
 
 function scheduleReconnect(reason) {
@@ -393,7 +463,18 @@ function onSocketData(chunk, source) {
       continue
     }
     if (message?.id != null) {
-      if (typeof message.method === 'string') pending.set(String(message.id), message.method)
+      if (typeof message.method === 'string') {
+        // Request from the provider to the extension. Bounded like the
+        // opposite direction; an over-cap caller gets a bridge-line error.
+        const method = String(message.method)
+        if (!trackPending(message.id, method, 'provider')) {
+          rejectOverLimit(message.id, method, 'provider')
+          continue
+        }
+      } else {
+        // Reply from the provider to an extension-originated request.
+        clearPending(message.id)
+      }
       writeNative(message)
       continue
     }
@@ -471,6 +552,22 @@ function shutdown(code, reason = 'shutdown') {
     clearTimeout(retryTimer)
     retryTimer = null
   }
+  if (watchTimer) {
+    clearTimeout(watchTimer)
+    watchTimer = null
+  }
+  try {
+    watcher?.close()
+  } catch {
+    // already closed
+  }
+  watcher = null
+  if (screencastFlushTimer) {
+    clearTimeout(screencastFlushTimer)
+    screencastFlushTimer = null
+  }
+  screencastPending = null
+  forgetPending()
   try {
     socket?.destroy()
   } catch {

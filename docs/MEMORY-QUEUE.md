@@ -22,7 +22,7 @@
   - 新增 canonical config `browser.maxTabs`（默认 12，范围 1–64），传给 HeadlessDriver；`browser.maxContexts` 已有。
   - DSH Config schema/settings 加入 `browser.maxTabs`（volatile），`chrome_status`/context view 显示 maxTabs、当前 tabs、maxContexts、contexts。
   - 文档 + 测试：一个 headless 浏览器内创建多个 tab、达到 maxTabs 报 RESOURCE_LIMIT、关闭后释放；两个 context 并发受 maxContexts 限制。
-- [ ] M5 host pending / console / timers（P1，若时间允许）
+- [x] M5 host pending / console / timers（P1，若时间允许）
   - host pending 单请求超时 + 最大 pending 数（如 64），超限拒绝；console-hook entries 硬上限（500）+ 单条截断；统一 dispose 定时器/监听器。
   - 补测试；不改变协议。
 

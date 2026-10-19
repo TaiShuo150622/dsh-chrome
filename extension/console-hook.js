@@ -6,7 +6,8 @@
 ;(() => {
   if (window.__dshConsole) return
 
-  const MAX_ENTRIES = 120
+  const MAX_ENTRIES = 500
+  const MAX_ENTRY_CHARS = 2000
   const entries = []
 
   const format = (value) => {
@@ -23,7 +24,7 @@
     try {
       entries.push({
         level,
-        text: args.map(format).join(' ').slice(0, 2000),
+        text: args.map(format).join(' ').slice(0, MAX_ENTRY_CHARS),
         time: Date.now(),
       })
       if (entries.length > MAX_ENTRIES) entries.shift()

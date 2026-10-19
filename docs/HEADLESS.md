@@ -128,6 +128,8 @@ chrome_headless_login {op:"status"}
 - 同一 owner 的 headless tabs 隔离；不同 DSH session 的 owner 互见不到；
 - **空闲回收**：没有 tab 且 5 分钟无请求时自动关闭 headless Chrome（`DSH_HEADLESS_IDLE_MINUTES` 可调）；
 - **并发限制**：每个 headless 浏览器最多 12 个 tabs（`browser.maxTabs`，DSH 设置页可改，范围 1–64；未显式配置时 `DSH_HEADLESS_MAX_TABS` 作为后备），超出返回 `RESOURCE_LIMIT`；同一浏览器内可开多个 tab，关闭一个后容量立即释放；
+- **native host 中继**：pending 表最多 64 条、单条 60s 超时（`DSH_HOST_PENDING_TIMEOUT_MS` 仅供测试缩短），超限/超时用既有 `{id,error:{code,message}}` 帧拒绝；断线、重连和退出时统一清理 timer/listener；
+- **console hook**：每页 MAIN-world ring 最多 500 条、单条 2000 字符；超过后丢最旧的一条，长日志不会把页面内存拖爆；
 - **CPU/内存基线**（本机 Chrome 155，headless 无 tab 空闲 60s 采样）：见下方 §4.1。
 
 ### 4.1 空闲与活跃基线（本机，Chrome 155）
