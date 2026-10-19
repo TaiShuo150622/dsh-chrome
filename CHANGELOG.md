@@ -11,6 +11,10 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.12] - 2026-10-19
+
+- 剩余工具域拆分：input/status/screencast 移出 tools.js；headless login 生命周期、runtime bridge/install/contexts 收拢
+
 ## [0.2.11] - 2026-10-19
 
 - tools 域拆分：navigation/capture/read 工具移出 tools.js；runtime 接管 update checker；headless 页面脚本辅助拆到 headless-page-actions.js
