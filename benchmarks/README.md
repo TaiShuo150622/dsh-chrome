@@ -128,6 +128,16 @@ integration file (CONTRACTS §7); run the two commands above explicitly.
 
 ## Baseline
 
-See `docs/MEMORY-SOAK.md` for the recorded baseline (machine, Chrome version,
-key numbers) and findings. Do not copy numbers from a different machine into a
-regression comparison; re-run the same `scenario.id` locally.
+`benchmarks/reports/2026-10-19-macos-arm64-chrome155.{json,md}` is one full
+20-round run (darwin/arm64, Chrome 155.0.8059.80, Node v24.6.0; load
+11.5/32.1/34.3 at start). Headline numbers:
+
+- 20/20 rounds PASS, 0 invariant failures, 158.7s;
+- Chrome peak RSS 1944 MiB / 15 processes (range 1583–1944 MiB, no trend);
+- capture body peak 4.0 KiB, released immediately on every stop;
+- `retainedAfterFirstRound`: Node RSS +8.5 MiB, heapUsed +1.8 MiB;
+- fake control (same report path, 20 rounds): heapUsed +0.36 MiB — see
+  `docs/MEMORY-SOAK.md` for the candidate Node-side growth discussion.
+
+Do not copy numbers from a different machine into a regression comparison;
+re-run the same `scenario.id` locally under a similar load.
