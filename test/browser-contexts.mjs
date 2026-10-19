@@ -204,6 +204,45 @@ try {
   assert.equal(namedRetried.profileId, 'retry-profile', 'a failed named create must release the profile reservation')
   await namedFailManager.closeAll()
 
+  // H8: a named context that is still shutting down keeps its profile reserved.
+  // Removing it from `contexts` before driver.close() resolves must not let a
+  // concurrent create open a second browser on the same profile.
+  let releaseClose = null
+  let closeCalls = 0
+  const closingManager = new BrowserContextManager({
+    config,
+    home,
+    createDriver: async (options) => ({
+      options,
+      async close() {
+        closeCalls += 1
+        if (closeCalls === 1) await new Promise((resolve) => { releaseClose = resolve })
+      },
+    }),
+  })
+  const closing = await closingManager.create({
+    owner: 'closing',
+    preset: 'sandbox-persistent',
+    profileName: 'closing-profile',
+  })
+  const closingDone = closingManager.close(closing.contextId)
+  assert.equal(closingManager.reservedProfiles.has('closing-profile'), true, 'profile held during close')
+  await assert.rejects(
+    () => closingManager.create({ owner: 'other', preset: 'sandbox-persistent', profileName: 'closing-profile' }),
+    (error) => error.code === 'PROFILE_IN_USE',
+    'a create during close must not reuse the profile',
+  )
+  releaseClose()
+  await closingDone
+  assert.equal(closingManager.reservedProfiles.has('closing-profile'), false, 'close releases the profile')
+  const reopened = await closingManager.create({
+    owner: 'other',
+    preset: 'sandbox-persistent',
+    profileName: 'closing-profile',
+  })
+  assert.equal(reopened.profileId, 'closing-profile', 'the profile is reusable after close resolves')
+  await closingManager.closeAll()
+
   // Idle reaping closes and cleans ephemeral profiles; named profiles remain on disk unless keepProfile false.
   const idleManager = new BrowserContextManager({
     config,

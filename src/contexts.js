@@ -174,17 +174,26 @@ export class BrowserContextManager {
     if (!ctx) return false
     this.contexts.delete(contextId)
     if (this.activeByOwner.get(ctx.owner) === contextId) this.activeByOwner.delete(ctx.owner)
+    // The context is gone from `contexts` immediately, but its Chrome/profile
+    // is still shutting down. Hold the named profile until close() resolves so
+    // a concurrent create cannot open a second process on the same profile.
+    const holdProfile = !ctx.ephemeral
+    if (holdProfile) this.reservedProfiles.add(ctx.profileId)
     try {
-      await ctx.driver?.close?.()
-    } catch (error) {
-      this.logger?.warn?.('browser context close failed: %s', error?.message || String(error))
-    }
-    if (ctx.ephemeral && !keepProfile) {
       try {
-        fs.rmSync(ctx.profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+        await ctx.driver?.close?.()
       } catch (error) {
-        this.logger?.warn?.('ephemeral profile cleanup failed: %s', error?.message || String(error))
+        this.logger?.warn?.('browser context close failed: %s', error?.message || String(error))
       }
+      if (ctx.ephemeral && !keepProfile) {
+        try {
+          fs.rmSync(ctx.profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+        } catch (error) {
+          this.logger?.warn?.('ephemeral profile cleanup failed: %s', error?.message || String(error))
+        }
+      }
+    } finally {
+      if (holdProfile) this.reservedProfiles.delete(ctx.profileId)
     }
     if (this.contexts.size === 0) this.#stopReaper()
     return true
