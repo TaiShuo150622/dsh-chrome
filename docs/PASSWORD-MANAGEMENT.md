@@ -1,6 +1,8 @@
 # 密码与凭据管理（PASSWORD-MANAGEMENT）
 
-> 状态：**设计稿，未实现**。当前 HEAD `d948641`（`0.2.14`，2026-10-19）；上一基线 `4e652ed`（`0.2.13`）。
+> 状态：**设计稿；P1 安全基础 MVP 已落地（仅 `src/credentials.js` + 测试，未接工具/UI/驱动）**。当前 worktree `feat/password-p1`（base `fd846bb`，`0.2.15`，2026-10-19）。
+>
+> **已实现（2026-10-19）**：opaque `credentialId`、macOS Keychain 只读适配器（`security find-generic-password`，可注入 `exec`）、Windows/Linux 显式 `UNSUPPORTED_PLATFORM`、`fill()` 接口（只返回 `{filled:true}`，sink 未接 driver）、`test/credentials.mjs` 已接入 `npm test`。**仍未实现**：工具/provider 接线、真实填充、UDS/native helper、保存/删除、Windows/Linux 存储。详见文末「P1 安全基础 MVP」。
 >
 > **版本注意**：`0.2.14` 已包含一项与本文直接相关的修复：`src/operation-log.js` 对 `chrome_type` 的 `text` 做工具级脱敏（`TYPE_TOOLS`），`test/operation-log.mjs` 已同步。**但**这只是一条出口；`chrome_type` 的 `result.value`/render、headless selection、viewer 输入回包、`chrome_verify` steps、capture 的 `pwd/otp/cvv`/fragment 等仍未修。本文按 `0.2.14` 现状记录，不把一项修复扩展成“密码管理已安全”。
 >
@@ -12,7 +14,7 @@
 
 ## 0. 结论先行
 
-1. **当前没有密码管理器，也没有 autofill、Keychain、Windows Credential Manager、Linux Secret Service 集成。** 登录主要靠用户在**可见的专用 Chrome 窗口**里手动完成（`chrome_headless_login`），或者复用用户日常 Chrome 已有的登录态。插件没有“保存密码/自动填充/读取密码”的工具。
+1. **当前没有密码管理器，也没有 autofill；macOS Keychain 只读适配器仅作为 P1 安全基础 MVP 落在 `src/credentials.js`（未接工具/驱动/UI），Windows Credential Manager / Linux Secret Service 仍未实现。** 登录主要靠用户在**可见的专用 Chrome 窗口**里手动完成（`chrome_headless_login`），或者复用用户日常 Chrome 已有的登录态。插件没有“保存密码/自动填充/读取密码”的工具。
 2. **当前和密码有关的只有“显示层打码”和“网络抓包脱敏”。** 快照对 `type=password`/支付字段显示 `••••`，HTML 的 `value` 属性打码，extension 的选区读取会拒绝敏感字段；抓包对 URL secret 参数、JSON/form 的 secret 键、Bearer/JWT/sk-/AKIA 形态做掩码。这些都不是密码管理，也不覆盖所有出口。
 3. **最先要处理的缺口是 `chrome_type` 的明文出口。** `0.2.13` 及更早的 `args.text` 不匹配操作日志的键名脱敏规则；`0.2.14` 已提交 operation-log 对 `chrome_type.text` 的工具级脱敏（`TYPE_TOOLS`），但 `chrome_type` 的 `result.value`/render、headless 选区、viewer 输入回包、`chrome_verify` steps 等仍未修。用临时 `DSH_HOME` + 哨兵值实测：`0.2.14` 下 `operations.jsonl` 的 `args.text` 已是 `«redacted»`，`result.value` 仍会被 operation-log 的 allowlist 丢弃、但 tool result/render 仍会把它交给模型。
 4. **建议的方向：OS 凭据库 + 独立 native helper + 只传“站点/用户名”不传明文。** 模型只能请求“把某站点的已保存凭据填进当前页面”，helper 在内部取密并完成填充，返回回执；provider、`host.mjs`、DSH 会话日志、`operations.jsonl`、`host.log` 都看不到明文。桌面 Chrome 的程序化填充**不作为 MVP 承诺**；headless context 的填充可以做成 helper 内部 CDP 操作。
@@ -74,7 +76,7 @@
 
 **没有的东西**（这是本文要补的）：
 
-- 没有密码管理器：仓库里没有 Keychain / Credential Manager / Secret Service / `keytar` / autofill 的 provider 集成。
+- 没有密码管理器：仓库里没有 keytar / autofill / Credential Manager / Secret Service 的 provider 集成；只有 `src/credentials.js` 的 macOS Keychain 只读适配器（P1 安全基础 MVP，未接 provider/工具）。
 - 没有“向密码字段输入”的硬确认接线：`docs/APPROVAL.md:80` 明确写“密码字段仍未接入”；`docs/DESIGN.md:43` 把“自动登录、读取密码”列为 V1 非目标。
 - 没有凭据工具、没有 credential helper、没有 native messaging 凭据 host。
 - 没有 passkey/WebAuthn 处理，没有 TOTP/2FA 自动化。
@@ -151,14 +153,14 @@ $DSH_HOME/sessions/<workspace>/<session-id>/session.v4.jsonl.zstd
 
 - 没有密码管理器、密码保险库、凭据列表 UI。
 - 没有 autofill（包括 Chrome 自带密码管理器的程序化调用）。
-- 没有 Keychain / Credential Manager / Secret Service 集成。
+- 没有完整的 Keychain / Credential Manager / Secret Service 集成；`src/credentials.js` 只有 macOS Keychain 只读适配器（P1 安全基础 MVP，未接工具/驱动）。
 - 没有 credential helper、没有 `credentials.*` 协议。
 - 没有 `chrome_type` 的 `credential` 参数；没有“用已保存凭据填充”的工具。
 - 没有 passkey/WebAuthn/TOTP/2FA 自动化。
 - 没有截图像素级脱敏；没有“眼睛切换”检测。
 - 没有 DSH 会话日志的擦除/脱敏能力。
 - 没有 CI secret scan；没有凭据泄漏的自动化扫描脚本。
-- 没有跨平台凭据存储实现（macOS/Windows/Linux 都未做）。
+- 没有跨平台凭据存储实现：macOS 只有只读 MVP，Windows/Linux 只有接口占位与 `UNSUPPORTED_PLATFORM`。
 
 ---
 
@@ -181,7 +183,7 @@ Chrome MV3 扩展（固定 ID）
   ▼
 用户的真实 Chrome（登录态、密码管理器、cookie）
 
-另有一条本文建议的旁路（未实现）：
+另有一条本文建议的旁路（`credentials` 模块已落地，helper/UDS/driver 未实现）：
 
 provider ── credentials.sock（0600 + token + peer UID）── credential helper（native）
                                                               │
@@ -248,10 +250,11 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 7. **不提供 `get`/`list`/`reveal` 给模型**；查看密码只能走 OS 自带 UI 或用户本地的 helper UI。
 8. **passkey 不导出、不自动化**；只做人工接管。
 
-### 3.2 组件与文件（建议新增，均未实现）
+### 3.2 组件与文件（大部分仍未实现；`src/credentials.js` 为已落地的 P1 安全基础 MVP）
 
 | 文件/接口 | 职责 | 阶段 |
 |---|---|---|
+| `src/credentials.js`（新，**已实现安全基础 MVP**） | opaque credentialId；macOS Keychain 只读适配器（`security find-generic-password`，可注入 exec）；Windows/Linux 显式 `UNSUPPORTED_PLATFORM`；`fill()` 只返回 `{filled:true}`，sink 未接 driver | P1（仅模块 + 测试） |
 | `src/credential-broker.js`（新） | provider 侧 helper 客户端：启动/健康检查、UDS 握手、超时、错误码映射；不实现存储 | P1 |
 | `src/credential-store.js`（新，可选） | 纯接口/类型定义：`status/fill/store/forget`；测试用 fake | P1 |
 | `src/tools-credentials.js`（新） | 只读 `chrome_credentials {op:"status"}`；不提供 list/get/reveal | P1 |
@@ -265,7 +268,10 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 | `native/linux/`（新） | C/Rust + libsecret：Secret Service | P2 |
 | `src/install-credentials.js`（新）或 `src/install.js` 扩展 | 写第二个 native messaging manifest（`com.deepseek.dsh.chrome.credentials`），`allowed_origins` 固定扩展 ID | P2 |
 | `scripts/leak-scan.mjs`（新） | 对哨兵值做仓库/日志泄漏扫描 | P0 |
-| `test/password-management.mjs`（新） | 凭据 schema、helper fake、负路径、日志断言 | P0/P1 |
+| `test/password-management.mjs`（规划，未实现） | 凭据 schema、helper fake、负路径、日志断言 | P0/P1 |
+| `test/credentials.mjs`（新，**已落地**） | fake `exec` 覆盖 macOS Keychain 成功/不存在/错误、非 macOS 不支持、opaque id、fill 不返回明文、日志不含 secret；已接入 `npm test` | P1 |
+
+> 2026-10-19：`src/credentials.js` 已落地并接入 `npm test`；它不是 helper——没有 UDS/native 二进制、没有 provider/工具接线、没有 driver/CDP sink。本次实际测试文件是 `test/credentials.mjs`，`test/password-management.mjs` 仍是规划项。
 
 **为什么必须是独立 helper，而不是在 provider 里直接读 Keychain：**
 
@@ -526,6 +532,8 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 | **P2 跨平台 + 桌面 native host** | ① Windows Credential Manager helper；② Linux Secret Service helper；③ 第二个 native messaging host；④ 扩展直连 helper 的桌面填充（残余风险评审）；⑤ 安装/打包/签名 | Windows/Linux 至少只读 status + headless fill 可用；桌面填充有明确风险说明；安装文档/回滚 | 10–15 天 |
 | **P3 2FA/passkey 边界** | ① TOTP seed（默认关闭）与 helper 生成 code；② passkey/WebAuthn 人工接管 UI/文档；③ 安全 key/SMS/push 提示；④ 可选用户 presence | TOTP 默认关闭；passkey 不导出；所有失败可回到人工 | 4–6 天 |
 
+> **2026-10-19 进展**：P1 的 `src/credentials.js` 安全基础 MVP（opaque credentialId + macOS Keychain 只读 + `fill()` 接口 + `test/credentials.mjs`）已落地并接入 `npm test`；P1 其余项（native helper、UDS、provider 接线、真实 CDP 填充、审计、保存/删除）未做。
+
 **总计**：macOS MVP（P0+P1）约 8–13 天；跨平台（P0–P2）约 22–34 天；P3 另计。**桌面 Chrome 程序化填充不在 MVP 承诺内**，P2 是否做需单独评审残余风险。
 
 ---
@@ -536,7 +544,8 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 
 | 测试 | 覆盖 |
 |---|---|
-| `test/password-management.mjs`（新） | `credential` schema 互斥；fake helper 的 `status/fill`；`fill` 不返回 secret；origin mismatch / ambiguous / unavailable / capture active / delegated caller；确认卡文案包含 origin/username |
+| `test/password-management.mjs`（规划，未实现） | `credential` schema 互斥；fake helper 的 `status/fill`；`fill` 不返回 secret；origin mismatch / ambiguous / unavailable / capture active / delegated caller；确认卡文案包含 origin/username |
+| `test/credentials.mjs`（新，**已落地**） | fake `exec` 覆盖 macOS Keychain 成功/不存在/错误、非 macOS 不支持、opaque id、`fill()` 只返回 `{filled:true}`、日志/错误/结果不含哨兵；已接入 `npm test` |
 | `test/operation-log.mjs`（扩） | `chrome_type` 的 `text` 哨兵不落盘（`0.2.14` 已改）；`chrome_verify` steps 的 `text` 不落盘（待加）；`chrome_storage` 敏感键；`credential` 只留 origin/username；结果无 `value` |
 | `test/capture-parity.mjs`（扩） | `pwd/otp/cvv` JSON/form；URL fragment；`password=...` 文本；两侧一致；哨兵不出现 |
 | `test/headless.mjs`（扩） | headless selection 对密码字段返回 `SENSITIVE_SELECTION`；`typePage` 不返回敏感值 |
@@ -576,10 +585,13 @@ provider ── credentials.sock（0600 + token + peer UID）── credential h
 6. 子代理会话调用 `credential` 填充，确认 `DELEGATED_CALLER` 失败。
 7. 截图/眼睛切换：确认文档写明“截图可能看到明文”，且 fill 期间不会自动截图。
 
+> 以上 4–6 是 helper/provider 接线后的验收项，当前未接。本次 MVP 的验收是 `node test/credentials.mjs`（fake exec，不碰真实 Keychain）。
+
 ### 6.5 命令
 
 ```bash
 node test/password-management.mjs
+node test/credentials.mjs
 node test/operation-log.mjs
 node test/capture-parity.mjs
 node test/headless.mjs
@@ -612,8 +624,9 @@ npm test
 ### 7.2 当前明确未实现（不要对外承诺）
 
 - 没有密码管理器/凭据库 UI。
-- 没有 autofill、Keychain、Credential Manager、Secret Service 集成。
+- 没有 autofill；没有完整的 Keychain / Credential Manager / Secret Service 集成。`src/credentials.js` 只有 macOS Keychain 只读适配器（P1 安全基础 MVP，未接工具/驱动）。
 - 没有 `credential` helper、没有 `credentials.*` 协议、没有 `chrome_type.credential`。
+- `src/credentials.js` 只是 P1 安全基础 MVP（模块 + 测试）：没有 provider/工具接线、没有真实填充、没有保存/删除；不要把它当成密码管理器或 autofill。
 - 没有 `chrome_credentials` 工具。
 - 没有桌面 Chrome 程序化填充；MVP 只有手动/Chrome 自带 autofill。
 - 没有 passkey/WebAuthn/TOTP/2FA 自动化。
@@ -646,6 +659,8 @@ npm test
 | `src/tools-capture.js` | capture 工具、硬确认、headers 不采集的说明 |
 | `test/capture-parity.mjs` | 两侧脱敏一致性测试 |
 | `src/operation-log.js` | 操作日志、键名脱敏、allowlist、轮转；`0.2.14` 含 `chrome_type.text` 特例 |
+| `src/credentials.js` | P1 安全基础 MVP：opaque credentialId + macOS Keychain 只读 + `fill()` 接口（未接 driver） |
+| `test/credentials.mjs` | fake `exec` 凭据测试；已接入 `npm test` |
 | `src/policy.js` | 站点策略/audit 日志 |
 | `host/host.mjs` | native messaging relay、host.log、截图落盘 |
 | `src/tools-login.js` / `src/headless-login.js` | 可见窗口登录 |
@@ -666,7 +681,7 @@ npm test
 
 ## 9. 一句话总结
 
-**当前能做的是“人工登录 + 显示打码 + 抓包脱敏”，不是密码管理。** 下一步先把 `chrome_type`/selection/viewer/capture 的明文出口堵住（P0；`0.2.14` 已修 operation log 的 `chrome_type.text`，其余仍在），再引入 OS 凭据库 + 独立 helper，让模型只说“填哪个站点的凭据”，由 helper 在内部取密并填充；桌面程序化填充、passkey/2FA 都不做过度承诺。
+**当前能做的是“人工登录 + 显示打码 + 抓包脱敏”，不是密码管理。**（2026-10-19 新增的 `src/credentials.js` 只是未接线的 macOS Keychain 只读 MVP，不改变这个结论。）下一步先把 `chrome_type`/selection/viewer/capture 的明文出口堵住（P0；`0.2.14` 已修 operation log 的 `chrome_type.text`，其余仍在），再引入 OS 凭据库 + 独立 helper，让模型只说“填哪个站点的凭据”，由 helper 在内部取密并填充；桌面程序化填充、passkey/2FA 都不做过度承诺。
 
 
 ## 附：0.2.15 已修（Q31–Q33）
@@ -677,4 +692,25 @@ npm test
 - capture 补 `pwd/otp/cvv/auth`、URL fragment、inline `password=...`；
 - `chrome_verify` steps[].text 不再明文进 operation log。
 
-仍没有 OS 凭据库/helper/autofill；P1+ 仍未实现。
+仍没有 helper/UDS/工具接线/真实填充/保存删除/Windows/Linux 存储；`src/credentials.js` 只是 macOS 只读的 P1 安全基础 MVP。
+
+## 附：P1 安全基础 MVP（2026-10-19，已落地）
+
+**范围：`src/credentials.js` + `test/credentials.mjs`。只做安全基础，不接 UI/工具/驱动。** 本节是实现状态的权威说明；正文 §3–§7 里的“建议/目标”只要与本附录冲突，以本附录为准。
+
+已实现：
+
+- **opaque credentialId**：`cred_<32 hex>`，由 `randomBytes(16)` 生成；对外只返回 id/backend/scope/origin/username/label，不返回 Keychain service/account，更不返回明文。相同 (scope, origin, username) 每次注册也得到不同 id。
+- **macOS Keychain 只读适配器**：通过 `security find-generic-password -s <service> -a <account> -w` 读取；`exec` 可注入，测试全部用 fake，不碰真实 Keychain。service 固定为 `com.deepseek.dsh.chrome.credentials`，account 为 `dsh-chrome/<scope>/<origin>/<username>`。
+- **Windows / Linux**：只声明 backend 名字与 `supported:false`；`fill()` 返回 `UNSUPPORTED_PLATFORM`，不执行任何假读取。
+- **错误收敛**：凭据读取失败只有 `CREDENTIAL_NOT_FOUND` / `UNSUPPORTED_PLATFORM` 两个公开错误码；CLI 的 stdout/stderr、账号、站点、用户名不拼进错误或日志。
+- **`fill()` 接口**：签名 `fill(credentialId)`；sink 在构造时注入（`createCredentialStore({fillSink})`），明文只传给 helper 内部注入的 `fillSink(secret, descriptor)`。返回值严格是 `{filled:true}`，不返回明文或元数据回显。**sink 尚未接到任何 driver/CDP，`fill()` 没有默认实现；未接线时调用会得到 TypeError，不会假装填充成功。**
+- **测试**：`test/credentials.mjs` 13 项，覆盖成功/不存在/错误/`security` 缺失、Windows/Linux/freebsd、opaque id、空白保留、错误/日志/结果不含哨兵；已接入 `npm test`。
+
+仍未实现 / 明确不承诺：
+
+- 没有 `chrome_credentials` 工具、没有 `chrome_type.credential`、没有 provider 接线；模型当前无法调用这个模块。
+- 没有 UDS/native helper、没有第二个 native messaging host、没有安装/签名逻辑。
+- 没有真实填充（headless 或桌面）、没有保存/删除条目、没有 Windows Credential Manager / Linux Secret Service 实现。
+- 本模块是 Node 原型，明文会短暂存在于 Node 字符串；生产 helper 仍应使用 native 字节缓冲并清零（§3.3）。
+- 没有使用任何真实密码或真实 Keychain 条目；测试数据全是哨兵值。
