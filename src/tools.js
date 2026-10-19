@@ -43,6 +43,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   const {
     ownerOf,
     sessionLabel,
+    sessionShort,
     call,
     supports,
     sessionCwd,
@@ -117,6 +118,10 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     assets,
     update,
     currentSite,
+    sessionShort,
+    writeAudit,
+    hardConfirmAsk,
+    evaluateConfirmTimeoutMs,
     outputSchema,
     renderText,
   })
@@ -150,6 +155,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     outputSchema,
     renderText,
     hardConfirmAsk,
+    writeAudit,
     sessionCwd,
     evaluateConfirmTimeoutMs,
   })

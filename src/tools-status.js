@@ -9,6 +9,7 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
+import { BridgeError } from './bridge.js'
 import {
   dshHome,
   loadPolicy,
@@ -55,7 +56,18 @@ function installHint(info) {
   ].join('\n')
 }
 
-export function createStatusTools({ bridge, assets, update = null, currentSite, outputSchema, renderText }) {
+export function createStatusTools({
+  bridge,
+  assets,
+  update = null,
+  currentSite,
+  sessionShort = null,
+  writeAudit = null,
+  hardConfirmAsk = null,
+  evaluateConfirmTimeoutMs = null,
+  outputSchema,
+  renderText,
+}) {
   const status = {
     name: 'chrome_status',
     description:
@@ -259,12 +271,17 @@ export function createStatusTools({ bridge, assets, update = null, currentSite, 
   const audit = {
     name: 'chrome_audit',
     description:
-      'Read the recent site-policy audit log (~/.dsh/cache/dsh-chrome/audit.jsonl): timestamp, session, tool, origin, action, decision and reason for every guarded browser write.',
+      'Read the recent site-policy audit log (~/.dsh/cache/dsh-chrome/audit.jsonl): timestamp, session, tool, origin, action, decision and reason for every guarded browser write. Only entries written by this DSH session are returned by default; allSessions:true (hard confirmation) reveals entries from other sessions and legacy entries without a session field.',
     parameters: {
       type: 'object',
       properties: {
         limit: { type: 'number', description: 'Max entries returned (default 20, max 100).' },
         origin: { type: 'string', description: 'Only entries for this origin.' },
+        allSessions: {
+          type: 'boolean',
+          description:
+            'Read the machine-wide log, including other DSH sessions and legacy entries with no session field. Requires a hard confirmation; the cross-session read itself is audited.',
+        },
       },
       additionalProperties: false,
     },
@@ -280,10 +297,29 @@ export function createStatusTools({ bridge, assets, update = null, currentSite, 
         return renderText(`Audit entries: ${value.entries?.length ?? 0}\n${lines.join('\n')}`)
       },
     },
-    async execute(args) {
+    async execute(args, exec) {
       const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.min(100, Number(args.limit))) : 20
       const origin = args?.origin ? originOf(args.origin) || String(args.origin) : null
-      return { entries: readAudit(dshHome(), { limit, origin }) }
+      if (args?.allSessions === true) {
+        if (typeof hardConfirmAsk !== 'function') {
+          throw new BridgeError('APPROVAL_DENIED', 'hard confirmation is unavailable; refusing the cross-session audit read')
+        }
+        await hardConfirmAsk(exec, 'chrome_audit', {
+          header: '读取全量审计日志（跨会话）',
+          question:
+            '允许读取本机完整的浏览器动作审计日志吗？其中包含其他 DSH 会话写入的条目，以及没有 session 字段的旧记录。默认只返回当前会话自己的条目。',
+          detail: '日志位置：~/.dsh/cache/dsh-chrome/audit.jsonl；这次跨会话读取本身也会写入一条审计。',
+          timeoutMs: evaluateConfirmTimeoutMs ?? undefined,
+          site: null,
+        })
+        if (typeof writeAudit === 'function') {
+          writeAudit(exec, 'chrome_audit', 'read all sessions', null, 'allowed', 'audit-all-sessions')
+        }
+        return { entries: readAudit(dshHome(), { limit, origin }) }
+      }
+      const owner = String(exec?.agent?.id ?? 'default')
+      const short = typeof sessionShort === 'function' ? sessionShort(exec) : owner.slice(-8)
+      return { entries: readAudit(dshHome(), { limit, origin, session: [short, owner] }) }
     },
   }
 

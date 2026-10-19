@@ -120,8 +120,22 @@ async function getSessionEntry(owner) {
   const key = ownerKey(owner)
   let entry = sessions[key]
   if (!entry) {
-    entry = { tabIds: [], groupId: null, activeTabId: null, paused: false, pausedAt: null, pausedUrl: '' }
+    entry = {
+      tabIds: [],
+      groupId: null,
+      activeTabId: null,
+      paused: false,
+      pausedAt: null,
+      pausedUrl: '',
+      // H4: downloads are scoped to tabs this session owns. The timestamp is
+      // diagnostic only; an entry restored from an older extension version gets
+      // a fresh start so the session never inherits another session's history.
+      startedAt: Date.now(),
+    }
     sessions[key] = entry
+  } else if (!Number.isFinite(entry.startedAt)) {
+    entry.startedAt = Date.now()
+    await saveSessions()
   }
   if (!Array.isArray(entry.tabIds)) entry.tabIds = []
   const alive = []
@@ -706,7 +720,7 @@ async function handleRequest(message) {
     case 'tab.upload':
       return uploadFiles(owner, params)
     case 'browser.downloads':
-      return listDownloads(params)
+      return listDownloads(owner, params)
     case 'tab.select':
       return selectAgent(owner, params)
     case 'tab.storage':
@@ -2920,23 +2934,44 @@ async function uploadFiles(owner, params) {
   })
 }
 
-async function listDownloads(params) {
+function downloadItem(item) {
+  return {
+    id: item.id,
+    filename: item.filename || '',
+    url: item.url || '',
+    state: item.state || '',
+    bytesReceived: item.bytesReceived || 0,
+    totalBytes: item.totalBytes || 0,
+    startTime: item.startTime || '',
+    // Keep the initiating tab id: it is the ownership evidence for the default
+    // session-scoped view and is intentionally not returned for foreign items.
+    tabId: Number.isFinite(item.tabId) ? item.tabId : null,
+  }
+}
+
+// H4: `chrome.downloads.search` is machine-wide. Without `includeHistory`, only
+// downloads initiated by a tab tracked for this DSH session are returned; the
+// provider only reaches this path after its own hard confirmation. An empty or
+// missing session therefore yields no downloads instead of falling back to the
+// machine-wide list.
+async function listDownloads(owner, params) {
   if (!chrome.downloads?.search) {
     throw bridgeError('UNSUPPORTED', 'downloads permission is not available')
   }
   const limit = Number.isFinite(params.limit) ? Math.min(100, Math.max(1, params.limit)) : 20
-  const items = await chrome.downloads.search({ limit, orderBy: ['-startTime'] })
-  return {
-    items: items.map((item) => ({
-      id: item.id,
-      filename: item.filename || '',
-      url: item.url || '',
-      state: item.state || '',
-      bytesReceived: item.bytesReceived || 0,
-      totalBytes: item.totalBytes || 0,
-      startTime: item.startTime || '',
-    })),
+  if (params.includeHistory === true) {
+    const items = await chrome.downloads.search({ limit, orderBy: ['-startTime'] })
+    return { items: items.map(downloadItem), scope: 'history' }
   }
+  const entry = await getSessionEntry(owner)
+  const owned = new Set(Array.isArray(entry.tabIds) ? entry.tabIds : [])
+  if (owned.size === 0) return { items: [], scope: 'session' }
+  // Scan more than `limit` because downloads from other sessions/windows are
+  // interleaved; the result is filtered down before it is sliced.
+  const scanLimit = Math.min(100, Math.max(limit * 5, 50))
+  const items = await chrome.downloads.search({ limit: scanLimit, orderBy: ['-startTime'] })
+  const ownedItems = items.filter((item) => Number.isFinite(item?.tabId) && owned.has(item.tabId))
+  return { items: ownedItems.slice(0, limit).map(downloadItem), scope: 'session' }
 }
 
 async function storage(owner, params) {

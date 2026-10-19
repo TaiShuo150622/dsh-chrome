@@ -768,12 +768,20 @@ try {
     const copied = path.join(directory, `desktop-fixture-${Date.now()}.png`)
     fs.copyFileSync(screenshot.path, copied)
     desktopShotPath = copied
-    const listed = await run('chrome_shots', { op: 'list' })
+    // H4: the copy has no shot-owners record, so the default view hides it; the
+    // explicit troubleshooting switch is hard-confirmed (the smoke confirmation
+    // stub allows it) and exposes it.
+    const defaultListed = await run('chrome_shots', { op: 'list' })
+    assert.ok(
+      !defaultListed.entries.some((item) => item.name === path.basename(copied)),
+      `unowned screenshot leaked into the default list: ${JSON.stringify(defaultListed.entries)}`,
+    )
+    const listed = await run('chrome_shots', { op: 'list', includeUnowned: true })
     const entry = listed.entries.find((item) => item.name === path.basename(copied))
     assert.ok(entry, `copied screenshot not listed: ${JSON.stringify(listed.entries)}`)
     assert.equal(entry.width, screenshot.width)
     assert.equal(entry.height, screenshot.height)
-    const read = await run('chrome_shots', { op: 'read', path: copied })
+    const read = await run('chrome_shots', { op: 'read', path: copied, includeUnowned: true })
     assert.equal(read.bytes, fs.statSync(copied).size)
     assert.ok(read.image?.attachmentId)
   })
@@ -787,7 +795,7 @@ try {
   // chrome_shots now scans both roots for list and read.
   await check('chrome_shots lists and reads headless screenshots too', async () => {
     assert.ok(fs.existsSync(screenshot.path), `headless screenshot is missing: ${screenshot.path}`)
-    const listed = await run('chrome_shots', { op: 'list', limit: 100 })
+    const listed = await run('chrome_shots', { op: 'list', limit: 100, includeUnowned: true })
     assert.ok(
       listed.entries.some((entry) => entry.path === desktopShotPath),
       `desktop screenshot disappeared from the merged list: ${JSON.stringify(listed.entries)}`,

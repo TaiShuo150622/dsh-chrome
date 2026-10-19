@@ -225,12 +225,13 @@ Read the effective site policy for the current page (or an explicit origin) from
 
 ### `chrome_audit`
 
-Read the recent site-policy audit log (~/.dsh/cache/dsh-chrome/audit.jsonl): timestamp, session, tool, origin, action, decision and reason for every guarded browser write.
+Read the recent site-policy audit log (~/.dsh/cache/dsh-chrome/audit.jsonl): timestamp, session, tool, origin, action, decision and reason for every guarded browser write. Only entries written by this DSH session are returned by default; allSessions:true (hard confirmation) reveals entries from other sessions and legacy entries without a session field.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `limit` | number | no | Max entries returned (default 20, max 100). |
 | `origin` | string | no | Only entries for this origin. |
+| `allSessions` | boolean | no | Read the machine-wide log, including other DSH sessions and legacy entries with no session field. Requires a hard confirmation; the cross-session read itself is audited. |
 
 ### `chrome_headless_login`
 
@@ -328,13 +329,14 @@ Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG
 
 ### `chrome_shots`
 
-List or read screenshot history saved by this provider (desktop ~/.dsh/cache/dsh-chrome/screenshots and headless ~/.dsh/cache/dsh-chrome/headless/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under either directory) as an image attachment. Shots recorded for another DSH session are hidden.
+List or read screenshot history saved by this provider (desktop ~/.dsh/cache/dsh-chrome/screenshots and headless ~/.dsh/cache/dsh-chrome/headless/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under either directory) as an image attachment. Shots recorded for another DSH session are hidden, and legacy shots with no recorded owner stay hidden by default (includeUnowned:true is a hard-confirmed troubleshooting switch that is audited).
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `op` | enum(list | read) | yes |  |
 | `limit` | number | no | list: max entries (default 20, max 100). |
 | `path` | string | no | read: absolute path under the screenshots directory. |
+| `includeUnowned` | boolean | no | Troubleshooting switch: also list/read legacy screenshots with no recorded owner. Hidden by default because those files may belong to another DSH session; requires a hard confirmation and is audited. |
 
 ### `chrome_resume`
 
@@ -481,11 +483,12 @@ Attach local files to a file input on the session page (e.g. upload a screenshot
 
 ### `chrome_download`
 
-List recent Chrome downloads (filename, URL, state, bytes, start time). Use after triggering a download to find the saved file path.
+List recent Chrome downloads (filename, URL, state, bytes, start time). Use after triggering a download to find the saved file path. By default only downloads initiated by this DSH session's own tabs are returned; includeHistory:true (hard confirmation) exposes the machine-wide Chrome download history instead.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `limit` | number | no | Max entries, 1-100 (default 20). |
+| `includeHistory` | boolean | no | List the machine-wide Chrome download history, not just this session's downloads. Requires a hard confirmation naming the full-history read; denied or unavailable confirmation fails closed. |
 
 ### `chrome_wait`
 

@@ -100,14 +100,24 @@ export function readProviderConfig(home = dshHome()) {
   }
 }
 
-export function readAudit(home, { limit = 20, origin = null } = {}) {
+export function readAudit(home, { limit = 20, origin = null, session = null } = {}) {
   try {
     const lines = fs.readFileSync(auditPath(home), 'utf8').trim().split('\n').filter(Boolean)
+    // `session` is one id or a list: writers use either the provider's short
+    // session label (guarded tool writes) or the full owner id (context-viewer
+    // input). Both belong to the calling session.
+    const allowed = session == null
+      ? null
+      : new Set((Array.isArray(session) ? session : [session]).map((value) => String(value)))
     const entries = []
     for (let index = lines.length - 1; index >= 0 && entries.length < limit; index -= 1) {
       try {
         const entry = JSON.parse(lines[index])
         if (origin && entry.origin !== origin) continue
+        // H4: the audit log is machine-wide. Default callers only see entries
+        // this session wrote; entries without a session field predate H4 and
+        // stay hidden unless the explicit cross-session switch was confirmed.
+        if (allowed && !allowed.has(String(entry.session ?? ''))) continue
         entries.push(entry)
       } catch {
         // skip corrupt line

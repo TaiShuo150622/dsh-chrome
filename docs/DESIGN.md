@@ -213,7 +213,7 @@ cordis.patch.yml
 | `chrome_console` | `level?`, `limit?`, `clear?` | MAIN world hook，120 条环形缓冲 |
 | `chrome_network` | `filter?`, `limit?` | Performance Resource Timing（v1 无状态码） |
 | `chrome_upload` | `ref`, `files[]` | file input；走审批；provider 校验本地文件 |
-| `chrome_download` | `limit?` | chrome.downloads.search 最近下载 |
+| `chrome_download` | `limit?`, `includeHistory?` | 默认按会话 tab 归属过滤；`includeHistory:true` 硬确认后读全机历史 |
 | `chrome_tabs` op=claim | `tabId?` | 认领活动标签进会话组 |
 | `chrome_screenshot` clip | `clip{x,y,width,height}` | 区域截图（CSS px） |
 | `chrome_click/type/press` dialog | `dialog{accept,promptText}` + 输出 `dialogs[]` | alert 默认接受、confirm/prompt 默认取消 |

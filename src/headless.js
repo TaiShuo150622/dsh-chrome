@@ -1504,7 +1504,11 @@ export class HeadlessDriver {
         return { ok: true, tabId: this.peekOwner(owner)?.activeTabId ?? null }
       case 'browser.downloads': {
         const limit = Number(params.limit) > 0 ? Math.min(Number(params.limit), 100) : 20
+        // H4: this list lives in one driver (one DSH session's context) and is
+        // cleared when the context closes, so it is always session-scoped. The
+        // provider refuses responses that do not say so.
         return {
+          scope: 'session',
           items: this.downloads.slice(0, limit).map((record) => ({
             ...record,
             path: path.join(this.downloadDir, record.filename || ''),

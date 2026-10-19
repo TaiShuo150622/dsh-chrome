@@ -10,6 +10,7 @@ import fsp from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
 import { BridgeServer } from '../src/bridge.js'
+import { appendAudit, dshHome } from '../src/policy.js'
 import { chromeTools } from '../src/tools.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -96,7 +97,7 @@ host.stdout.on(
       'tab.tabs': { claimed: true, tabId: 7, url: 'https://example.com/', title: 'Example Domain', remaining: 0 },
       'tab.claim': { tabId: 7, url: 'https://example.com/', title: 'Example Domain', claimed: true },
       'tab.upload': { ok: true, ref: 5, files: 1 },
-      'browser.downloads': { items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z' }] },
+      'browser.downloads': { scope: 'session', items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z', tabId: 7 }] },
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
       'tab.screencast_start': { active: true, alreadyActive: false, tabId: 7, format: 'jpeg' },
       'tab.screencast_stop': { active: false, tabId: 7, frames: 12, elapsedMs: 3000 },
@@ -228,9 +229,64 @@ check(
   JSON.stringify(lastUploadConfirm?.questions?.[0]?.question || ''),
 )
 
-const downloadValue = await byName.chrome_download.execute({ limit: 5 })
+const downloadValue = await byName.chrome_download.execute({ limit: 5 }, exec())
 check('chrome_download executes', downloadValue.items?.[0]?.filename === '/tmp/report.pdf')
-check('downloads limit reaches the extension', requests.at(-1)?.method === 'browser.downloads' && requests.at(-1)?.params?.limit === 5)
+check(
+  'downloads default is session-scoped and carries the owner',
+  requests.at(-1)?.method === 'browser.downloads' &&
+    requests.at(-1)?.params?.limit === 5 &&
+    requests.at(-1)?.params?.includeHistory === false &&
+    requests.at(-1)?.params?.owner === 'session-p2',
+  JSON.stringify(requests.at(-1)?.params),
+)
+const confirmationsBeforeHistory = uploadConfirmations.length
+const historyDownloads = await byName.chrome_download.execute({ limit: 3, includeHistory: true }, exec())
+check('chrome_download includeHistory executes', historyDownloads.items?.length >= 1)
+check(
+  'download includeHistory reaches the extension only after the hard confirmation',
+  requests.at(-1)?.params?.includeHistory === true && requests.at(-1)?.params?.owner === 'session-p2',
+  JSON.stringify(requests.at(-1)?.params),
+)
+const historyConfirm = uploadConfirmations.slice(confirmationsBeforeHistory).map((request) => request.questions?.[0])
+check(
+  'download includeHistory shows a hard confirmation naming the history read',
+  historyConfirm.some((question) => String(question?.header || '').includes('下载历史') && String(question?.question || '').includes('完整')),
+  JSON.stringify(historyConfirm.map((question) => question?.header)),
+)
+const noConfirmDownloadTools = chromeTools({ bridge, attachments: () => null, assets: () => ({}) })
+let historyDeniedCode = null
+const requestsBeforeHistoryDenied = requests.length
+try {
+  await noConfirmDownloadTools
+    .find((definition) => definition.name === 'chrome_download')
+    .execute({ includeHistory: true }, exec())
+} catch (error) {
+  historyDeniedCode = error?.code
+}
+check('download includeHistory fails closed without a confirmation service', historyDeniedCode === 'APPROVAL_DENIED', String(historyDeniedCode))
+check('denied download history never reaches the extension', requests.length === requestsBeforeHistoryDenied)
+// An older/unknown backend that ignores the session-scope contract must not
+// leak the machine-wide list through the default call.
+const unscopedDownloadTools = chromeTools({
+  bridge: {
+    async call(method) {
+      if (method === 'browser.downloads') {
+        return { items: [{ id: 9, filename: '/tmp/leaked-from-other-session.pdf', state: 'complete' }] }
+      }
+      throw new Error(`unscoped fake does not implement ${method}`)
+    },
+  },
+  attachments: () => null,
+  assets: () => ({}),
+})
+const unscopedDownloads = await unscopedDownloadTools
+  .find((definition) => definition.name === 'chrome_download')
+  .execute({ limit: 5 }, exec())
+check(
+  'H4 an unscoped download backend fails closed instead of exposing history',
+  unscopedDownloads.items.length === 0 && unscopedDownloads.scope === 'unavailable',
+  JSON.stringify(unscopedDownloads),
+)
 
 const claimValue = await byName.chrome_tabs.execute({ op: 'claim', tabId: 7 }, exec())
 check('chrome_tabs claim executes', claimValue.claimed === true && claimValue.tabId === 7)
@@ -301,6 +357,12 @@ const tinyPng = Buffer.from(
 )
 const shotFile = path.join(shotsDir, 'test-shot.png')
 await fsp.writeFile(shotFile, tinyPng)
+// H4: screenshots without a recorded owner now stay hidden by default. Record
+// these fixtures as this session's own shots so the legacy list/read checks
+// still exercise the normal path.
+const shotOwnersFile = path.join(home, 'cache', 'dsh-chrome', 'shot-owners.json')
+await fsp.mkdir(path.dirname(shotOwnersFile), { recursive: true })
+await fsp.writeFile(shotOwnersFile, JSON.stringify({ [path.resolve(shotFile)]: 'session-p2' }))
 const shotsList = await byName.chrome_shots.execute({ op: 'list', limit: 5 }, exec())
 check('chrome_shots lists saved screenshots', shotsList?.entries?.some((entry) => entry.path === shotFile))
 const listed = shotsList.entries.find((entry) => entry.path === shotFile)
@@ -321,6 +383,10 @@ const headlessShotsDir = path.join(home, 'cache', 'dsh-chrome', 'headless', 'scr
 await fsp.mkdir(headlessShotsDir, { recursive: true })
 const headlessShotFile = path.join(headlessShotsDir, 'headless-shot.png')
 await fsp.writeFile(headlessShotFile, tinyPng)
+await fsp.writeFile(
+  shotOwnersFile,
+  JSON.stringify({ [path.resolve(shotFile)]: 'session-p2', [path.resolve(headlessShotFile)]: 'session-p2' }),
+)
 const mergedShots = await byName.chrome_shots.execute({ op: 'list', limit: 10 }, exec())
 check(
   'chrome_shots lists desktop and headless screenshots',
@@ -329,6 +395,45 @@ check(
 )
 const headlessShotRead = await byName.chrome_shots.execute({ op: 'read', path: headlessShotFile }, exec())
 check('chrome_shots reads a headless screenshot', headlessShotRead?.bytes === tinyPng.length && headlessShotRead?.width === 1)
+
+// H4: legacy screenshots (no owner record) are hidden by default. The
+// troubleshooting switch is hard-confirmed and audited, and fails closed when
+// the confirmation service is unavailable.
+const legacyShotFile = path.join(shotsDir, 'legacy-shot.png')
+await fsp.writeFile(legacyShotFile, tinyPng)
+const legacyList = await byName.chrome_shots.execute({ op: 'list', limit: 10 }, exec())
+check('H4 unowned screenshots are hidden by default', !legacyList.entries.some((entry) => entry.path === legacyShotFile))
+let legacyReadCode = null
+try {
+  await byName.chrome_shots.execute({ op: 'read', path: legacyShotFile }, exec())
+} catch (error) {
+  legacyReadCode = error?.code
+}
+check('H4 unowned screenshot read fails closed by default', legacyReadCode === 'INVALID_ARGUMENT', String(legacyReadCode))
+const includeUnownedList = await byName.chrome_shots.execute({ op: 'list', limit: 10, includeUnowned: true }, exec())
+check(
+  'H4 includeUnowned lists legacy screenshots after the hard confirmation',
+  includeUnownedList.entries.some((entry) => entry.path === legacyShotFile),
+)
+const unownedConfirm = uploadConfirmations.at(-1)?.questions?.[0]
+check(
+  'H4 the unowned-screenshot switch is hard-confirmed',
+  String(unownedConfirm?.header || '').includes('无归属') &&
+    String(unownedConfirm?.question || '').includes('旧截图'),
+  JSON.stringify(unownedConfirm?.header || ''),
+)
+const unownedRead = await byName.chrome_shots.execute({ op: 'read', path: legacyShotFile, includeUnowned: true }, exec())
+check('H4 includeUnowned reads a legacy screenshot after confirmation', unownedRead?.bytes === tinyPng.length)
+const noConfirmShotsTools = chromeTools({ bridge, attachments: () => null, assets: () => ({}) })
+let unownedDeniedCode = null
+try {
+  await noConfirmShotsTools
+    .find((definition) => definition.name === 'chrome_shots')
+    .execute({ op: 'list', includeUnowned: true }, exec())
+} catch (error) {
+  unownedDeniedCode = error?.code
+}
+check('H4 unowned-screenshot switch fails closed without a confirmation service', unownedDeniedCode === 'APPROVAL_DENIED', String(unownedDeniedCode))
 
 // P1-1: the headless driver returns { path, bytes } for an already-written PDF.
 let pdfSeq = 0
@@ -596,6 +701,53 @@ check(
 )
 const auditText = await fsp.readFile(auditFile, 'utf8')
 check('allowed site writes an audit entry', auditText.includes('site-allow') && auditText.includes('127.0.0.1:8765'))
+check('H4 the unowned-screenshot troubleshooting read is audited', auditText.includes('include-unowned'))
+appendAudit(dshHome(), {
+  ts: new Date().toISOString(),
+  session: 'other-session',
+  tool: 'chrome_goto',
+  origin: 'https://other.example',
+  action: 'other session write',
+  decision: 'allowed',
+  reason: 'foreign-fixture',
+})
+appendAudit(dshHome(), {
+  ts: new Date().toISOString(),
+  tool: 'chrome_goto',
+  origin: 'https://legacy.example',
+  action: 'legacy entry without session',
+  decision: 'denied',
+  reason: 'no-session-fixture',
+})
+const sessionAudit = await byName.chrome_audit.execute({ limit: 100 }, exec())
+check(
+  'H4 chrome_audit only returns entries written by this session',
+  sessionAudit.entries.length > 0 && sessionAudit.entries.every((entry) => entry.session === 'ssion-p2'),
+  JSON.stringify(sessionAudit.entries.filter((entry) => entry.session !== 'ssion-p2').slice(0, 3)),
+)
+const confirmationsBeforeAudit = uploadConfirmations.length
+const allSessionsAudit = await byName.chrome_audit.execute({ limit: 100, allSessions: true }, exec())
+check(
+  'H4 allSessions reveals other sessions and legacy entries after confirmation',
+  allSessionsAudit.entries.some((entry) => entry.session === 'other-session' && entry.reason === 'foreign-fixture') &&
+    allSessionsAudit.entries.some((entry) => entry.reason === 'no-session-fixture'),
+)
+const auditConfirm = uploadConfirmations.slice(confirmationsBeforeAudit).map((request) => request.questions?.[0])
+check(
+  'H4 the cross-session audit read prompts with a hard confirmation',
+  auditConfirm.some((question) => String(question?.header || '').includes('全量审计')),
+  JSON.stringify(auditConfirm.map((question) => question?.header)),
+)
+const noConfirmAuditTools = chromeTools({ bridge, attachments: () => null, assets: () => ({}) })
+let allSessionsDeniedCode = null
+try {
+  await noConfirmAuditTools
+    .find((definition) => definition.name === 'chrome_audit')
+    .execute({ allSessions: true }, exec())
+} catch (error) {
+  allSessionsDeniedCode = error?.code
+}
+check('H4 allSessions fails closed without a confirmation service', allSessionsDeniedCode === 'APPROVAL_DENIED', String(allSessionsDeniedCode))
 
 const policyValue = await policyByName.chrome_policy.execute({}, exec())
 check('chrome_policy reports the effective mode', policyValue?.mode === 'allow' && policyValue?.source === 'policy.json')
@@ -1052,7 +1204,6 @@ check(
 )
 await targetByName.chrome_screencast.execute({ op: 'stop' }, exec())
 
-const shotOwnersFile = path.join(home, 'cache', 'dsh-chrome', 'shot-owners.json')
 await fsp.writeFile(shotOwnersFile, JSON.stringify({ [path.resolve(shotFile)]: 'other-session' }))
 const foreignShots = await targetByName.chrome_shots.execute({ op: 'list', limit: 50 }, exec())
 check(

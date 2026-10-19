@@ -25,12 +25,12 @@
 | 写动作（goto/click/type/press/scroll/history/tabs/upload/claim） | CDP 合成事件 / tabs API | 策略按**目标对象**判定：带 `tabId` 的动作查该 tab 的 origin，goto/tabs new 查**目标 URL**；审计记录目标 origin + tabId。`follow-dsh` 下 `danger-full-access` 直接放行，低权限模式走 `ctx.approval`；审批服务缺失 / `exec.agent` 缺失 / site 查询失败一律 fail-closed |
 | console/network | 主世界 hook / Resource Timing | 只读本地缓冲 |
 | upload | `DOM.setFileInputFiles` | 文件必须位于会话工作目录或 `DSH_CHROME_UPLOAD_ROOTS` 显式目录，symlink 先解析；每次调用都走 `ctx.userQuestions` 硬确认，卡上列完整路径 + 目标 origin；拒绝/超时写审计 |
-| download | `chrome.downloads.search` | 只读列表，不自动打开文件（列表仍是全机范围，见“已知限制”） |
+| download | `chrome.downloads.search` | 只读列表，不自动打开文件。默认只列**本会话标签页**触发的下载（扩展按 `DownloadItem.tabId` 与会话 tab 集合过滤，响应带 `scope:"session"`）；`includeHistory:true` 走 `userQuestions` 硬确认后才列全机历史。旧扩展/无 `scope` 的后端 fail-closed（返回空列表 + warning），不会把全机历史漏给模型 |
 | dialog | CDP 对话框拦截 | 默认策略：alert 接受；confirm/prompt/beforeunload 取消（需显式 `accept:true`） |
 | evaluate（默认关） | CDP `Runtime.evaluate` + CDP timeout | 配置 `allowEvaluate` 才注册；每次调用 `ctx.userQuestions` 硬确认，不受 danger-full-access 影响；拒绝/超时/子代理 fail-closed |
 | capture（always registered） | CDP `Network.enable` 事件缓冲 | start **固定硬确认，无配置旁路**（0.1.76 起）；允许/拒绝/超时写审计；不采集 headers；URL/body 脱敏 `«redacted»`；10 分钟自动停；body 预算 8 MiB；worker 回收报 `CAPTURE_LOST` |
 | 导航 scheme | `chrome_goto` / `chrome_tabs new` / headless `attachTab` | 只允许 `http(s)` 与 `about:blank`；`file:` / `data:` / `javascript:` / `chrome:` 在 provider 与扩展/headless driver 两层都拒绝（`PROTECTED_PAGE`），不会创建 target |
-| 多会话边界 | tab group / screencast / screenshots | tab group 标题带 owner 短 id；`claim` 拒绝其他会话已跟踪的 tab；screencast 帧只在**本会话有活动流且帧 owner 匹配**时返回；`chrome_shots` 用 `shot-owners.json` 隐藏其他会话的截图 |
+| 多会话边界 | tab group / screencast / screenshots / audit | tab group 标题带 owner 短 id；`claim` 拒绝其他会话已跟踪的 tab；screencast 帧只在**本会话有活动流且帧 owner 匹配**时返回；`chrome_shots` 用 `shot-owners.json` 隐藏其他会话的截图，无 owner 的旧截图默认隐藏；`chrome_audit` 默认只返回本会话写入的条目 |
 
 ## 明确不做
 
@@ -42,7 +42,8 @@
 
 - 扩展被 Chrome 回收后的自动恢复依赖自愈 reload（0.1.17，真机验证待补）；
 - 调试器 attach 期间 Chrome 可能显示「正在调试此浏览器」横幅（动作结束即 detach）；
-- 截图归属是 provider 侧的 `shot-owners.json` 台账：早于该台账的截图没有 owner，对所有会话可见；台账文件被删除后同样退化；
+- 截图归属是 provider 侧的 `shot-owners.json` 台账：早于该台账的截图没有 owner，**默认对所有会话隐藏**；排障需显式 `includeUnowned:true`（硬确认 + 审计）；台账文件被删除后，新截图没有 owner 记录，同样只能经该开关查看；
 - screencast 帧仍写在同一 `screencast/latest.*`：两个会话**同时**开流时文件交替覆盖，靠 `meta.json.owner` 只返回属于本会话的帧，最坏情况是本会话暂时看不到帧（不会拿到别人的帧）；
-- `chrome_download` 与 `chrome_audit` 仍是全机范围（有意保留排障能力，未按会话过滤）；
+- `chrome_download` 默认只读本会话标签页触发的下载；全机下载历史需 `includeHistory:true` 硬确认。`chrome_audit` 默认只读本会话条目；跨会话/旧条目需 `allSessions:true` 硬确认，且跨会话读取本身写审计；
+- 桌面扩展若落后于 provider、没有按会话过滤下载并返回 `scope:"session"`，`chrome_download` 会 fail-closed 返回空列表（不会退回全机列表）；
 - 本插件面向个人本机使用；多用户/远程场景不在当前安全模型内。

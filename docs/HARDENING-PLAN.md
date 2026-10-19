@@ -20,7 +20,7 @@
 - [ ] H1 桌面 capture 脱敏与 headless 对齐（pwd/otp/cvv/auth、URL fragment、inline secret）；补桌面 parity 哨兵测试；`capture_start` 默认 `storeBodies:false`（或确认卡显式勾选）。
 - [ ] H2 `chrome_pdf` 路径限制：限制在 cache/pdfs 或会话 cwd；realpath 后拒绝符号链接/已有文件；显式 path 硬确认；标记 `mutating`。
 - [ ] H3 viewer/live-view bearer URL 不进模型/DSH 日志：模型只拿 handle/一次性 URL；viewer 写操作写 audit；`access` 加入 secret 查询参数；默认关闭 viewer 或明确 opt-in。
-- [ ] H4 跨会话全机读面：`chrome_download` 按会话/窗口过滤或显式确认；`chrome_audit` 按 session 过滤；无 owner 截图默认隐藏。
+- [x] H4 跨会话全机读面：`chrome_download` 按会话/窗口过滤或显式确认；`chrome_audit` 按 session 过滤；无 owner 截图默认隐藏。
 - [ ] H5 密码/OTP 字段硬确认：`chrome_type`/`chrome_press`/`chrome_verify.type` 识别 password/OTP/payment 字段并 hardConfirm 或 credential 模式；登录确认卡显示 URL/origin；credentials fill 加 target origin/scope，默认 https。
 - [ ] H6 `chrome_verify` 的 navigate/click/type 走 guard/audit；默认拒绝 loopback/私网（测试 allowlist）；console/network artifact 脱敏。
 

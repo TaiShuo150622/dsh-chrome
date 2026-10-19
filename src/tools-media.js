@@ -206,9 +206,14 @@ async function recordShotOwner(file, owner) {
   }
 }
 
-function shotVisible(owners, file, owner) {
+// H4: a screenshot with no recorded owner predates the ownership ledger (or the
+// ledger was removed). It may belong to another DSH session, so it stays hidden
+// by default; `includeUnowned` is an explicit, hard-confirmed troubleshooting
+// switch and every use is audited by the caller.
+function shotVisible(owners, file, owner, includeUnowned = false) {
   const recorded = owners[path.resolve(String(file))]
-  return !recorded || recorded === String(owner)
+  if (recorded) return recorded === String(owner)
+  return Boolean(includeUnowned)
 }
 
 export function createMediaTools({
@@ -218,6 +223,7 @@ export function createMediaTools({
   outputSchema,
   renderText,
   hardConfirmAsk,
+  writeAudit = null,
   sessionCwd,
   evaluateConfirmTimeoutMs,
 }) {
@@ -377,13 +383,18 @@ export function createMediaTools({
   const shots = {
     name: 'chrome_shots',
     description:
-      'List or read screenshot history saved by this provider (desktop ~/.dsh/cache/dsh-chrome/screenshots and headless ~/.dsh/cache/dsh-chrome/headless/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under either directory) as an image attachment. Shots recorded for another DSH session are hidden.',
+      'List or read screenshot history saved by this provider (desktop ~/.dsh/cache/dsh-chrome/screenshots and headless ~/.dsh/cache/dsh-chrome/headless/screenshots). History is filesystem-backed, so it survives restarts. op="list" returns recent screenshots with size + PNG dimensions; op="read" returns one screenshot (path under either directory) as an image attachment. Shots recorded for another DSH session are hidden, and legacy shots with no recorded owner stay hidden by default (includeUnowned:true is a hard-confirmed troubleshooting switch that is audited).',
     parameters: {
       type: 'object',
       properties: {
         op: { type: 'string', enum: ['list', 'read'] },
         limit: { type: 'number', description: 'list: max entries (default 20, max 100).' },
         path: { type: 'string', description: 'read: absolute path under the screenshots directory.' },
+        includeUnowned: {
+          type: 'boolean',
+          description:
+            'Troubleshooting switch: also list/read legacy screenshots with no recorded owner. Hidden by default because those files may belong to another DSH session; requires a hard confirmation and is audited.',
+        },
       },
       required: ['op'],
       additionalProperties: false,
@@ -417,6 +428,22 @@ export function createMediaTools({
       const directory = directories[0]
       const op = String(args?.op || 'list')
       const owner = ownerOf(exec)
+      const includeUnowned = args?.includeUnowned === true
+      if (includeUnowned && (op === 'list' || op === 'read')) {
+        if (typeof hardConfirmAsk !== 'function') {
+          throw new BridgeError('APPROVAL_DENIED', 'hard confirmation is unavailable; refusing unowned screenshots')
+        }
+        await hardConfirmAsk(exec, 'chrome_shots', {
+          header: '显示无归属的旧截图（排障开关）',
+          question: `允许本次${op === 'list' ? '列出' : '读取'}没有 owner 记录的旧截图吗？这些文件可能属于其他 DSH 会话，或早于归属台账。目录：${directories.join(', ')}`,
+          detail: '默认隐藏；开关只对本次调用生效，使用者与工具调用会写入 audit.jsonl。',
+          timeoutMs: evaluateConfirmTimeoutMs,
+          site: null,
+        })
+        if (typeof writeAudit === 'function') {
+          writeAudit(exec, 'chrome_shots', `include unowned (${op})`, null, 'allowed', 'include-unowned')
+        }
+      }
       const shotOwners = op === 'list' || op === 'read' ? await readShotOwners() : {}
       if (op === 'list') {
         const limit = Number.isFinite(args?.limit) ? Math.max(1, Math.min(100, Number(args.limit))) : 20
@@ -435,7 +462,7 @@ export function createMediaTools({
             if (seen.has(file)) continue
             seen.add(file)
             // Filter before stat/open so another session's file is never read.
-            if (!shotVisible(shotOwners, file, owner)) continue
+            if (!shotVisible(shotOwners, file, owner, includeUnowned)) continue
             try {
               const stat = await fsp.stat(file)
               const entry = {
@@ -479,8 +506,14 @@ export function createMediaTools({
         if (!root) {
           throw new BridgeError('INVALID_ARGUMENT', 'path must be inside the screenshots directory')
         }
-        if (!shotVisible(shotOwners, target, owner)) {
-          throw new BridgeError('INVALID_ARGUMENT', 'screenshot belongs to another DSH session')
+        if (!shotVisible(shotOwners, target, owner, includeUnowned)) {
+          const recorded = shotOwners[path.resolve(target)]
+          throw new BridgeError(
+            'INVALID_ARGUMENT',
+            recorded
+              ? 'screenshot belongs to another DSH session'
+              : 'screenshot has no recorded owner (legacy file); pass includeUnowned:true after the hard confirmation to read it',
+          )
         }
         const data = await fsp.readFile(target)
         let width
@@ -545,11 +578,16 @@ export function createMediaTools({
   const download = {
     name: 'chrome_download',
     description:
-      'List recent Chrome downloads (filename, URL, state, bytes, start time). Use after triggering a download to find the saved file path.',
+      'List recent Chrome downloads (filename, URL, state, bytes, start time). Use after triggering a download to find the saved file path. By default only downloads initiated by this DSH session\'s own tabs are returned; includeHistory:true (hard confirmation) exposes the machine-wide Chrome download history instead.',
     parameters: {
       type: 'object',
       properties: {
         limit: { type: 'number', description: 'Max entries, 1-100 (default 20).' },
+        includeHistory: {
+          type: 'boolean',
+          description:
+            'List the machine-wide Chrome download history, not just this session\'s downloads. Requires a hard confirmation naming the full-history read; denied or unavailable confirmation fails closed.',
+        },
       },
       additionalProperties: false,
     },
@@ -579,9 +617,40 @@ export function createMediaTools({
         return renderText(lines.length ? lines.join('\n') : '(no downloads)')
       },
     },
-    async execute(args) {
-      const value = await call('browser.downloads', { limit: args?.limit }, 30000)
+    async execute(args, exec) {
+      const includeHistory = args?.includeHistory === true
+      if (includeHistory) {
+        if (typeof hardConfirmAsk !== 'function') {
+          throw new BridgeError('APPROVAL_DENIED', 'hard confirmation is unavailable; refusing the full download history')
+        }
+        await hardConfirmAsk(exec, 'chrome_download', {
+          header: '读取全机下载历史（跨会话）',
+          question:
+            '允许列出本机完整的 Chrome 下载历史吗？默认只列出本会话自己的标签页触发的下载；全量历史包含其他会话、其他窗口和用户手动下载记录（文件名、URL、时间）。',
+          detail: '只在排障时使用；本次调用会写入 audit.jsonl。',
+          timeoutMs: evaluateConfirmTimeoutMs,
+          site: null,
+        })
+      }
+      const value = await call(
+        'browser.downloads',
+        { limit: args?.limit, includeHistory, owner: ownerOf(exec) },
+        30000,
+      )
       if (!value) throw new BridgeError('INTERNAL', 'extension returned no download list')
+      // Fail closed against an older desktop extension that ignores the new
+      // flag: only a response that explicitly declares itself session-scoped is
+      // returned without includeHistory. The headless driver and the current
+      // extension both set this marker; anything else could be the machine-wide
+      // list, so it is withheld instead of trusted.
+      if (!includeHistory && value.scope !== 'session') {
+        return {
+          items: [],
+          scope: 'unavailable',
+          warning:
+            'download backend did not scope its list to this session; refusing to expose the machine-wide history. Update the extension or retry with includeHistory:true after the hard confirmation.',
+        }
+      }
       return value
     },
   }

@@ -37,6 +37,7 @@ const dialogCommands = []
 const eventListeners = new Set()
 let nextPageValue = { ok: true, tag: 'button', label: 'OK' }
 let nextTabId = 100
+const downloadQueries = []
 
 const runtimeMessageListeners = []
 const debuggerDetachListeners = []
@@ -225,8 +226,16 @@ const chrome = {
     async createDocument() {},
   },
   downloads: {
-    async search() {
-      return [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete' }]
+    async search(query) {
+      downloadQueries.push(query)
+      // H4 fixture: one download per session (s1 -> tab 7, s2 -> tab 108),
+      // one from an unrelated tab and one manual download with no tabId.
+      return [
+        { id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', tabId: 7, startTime: '2026-10-19T10:00:00.000Z' },
+        { id: 2, filename: '/tmp/session-two.pdf', url: 'https://example.com/two.pdf', state: 'complete', tabId: 108, startTime: '2026-10-19T10:01:00.000Z' },
+        { id: 3, filename: '/tmp/foreign.pdf', url: 'https://example.com/foreign.pdf', state: 'complete', tabId: 42, startTime: '2026-10-19T10:02:00.000Z' },
+        { id: 4, filename: '/tmp/manual.pdf', url: 'https://example.com/manual.pdf', state: 'complete', startTime: '2026-10-19T10:03:00.000Z' },
+      ]
     },
   },
   debugger: {
@@ -544,8 +553,52 @@ tabs.get(7).active = true
 const claimViaTabs = await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'claim', tabId: 109, owner: 's3' }, id: 'tabs-claim' })
 check('tab.tabs op=claim routes to claim', claimViaTabs?.claimed === true && claimViaTabs.tabId === 109)
 
-const downloads = await sandbox.handleRequest({ method: 'browser.downloads', params: { limit: 5 }, id: 'downloads' })
-check('browser.downloads lists items', downloads?.items?.[0]?.filename === '/tmp/report.pdf')
+const downloads = await sandbox.handleRequest({
+  method: 'browser.downloads',
+  params: { limit: 5, owner: 's1' },
+  id: 'downloads',
+})
+check(
+  'browser.downloads only lists downloads from this session own tabs',
+  downloads?.items?.length === 1 &&
+    downloads.items[0].filename === '/tmp/report.pdf' &&
+    downloads.items[0].tabId === 7 &&
+    downloads?.scope === 'session',
+  JSON.stringify(downloads),
+)
+const otherSessionDownloads = await sandbox.handleRequest({
+  method: 'browser.downloads',
+  params: { limit: 5, owner: 's2' },
+  id: 'downloads-s2',
+})
+check(
+  'browser.downloads isolates the second session (two-session test)',
+  otherSessionDownloads?.items?.length === 1 &&
+    otherSessionDownloads.items[0].filename === '/tmp/session-two.pdf' &&
+    !otherSessionDownloads.items.some((item) => item.filename === '/tmp/report.pdf'),
+  JSON.stringify(otherSessionDownloads),
+)
+const noSessionDownloads = await sandbox.handleRequest({
+  method: 'browser.downloads',
+  params: { limit: 5, owner: 's-unknown' },
+  id: 'downloads-unknown',
+})
+check('browser.downloads fails closed for a session with no tabs', noSessionDownloads?.items?.length === 0)
+const historyDownloads = await sandbox.handleRequest({
+  method: 'browser.downloads',
+  params: { limit: 10, owner: 's1', includeHistory: true },
+  id: 'downloads-history',
+})
+check(
+  'browser.downloads includeHistory returns the machine-wide list only when explicitly requested',
+  historyDownloads?.items?.length === 4 && historyDownloads?.scope === 'history',
+  JSON.stringify(historyDownloads),
+)
+check(
+  'session-scoped download lookup never searches the machine-wide list without includeHistory',
+  downloadQueries.at(-2)?.limit >= 5 && downloadQueries.at(-1)?.limit === 10,
+  JSON.stringify(downloadQueries.slice(-2)),
+)
 
 const upload = await sandbox.handleRequest({
   method: 'tab.upload',

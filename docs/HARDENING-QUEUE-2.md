@@ -5,7 +5,7 @@
 
 ## 队列
 
-- [ ] H4 跨会话读面收敛
+- [x] H4 跨会话读面收敛
   - `chrome_download` 只返回本会话启动后/当前窗口可见的下载，或显式 `includeHistory:true` + hardConfirm；默认不读全机历史。
   - `chrome_audit` 按 session/owner 过滤（若记录里有）；无 owner 的旧截图默认隐藏，提供显式排障开关并审计。
   - 补双会话测试；错误语义不变。
