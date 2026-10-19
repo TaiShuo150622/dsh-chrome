@@ -22,7 +22,7 @@
 - [x] Q1 `src/tools-lease.js`（已完成，基线）
 - [x] Q2 `src/tools-context.js`（已完成）
 - [x] Q3 `src/tools-verify.js`（已完成）
-- [ ] Q4 抽出 headless PNG 编解码
+- [x] Q4 抽出 headless PNG 编解码
   - 新建 `src/headless-png.js`，迁移 `src/headless.js` 中的 `PNG_CRC_TABLE`、`pngCrc32`、`pngChunk`、`paethPredictor`、`unfilterPngRows`、`pngFrameSize`、`jpegFrameSize`、`decodePngFrame`、`encodePngFrame`；
   - `headless.js` 改为 import；只导出 `headless.js` 实际用到的函数；
   - 不改帧格式/截图行为；全量测试。
