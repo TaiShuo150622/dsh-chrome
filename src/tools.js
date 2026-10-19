@@ -144,6 +144,14 @@ function normalizeLeaseError(error) {
 export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null, contextViewer = null }) {
   const list = []
   const ownerOf = (exec) => exec?.agent?.id ?? 'default'
+  const releaseOwnedLeases = (exec) => {
+    if (!leases) return
+    try {
+      for (const lease of leases.list({ owner: ownerOf(exec) })) {
+        try { leases.release(lease.leaseId, { owner: ownerOf(exec) }) } catch {}
+      }
+    } catch {}
+  }
   const pluginConfig = config?.() && typeof config() === 'object' ? config() : {}
   const allowEvaluate = pluginConfig.allowEvaluate === true
   const evaluateConfirmTimeoutMs = Number.isFinite(pluginConfig.evaluateConfirmTimeoutMs)
@@ -616,7 +624,9 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     async execute(args, exec) {
       const url = validateHttpUrl(args?.url)
       await guard(exec, 'chrome_goto', `navigate to ${url}`, { targetUrl: url })
-      return call('tab.goto', { url, owner: ownerOf(exec), ownerLabel: sessionLabel(exec) })
+      const result = await call('tab.goto', { url, owner: ownerOf(exec), ownerLabel: sessionLabel(exec) })
+      try { if (result?.tabId != null) leases?.releaseTab(result.tabId, { reason: 'navigate' }) } catch {}
+      return result
     },
   })
 
@@ -3145,11 +3155,13 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
     },
     async execute(args, exec) {
       await guard(exec, 'chrome_history', String(args?.op ?? 'reload'), { tabId: args?.tabId })
-      return call('tab.history', {
+      const result = await call('tab.history', {
         op: String(args?.op ?? 'reload'),
         tabId: args?.tabId,
         owner: ownerOf(exec),
       })
+      try { if (result?.tabId != null) leases?.releaseTab(result.tabId, { reason: 'navigate' }) } catch {}
+      return result
     },
   })
 
@@ -3239,13 +3251,17 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
           await guard(exec, 'chrome_tabs', `tabs ${op}`, { tabId: args?.tabId })
         }
       }
-      return call('tab.tabs', {
+      const result = await call('tab.tabs', {
         op,
         url: args?.url,
         tabId: args?.tabId,
         owner: ownerOf(exec),
         ownerLabel: sessionLabel(exec),
       })
+      try {
+        if (op === 'close' && result?.closed != null) leases?.releaseTab(result.closed, { reason: 'tab-closed' })
+      } catch {}
+      return result
     },
   })
 
@@ -3422,7 +3438,9 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
     },
     async execute(_args, exec) {
       await guard(exec, 'chrome_close_session', 'close session tabs')
-      return call('tab.close_session', { owner: ownerOf(exec) })
+      const result = await call('tab.close_session', { owner: ownerOf(exec) })
+      releaseOwnedLeases(exec)
+      return result
     },
   })
 
