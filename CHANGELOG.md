@@ -11,6 +11,12 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.14] - 2026-10-19
+
+- headless 截图/视觉探针、context-viewer、update、tools 组装层拆分
+- 设计稿：DSH 原生侧边栏、多浏览器沙盒、插件设置、密码管理
+- 安全：chrome_type 的 text 不再明文写入 operation log
+
 ## [0.2.13] - 2026-10-19
 
 - media/misc 工具拆出 tools.js；headless dispatch 导航/输入动作移入 headless-actions.js

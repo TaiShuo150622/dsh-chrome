@@ -176,8 +176,7 @@ await check('redacts URL userinfo/secret queries, password fields and inline sec
   assert.ok(entry.args.url.includes('ok=1'), entry.args.url)
   assert.ok(entry.args.url.includes('access_token=«redacted»'), entry.args.url)
 
-  assert.ok(entry.args.text.length <= 160, 'long text is truncated')
-  assert.ok(entry.args.text.endsWith('…'), 'truncation is visible')
+  assert.equal(entry.args.text, '«redacted»', 'chrome_type input is never logged')
   assert.ok(entry.args.html.startsWith('[omitted '), 'HTML content is replaced by a length')
   assert.ok(entry.args.dataBase64.startsWith('[omitted '), 'base64 content is replaced by a length')
   assert.equal(entry.args.nested.note.includes('abc123'), false, 'inline token is redacted')

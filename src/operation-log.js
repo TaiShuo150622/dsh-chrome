@@ -488,8 +488,15 @@ function summarizeObject(object, depth, seen) {
   return boundObject(out, depth === 0 ? MAX_ARGS_BYTES : NESTED_BUDGET_BYTES)
 }
 
-function summarizeArgs(args) {
+const TYPE_TOOLS = new Set(['chrome_type'])
+
+function summarizeArgs(args, tool = '') {
   if (args == null) return {}
+  if (TYPE_TOOLS.has(tool) && args && typeof args === 'object' && !Array.isArray(args) && 'text' in args) {
+    // Keyboard input is the one argument class that can be a password/OTP.
+    // Keep the record auditable without persisting the typed string.
+    return boundObject({ ...summarizeObject({ ...args, text: REDACTED }, 0, new WeakSet()) }, MAX_ARGS_BYTES)
+  }
   if (typeof args !== 'object') {
     const value = summarizeValue(args, 1, 'value', new WeakSet())
     return value === undefined ? {} : { value }
@@ -572,7 +579,7 @@ function buildRecord(input) {
     durationMs: toDuration(input?.durationMs),
     ok,
     errorCode: ok ? null : normalizeErrorCode(input?.errorCode ?? 'INTERNAL'),
-    args: summarizeArgs(input?.args),
+    args: summarizeArgs(input?.args, input?.tool),
     result: summarizeResult(input?.result),
   }
   return record
