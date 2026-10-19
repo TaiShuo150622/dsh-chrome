@@ -11,6 +11,11 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.4] - 2026-10-19
+
+- popup 的 Auto-update 改名为 Dev reload，避免和 provider 发布更新混淆
+- Windows 指南增加可选自动更新配置说明
+
 ## [0.2.3] - 2026-10-19
 
 - 结构拆分：lease 写门控从 backend.js 抽到 tool-guards.js，backend 只负责 backend 路由

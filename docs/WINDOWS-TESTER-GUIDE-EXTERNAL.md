@@ -177,3 +177,23 @@ DSH 的「插件 → 添加插件」支持 **GitHub 仓库地址** 或 **本地�
 - 这是预览版，exe 未签名；SmartScreen 提示是预期现象，请记录。
 - 不要测试真实账号、支付、密码或 API key；需要登录的页面请跳过或问管理员。
 - 测试过程中遇到任何“页面卡住/浏览器没反应”，先截屏并保留日志，再重启 Chrome。
+
+## 7. 是否自动更新（可选）
+
+默认关闭，不联网。需要时在 `~/.dsh/config.json` 加：
+
+```json
+{
+  "update": {
+    "enabled": true,
+    "autoInstall": false,
+    "channel": "stable",
+    "checkIntervalHours": 24
+  }
+}
+```
+
+- `enabled=true`：provider 启动后检查 GitHub Release，结果写 `~/.dsh/cache/dsh-chrome/update.json`；
+- `autoInstall=true`（仅 Windows）：自动下载并 SHA-256 校验后替换 native host exe；DSH 插件本体仍通过 DSH 插件管理器更新；
+- Chrome 未打包扩展不能自更新，扩展仍需重新加载/安装；
+- popup 里的 **Auto-update** 行是开发期扩展 reload 开关，不是上面的 provider 发布更新。
