@@ -90,6 +90,8 @@ const DEFAULT_IDLE_MINUTES = Number(process.env.DSH_HEADLESS_IDLE_MINUTES) || 5
 export const DEFAULT_MAX_TABS = 12
 export const MAX_TABS_LIMIT = 64
 const MAX_TABS_ENV = 'DSH_HEADLESS_MAX_TABS'
+// Bounded download history; the guid index is pruned with the list (M2).
+const DOWNLOAD_HISTORY_LIMIT = 100
 
 /** Resolve the tab cap: explicit option, then env, then the default; capped at 64. */
 export function resolveMaxTabs(value, env = process.env) {
@@ -228,6 +230,9 @@ class Cdp {
       this.pending.clear()
       this.listeners.clear()
       this.ws = null
+      // The driver clears its per-tab state when the browser goes away. It
+      // covers a crashed/reused child as well as a dropped websocket.
+      this.onClose?.()
     }
   }
 
@@ -341,6 +346,7 @@ export class HeadlessDriver {
           this.chrome = null
           this.browserVersion = version?.product || null
           existingCdp.onMessage((message) => this.onCdpEvent(message))
+          existingCdp.onClose = () => this.handleBrowserExit('connection-closed')
           await existingCdp
             .send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: this.downloadDir, eventsEnabled: true })
             .catch(() => {})
@@ -382,11 +388,11 @@ export class HeadlessDriver {
       const cdp = new Cdp(activePort.url)
       cdp.onMessage((message) => this.onCdpEvent(message))
       await cdp.connect()
+      cdp.onClose = () => this.handleBrowserExit('connection-closed')
       this.cdp = cdp
       this.chrome.on('exit', (code) => {
         this.logger?.warn?.('headless Chrome exited: %s', code)
-        this.cdp = null
-        this.chrome = null
+        this.handleBrowserExit(code)
       })
       // These two CDP round trips are independent of each other; on a cold
       // browser each can take tens of milliseconds, so run them together.
@@ -450,6 +456,18 @@ export class HeadlessDriver {
       this.onNetworkEvent(sessionTab, message.method, message.params || {})
       return
     }
+    if (message.method === 'Target.detachedFromTarget') {
+      const sessionId = message.params?.sessionId || message.sessionId
+      const tab = sessionId ? this.bySession.get(sessionId) : null
+      if (tab) this.cleanupTab(tab, { reason: 'detached' })
+      return
+    }
+    if (message.method === 'Target.targetDestroyed') {
+      const targetId = message.params?.targetId
+      const tab = targetId ? this.findTabByTargetId(targetId) : null
+      if (tab) this.cleanupTab(tab, { reason: 'destroyed' })
+      return
+    }
     if (message.method === 'Browser.downloadWillBegin') {
       const params = message.params || {}
       const record = {
@@ -463,7 +481,12 @@ export class HeadlessDriver {
       }
       this.downloads.unshift(record)
       this.downloadByGuid.set(params.guid, record)
-      while (this.downloads.length > 100) this.downloads.pop()
+      // Keep the list and the guid index in lockstep: a record evicted from
+      // the bounded history must not stay reachable through the lookup map.
+      while (this.downloads.length > DOWNLOAD_HISTORY_LIMIT) {
+        const evicted = this.downloads.pop()
+        if (evicted && this.downloadByGuid.get(evicted.guid) === evicted) this.downloadByGuid.delete(evicted.guid)
+      }
       return
     }
     if (message.method === 'Browser.downloadProgress') {
@@ -481,10 +504,74 @@ export class HeadlessDriver {
     const key = String(owner || 'default')
     let entry = this.owners.get(key)
     if (!entry) {
-      entry = { tabs: new Map(), activeTabId: null }
+      entry = { owner: key, tabs: new Map(), activeTabId: null, pending: 0 }
       this.owners.set(key, entry)
     }
     return entry
+  }
+
+  /**
+   * The one place a tab is removed from every driver map. Closing a tab from
+   * `tabs op=close`, `close_session`, a context close, a `Target.detachedFromTarget`
+   * event or a browser exit all funnel through here so no session, console
+   * buffer, capture, shot stream or owner entry outlives the tab.
+   *
+   * Idempotent: a target close triggers a detach event for a tab this function
+   * already unregistered, so the second call is a no-op.
+   */
+  cleanupTab(tab, { reason = 'closed' } = {}) {
+    if (!tab || tab.cleaned) return false
+    tab.cleaned = true
+    tab.closedReason = reason
+    this.dropShotStream(tab)
+    this.dropCaptureForTab(tab.tabId)
+    if (tab.sessionId != null && this.bySession.get(tab.sessionId) === tab) this.bySession.delete(tab.sessionId)
+    this.consoleBuffers.delete(tab.tabId)
+    if (this.tabs.get(tab.tabId) === tab) this.tabs.delete(tab.tabId)
+    const entry = tab.owner != null ? this.owners.get(String(tab.owner)) : null
+    if (entry) {
+      if (entry.tabs.get(tab.tabId) === tab) entry.tabs.delete(tab.tabId)
+      if (entry.activeTabId === tab.tabId) entry.activeTabId = [...entry.tabs.keys()][0] ?? null
+      this.maybeReleaseOwner(entry)
+    }
+    return true
+  }
+
+  /** Remove a capture owned by a tab and its pending timer, leaving no index entry. */
+  dropCaptureForTab(tabId) {
+    const capture = this.captureByTab.get(tabId)
+    if (!capture) return null
+    try {
+      clearTimeout(capture.timer)
+    } catch {
+      // timer already fired
+    }
+    if (capture.active) {
+      capture.active = false
+      capture.endedReason = capture.endedReason || 'tab-closed'
+    }
+    if (this.captures.get(capture.captureId) === capture) this.captures.delete(capture.captureId)
+    this.captureByTab.delete(tabId)
+    return capture
+  }
+
+  /**
+   * Drop an owner entry once it has no tabs, no attach in flight and no login
+   * window. Without this an owner key would stay in the map forever after its
+   * last tab closes (the leak M2 targets).
+   */
+  maybeReleaseOwner(entry) {
+    if (!entry || entry.tabs.size > 0 || entry.pending > 0 || this.loginProcess) return false
+    if (this.owners.get(entry.owner) === entry) {
+      this.owners.delete(entry.owner)
+      return true
+    }
+    return false
+  }
+
+  findTabByTargetId(targetId) {
+    for (const tab of this.tabs.values()) if (tab.targetId === targetId) return tab
+    return null
   }
 
   async attachTab(entry, url) {
@@ -494,9 +581,11 @@ export class HeadlessDriver {
     // {op:"new"}` never creates (or briefly leaks) a target.
     const limit = this.maxTabs
     if (this.tabs.size + this.pendingTabs >= limit) {
+      this.maybeReleaseOwner(entry)
       throw error('RESOURCE_LIMIT', `headless tab limit reached (${limit}); close a tab first`)
     }
     this.pendingTabs += 1
+    entry.pending += 1
     let targetId = null
     let sessionId = null
     try {
@@ -516,6 +605,7 @@ export class HeadlessDriver {
       ])
       const tab = {
         tabId: this.nextTabId,
+        owner: entry.owner,
         targetId,
         sessionId,
         url: targetUrl,
@@ -545,6 +635,8 @@ export class HeadlessDriver {
       throw failure
     } finally {
       this.pendingTabs -= 1
+      entry.pending -= 1
+      this.maybeReleaseOwner(entry)
     }
   }
 
@@ -575,7 +667,10 @@ export class HeadlessDriver {
     const entry = this.ownerEntry(owner)
     if (Number.isFinite(tabId)) {
       const tab = entry.tabs.get(tabId)
-      if (!tab) throw error('TAB_NOT_FOUND', `tab ${tabId} is not owned by this session`)
+      if (!tab) {
+        this.maybeReleaseOwner(entry)
+        throw error('TAB_NOT_FOUND', `tab ${tabId} is not owned by this session`)
+      }
       entry.activeTabId = tabId
       return tab
     }
@@ -1341,17 +1436,10 @@ export class HeadlessDriver {
         const entry = this.ownerEntry(owner)
         let closed = 0
         for (const tab of [...entry.tabs.values()]) {
-          this.dropShotStream(tab)
-          try {
-            await this.cdp.send('Target.closeTarget', { targetId: tab.targetId })
-          } catch {
-            // target already gone
-          }
-          entry.tabs.delete(tab.tabId)
-          this.tabs.delete(tab.tabId)
-          closed += 1
+          if (await this.closeTab(tab, { reason: 'session-closed' })) closed += 1
         }
         entry.activeTabId = null
+        this.maybeReleaseOwner(entry)
         return { closed }
       }
       case 'tab.debug_diag':
@@ -1423,17 +1511,13 @@ export class HeadlessDriver {
     }
     if (op === 'close') {
       const tab = entry.tabs.get(Number(params.tabId))
-      if (!tab) throw error('TAB_NOT_FOUND', `tab ${params.tabId} is not owned by this session`)
-      this.dropShotStream(tab)
-      try {
-        await this.cdp.send('Target.closeTarget', { targetId: tab.targetId })
-      } catch {
-        // already closed
+      if (!tab) {
+        this.maybeReleaseOwner(entry)
+        throw error('TAB_NOT_FOUND', `tab ${params.tabId} is not owned by this session`)
       }
-      entry.tabs.delete(tab.tabId)
-      this.tabs.delete(tab.tabId)
-      if (entry.activeTabId === tab.tabId) entry.activeTabId = [...entry.tabs.keys()][0] ?? null
-      return { closed: tab.tabId, remaining: entry.tabs.size }
+      const tabId = tab.tabId
+      await this.closeTab(tab, { reason: 'tabs-close' })
+      return { closed: tabId, remaining: entry.tabs.size }
     }
     if (op === 'claim') {
       const tab = await this.ensureTab(owner, params.tabId)
@@ -1465,6 +1549,47 @@ export class HeadlessDriver {
     return headlessLogin.loginFinish(this)
   }
 
+  /**
+   * Close one tab and unregister it everywhere. `cleanupTab` runs before the
+   * CDP close so a rejected close cannot leave the tab registered; the later
+   * `Target.detachedFromTarget` event then finds nothing and is a no-op.
+   */
+  async closeTab(tab, { reason = 'closed' } = {}) {
+    if (!this.cleanupTab(tab, { reason })) return false
+    try {
+      await this.cdp?.send('Target.closeTarget', { targetId: tab.targetId })
+    } catch {
+      // target already gone
+    }
+    return true
+  }
+
+  /**
+   * Forget every tab, capture, download and owner after the browser is gone.
+   * Used by normal close (including context close / idle reap) and by the
+   * child `exit` handler, so a crashed browser cannot leave phantom tabs.
+   */
+  handleBrowserExit(reason = 'browser-exit') {
+    for (const tab of [...this.tabs.values()]) this.cleanupTab(tab, { reason })
+    this.owners.clear()
+    this.bySession.clear()
+    this.consoleBuffers.clear()
+    this.captures.clear()
+    this.captureByTab.clear()
+    this.downloadByGuid.clear()
+    this.downloads.length = 0
+    this.cdp = null
+    this.chrome = null
+    this.stopIdleTimer()
+    this.lastActivity = Date.now()
+  }
+
+  stopIdleTimer() {
+    if (!this.idleTimer) return
+    clearInterval(this.idleTimer)
+    this.idleTimer = null
+  }
+
   async close() {
     try {
       this.loginProcess?.kill?.('SIGTERM')
@@ -1472,33 +1597,25 @@ export class HeadlessDriver {
       // ignore
     }
     this.loginProcess = null
-    for (const tab of this.tabs.values()) this.dropShotStream(tab)
+    this.visibleMode = false
     try {
       await this.cdp?.send('Browser.close')
     } catch {
       // browser already gone or does not support close
     }
-    this.bySession.clear()
-    this.tabs.clear()
+    // Keep the child handle before teardown nulls it.
+    const child = this.chrome
     try {
       this.cdp?.close()
     } catch {
       // ignore
     }
-    this.cdp = null
+    this.handleBrowserExit('closed')
     try {
-      this.chrome?.kill('SIGTERM')
+      child?.kill('SIGTERM')
     } catch {
       // ignore
     }
-    this.chrome = null
-    this.tabs.clear()
-    this.owners.clear()
-    this.bySession.clear()
-    this.consoleBuffers.clear()
-    this.captures.clear()
-    this.captureByTab.clear()
-    this.visibleMode = false
   }
 }
 

@@ -10,7 +10,7 @@
   - `createTarget`/`attachToTarget`/`Page.enable`/`Runtime.enable`/visual tracker 任一步失败：close target、detach session、删除已写入的 maps，rethrow；不增加 `nextTabId` 或提交注册。
   - 注册所有 maps 放在初始化成功后一次性提交（或事务化 commit）。
   - 补 fake CDP 测试：超限不 create；attach/enable 失败无残留；成功可多 tab 同浏览器。
-- [ ] M2 tab/session/owner 统一清理
+- [x] M2 tab/session/owner 统一清理
   - `cleanupTab(tab)` 统一处理：dropShotStream、bySession、consoleBuffers、captureByTab/captures、owner.tabs、tabs、activeTab；`tabs op=close`、`close_session`、context close、target detach、browser exit 全部调用。
   - 最后一个 tab 关闭后删除 owner（无 login/pending）；downloadByGuid 与 downloads 清理/上限；close 清理 idle timer。
   - 补测试：关闭 tab 后各 Map 归零；owner 不泄漏；target detach 走同一清理；浏览器异常退出全部清理。
