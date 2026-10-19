@@ -6,16 +6,50 @@
  */
 import { BridgeError } from './bridge.js'
 
-export function createLoginTool({ bridge, hardConfirmAsk, evaluateConfirmTimeoutMs, outputSchema, renderText }) {
+export function createLoginTool({ bridge, contexts = null, ownerOf = null, hardConfirmAsk, evaluateConfirmTimeoutMs, outputSchema, renderText }) {
+  // The provider passes a BackendRouter, whose `headless` route is a
+  // HeadlessContextRouter without login methods (C4). The visible window
+  // belongs to one owned browser context, so resolve that context's driver
+  // when a context manager is wired; the legacy single-driver shape stays as
+  // the fallback for embedded/test providers.
+  function resolveDriver(args, exec) {
+    if (contexts && typeof contexts.activeFor === 'function') {
+      const owner = typeof ownerOf === 'function' ? ownerOf(exec) : 'default'
+      const requestedId = args?.contextId != null ? String(args.contextId) : ''
+      const owned = requestedId
+        ? (typeof contexts.getOwned === 'function' ? contexts.getOwned(requestedId, owner) : contexts.get(requestedId))
+        : contexts.activeFor(owner)
+      if (!owned) {
+        throw new BridgeError(
+          requestedId ? 'CONTEXT_NOT_FOUND' : 'NO_ACTIVE_CONTEXT',
+          requestedId
+            ? `context ${requestedId} is not owned by this session`
+            : 'no active headless context; open one with chrome_context {op:"create"} or a backend:"headless" call first',
+        )
+      }
+      const driver = typeof contexts.driverForOwned === 'function'
+        ? contexts.driverForOwned(owned.contextId, owner)
+        : contexts.driverFor(owned.contextId)
+      if (!driver || typeof driver.loginStart !== 'function') {
+        throw new BridgeError('UNSUPPORTED_BACKEND', 'this browser context does not support an interactive login window')
+      }
+      return driver
+    }
+    const legacy = bridge?.headless
+    if (legacy && typeof legacy.loginStart === 'function') return legacy
+    throw new BridgeError('UNSUPPORTED_BACKEND', 'this provider has no headless driver (headless is unavailable)')
+  }
+
   return {
     name: 'chrome_headless_login',
     description:
-      'Open a visible, dedicated Chrome window at a human-interaction step (login, CAPTCHA, payment, OTP) using the headless profile: op="start" opens about:blank, op="show" pauses the current headless session and reopens its current page in a visible window, op="finish" closes the visible window, op="status" reports it. The next backend:"headless" call resumes the page after show/finish. Requires hard confirmation.',
+      'Open a visible, dedicated Chrome window at a human-interaction step (login, CAPTCHA, payment, OTP) using the headless profile: op="start" opens about:blank, op="show" pauses the current headless session and reopens its current page in a visible window, op="finish" closes the visible window, op="status" reports it. The next backend:"headless" call resumes the page after show/finish. With a context manager the window belongs to this session active headless context, so open one first (chrome_context {op:"create"} or any backend:"headless" call). Requires hard confirmation.',
     parameters: {
       type: 'object',
       properties: {
         op: { type: 'string', enum: ['start', 'show', 'status', 'finish'] },
         url: { type: 'string', description: 'start/show: http(s) URL (show defaults to the current headless page).' },
+        contextId: { type: 'string', description: 'Optional owned context id; defaults to this session active context.' },
       },
       required: ['op'],
       additionalProperties: false,
@@ -44,10 +78,7 @@ export function createLoginTool({ bridge, hardConfirmAsk, evaluateConfirmTimeout
       },
     },
     async execute(args, exec) {
-      const driver = bridge.headless
-      if (!driver || typeof driver.loginStart !== 'function') {
-        throw new BridgeError('UNSUPPORTED_BACKEND', 'this provider has no headless driver (headless is unavailable)')
-      }
+      const driver = resolveDriver(args, exec)
       const op = String(args?.op || 'status')
       if (op === 'start') {
         await hardConfirmAsk(exec, 'chrome_headless_login', {

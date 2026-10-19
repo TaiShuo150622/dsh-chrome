@@ -197,7 +197,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
 
 
   // ------------------------------------------- 4i-2. headless login profile
-  list.push(createLoginTool({ bridge, hardConfirmAsk, evaluateConfirmTimeoutMs, outputSchema, renderText }))
+  list.push(createLoginTool({ bridge, contexts, ownerOf, hardConfirmAsk, evaluateConfirmTimeoutMs, outputSchema, renderText }))
 
   list.push(createContextTool({ contexts, contextViewer, ownerOf, outputSchema, renderText }))
 

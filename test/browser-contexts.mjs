@@ -93,6 +93,117 @@ try {
   await manager.closeAll()
   assert.equal(manager.stats().active, 0)
 
+  // C1: concurrent creates reserve their slot before awaiting createDriver, so
+  // maxContexts is a hard cap and no orphan profile is left behind.
+  const concurrentDrivers = []
+  const concurrentManager = new BrowserContextManager({
+    config,
+    home,
+    createDriver: async (options) => {
+      concurrentDrivers.push(options)
+      await new Promise((resolve) => setTimeout(resolve, 15))
+      return { options, async close() {} }
+    },
+  })
+  const raced = await Promise.allSettled(
+    Array.from({ length: 16 }, (_, index) => concurrentManager.create({ owner: `racer-${index}` })),
+  )
+  const raceWinners = raced.filter((result) => result.status === 'fulfilled')
+  const raceLosers = raced.filter((result) => result.status === 'rejected')
+  assert.equal(raceWinners.length, 2, `exactly maxContexts creates should win, got ${raceWinners.length}`)
+  assert.equal(raceLosers.length, 14)
+  assert.ok(
+    raceLosers.every((result) => result.reason?.code === 'CONTEXT_LIMIT'),
+    raceLosers.map((result) => result.reason?.code).join(','),
+  )
+  assert.equal(concurrentManager.stats().active, 2)
+  assert.equal(concurrentDrivers.length, 2, 'createDriver must only run for reserved slots')
+  const profilesRoot = path.join(home, 'cache', 'dsh-chrome', 'profiles')
+  const ephemeralDirs = () => fs.readdirSync(profilesRoot).filter((name) => name.startsWith('ephemeral-'))
+  assert.equal(ephemeralDirs().length, 2, `unexpected ephemeral profiles: ${ephemeralDirs().join(',')}`)
+  await concurrentManager.closeAll()
+  assert.deepEqual(ephemeralDirs(), [], 'closing concurrent ephemeral contexts must clean their profiles')
+
+  // C2: concurrent creates for one owner share the in-flight context.
+  let dedupeFactoryCalls = 0
+  const dedupeManager = new BrowserContextManager({
+    config,
+    home,
+    createDriver: async (options) => {
+      dedupeFactoryCalls += 1
+      await new Promise((resolve) => setTimeout(resolve, 15))
+      return { options, async close() {} }
+    },
+  })
+  const [firstSame, secondSame] = await Promise.all([
+    dedupeManager.create({ owner: 'same-owner' }),
+    dedupeManager.create({ owner: 'same-owner' }),
+  ])
+  assert.equal(firstSame.contextId, secondSame.contextId, 'one owner must get one in-flight context')
+  assert.equal(dedupeFactoryCalls, 1)
+  assert.equal(dedupeManager.stats().active, 1)
+  await dedupeManager.closeAll()
+
+  // C3: a named profile is reserved synchronously; a concurrent create with the
+  // same name is refused instead of opening two browser processes on it.
+  const namedManager = new BrowserContextManager({
+    config,
+    home,
+    createDriver: async (options) => {
+      await new Promise((resolve) => setTimeout(resolve, 15))
+      return { options, async close() {} }
+    },
+  })
+  const namedRace = await Promise.allSettled([
+    namedManager.create({ owner: 'named-a', preset: 'sandbox-persistent', profileName: 'raced-profile' }),
+    namedManager.create({ owner: 'named-b', preset: 'sandbox-persistent', profileName: 'raced-profile' }),
+  ])
+  assert.equal(namedRace.filter((result) => result.status === 'fulfilled').length, 1)
+  assert.equal(namedRace.find((result) => result.status === 'rejected')?.reason?.code, 'PROFILE_IN_USE')
+  assert.equal(fs.readdirSync(profilesRoot).filter((name) => name === 'raced-profile').length, 1)
+  await namedManager.closeAll()
+
+  // C7: a failed create releases the slot and its ephemeral profile; a named
+  // profile reservation is released too, so a retry can reuse the name.
+  let failOnce = true
+  const failingManager = new BrowserContextManager({
+    config,
+    home,
+    createDriver: async (options) => {
+      if (failOnce) {
+        failOnce = false
+        throw new Error('launch failed')
+      }
+      return { options, async close() {} }
+    },
+  })
+  await assert.rejects(() => failingManager.create({ owner: 'failed' }), /launch failed/)
+  assert.equal(failingManager.stats().active, 0)
+  assert.deepEqual(ephemeralDirs(), [], 'a failed create must remove its ephemeral profile')
+  await failingManager.create({ owner: 'failed' })
+  assert.equal(failingManager.stats().active, 1, 'a failed create must release its slot')
+  await failingManager.closeAll()
+
+  let failNamed = true
+  const namedFailManager = new BrowserContextManager({
+    config,
+    home,
+    createDriver: async (options) => {
+      if (failNamed) {
+        failNamed = false
+        throw new Error('launch failed')
+      }
+      return { options, async close() {} }
+    },
+  })
+  await assert.rejects(
+    () => namedFailManager.create({ owner: 'n', preset: 'sandbox-persistent', profileName: 'retry-profile' }),
+    /launch failed/,
+  )
+  const namedRetried = await namedFailManager.create({ owner: 'n', preset: 'sandbox-persistent', profileName: 'retry-profile' })
+  assert.equal(namedRetried.profileId, 'retry-profile', 'a failed named create must release the profile reservation')
+  await namedFailManager.closeAll()
+
   // Idle reaping closes and cleans ephemeral profiles; named profiles remain on disk unless keepProfile false.
   const idleManager = new BrowserContextManager({
     config,

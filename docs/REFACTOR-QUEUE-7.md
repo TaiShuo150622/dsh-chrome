@@ -16,7 +16,7 @@
   - `src/headless-redact.js` 的 secret key/URL fragment/inline `password=...` 补齐 `pwd`/`otp`/`cvv` 等；
   - `chrome_verify` 的 `steps[].text` 不再明文进入 operation log（工具级 nested redaction）；
   - 新增/更新测试（含哨兵值不落盘）；全量测试。
-- [ ] Q34 多 context 并发硬化
+- [x] Q34 多 context 并发硬化
   - `BrowserContextManager.create` 增加 pending 预留，`maxContexts` 并发不超限；
   - 同一 owner 并发 create 只保留一个 active；
   - named profile 并发创建原子拒绝（PROFILE_IN_USE）；

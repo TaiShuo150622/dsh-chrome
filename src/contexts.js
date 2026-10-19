@@ -34,6 +34,13 @@ export class BrowserContextManager {
     this.home = home
     this.contexts = new Map()
     this.activeByOwner = new Map()
+    // Slot reservations for creates that are still awaiting createDriver().
+    // They count against maxContexts so concurrent creates cannot overshoot.
+    this.pending = 0
+    // owner -> in-flight create promise; one creating context per owner.
+    this.creatingByOwner = new Map()
+    // profileId -> reservation while a named profile's driver is being created.
+    this.reservedProfiles = new Set()
     this.maxContexts = config.browser.maxContexts
     this.idleTimeoutMs = config.browser.idleTimeoutMs
     this.profilesRoot = config.browser.profilesDir || path.join(home, 'cache', 'dsh-chrome', 'profiles')
@@ -63,37 +70,93 @@ export class BrowserContextManager {
   }
 
   async create({ owner = 'default', preset, profileName, cwd = process.cwd() } = {}) {
-    if (this.contexts.size >= this.maxContexts) throw new ContextError('CONTEXT_LIMIT', `too many browser contexts (max ${this.maxContexts})`)
-    const mode = presetToMode(preset || this.config.browser.preset)
+    // A concurrent create for the same owner reuses the one in flight instead
+    // of starting a second browser: both requests must land on one context.
+    // This is checked before the limit because reuse consumes no new slot.
+    const creating = this.creatingByOwner.get(owner)
+    if (creating) return creating
+    if (this.contexts.size + this.pending >= this.maxContexts) {
+      throw new ContextError('CONTEXT_LIMIT', `too many browser contexts (max ${this.maxContexts})`)
+    }
+    const selectedPreset = preset || this.config.browser.preset
+    const mode = presetToMode(selectedPreset)
     if (mode.isolation === 'shared') {
       throw new ContextError('UNSUPPORTED_MODE', 'shared contexts require tab/window leases (I3); use sandbox/sandbox-persistent/debug')
     }
     const contextId = randomUUID()
     const named = mode.isolation === 'named'
     const profileId = named ? safeName(profileName || `${owner}-${Date.now()}`) : `ephemeral-${contextId}`
-    if (named && [...this.contexts.values()].some((ctx) => ctx.profileId === profileId)) {
-      throw new ContextError('PROFILE_IN_USE', `named profile ${profileId} is already used by another context`)
+    if (named) {
+      // Reserve the name synchronously: two concurrent creates must not both
+      // reach the filesystem and open the same profile.
+      const inUse = this.reservedProfiles.has(profileId) ||
+        [...this.contexts.values()].some((ctx) => ctx.profileId === profileId)
+      if (inUse) {
+        throw new ContextError('PROFILE_IN_USE', `named profile ${profileId} is already used by another context`)
+      }
+      this.reservedProfiles.add(profileId)
     }
-    const profileDir = path.join(this.profilesRoot, profileId)
-    fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 })
-    const driver = await this.createDriver({ contextId, owner, profileDir, visible: mode.visible, isolation: mode.isolation, cwd })
-    const ctx = {
+    this.pending += 1
+    const promise = this.#createContext({
       contextId,
       owner,
-      preset: preset || this.config.browser.preset,
-      isolation: mode.isolation,
-      visible: mode.visible,
+      preset: selectedPreset,
+      mode,
+      named,
       profileId,
-      profileDir,
-      ephemeral: !named,
-      createdAt: this.now(),
-      lastUsedAt: this.now(),
-      driver,
+      cwd,
+    })
+    this.creatingByOwner.set(owner, promise)
+    // Clear after settlement (not inside #createContext) so even a synchronous
+    // createDriver() throw cannot leave a rejected promise cached for the owner.
+    const clear = () => {
+      if (this.creatingByOwner.get(owner) === promise) this.creatingByOwner.delete(owner)
     }
-    this.contexts.set(contextId, ctx)
-    this.activeByOwner.set(owner, contextId)
-    this.#startReaper()
-    return this.#view(ctx)
+    promise.then(clear, clear)
+    return promise
+  }
+
+  async #createContext({ contextId, owner, preset, mode, named, profileId, cwd }) {
+    const profileDir = path.join(this.profilesRoot, profileId)
+    let driver = null
+    try {
+      fs.mkdirSync(profileDir, { recursive: true, mode: 0o700 })
+      driver = await this.createDriver({ contextId, owner, profileDir, visible: mode.visible, isolation: mode.isolation, cwd })
+      const ctx = {
+        contextId,
+        owner,
+        preset,
+        isolation: mode.isolation,
+        visible: mode.visible,
+        profileId,
+        profileDir,
+        ephemeral: !named,
+        createdAt: this.now(),
+        lastUsedAt: this.now(),
+        driver,
+      }
+      this.contexts.set(contextId, ctx)
+      this.activeByOwner.set(owner, contextId)
+      this.#startReaper()
+      return this.#view(ctx)
+    } catch (error) {
+      // A failed launch must not leak the reserved slot, a half-started driver
+      // or an ephemeral profile directory (C7).
+      try {
+        await driver?.close?.()
+      } catch {}
+      if (!named) {
+        try {
+          fs.rmSync(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+        } catch (cleanupError) {
+          this.logger?.warn?.('ephemeral profile cleanup failed: %s', cleanupError?.message || String(cleanupError))
+        }
+      }
+      throw error
+    } finally {
+      this.pending -= 1
+      if (named) this.reservedProfiles.delete(profileId)
+    }
   }
 
   async close(contextId, { keepProfile = false } = {}) {
