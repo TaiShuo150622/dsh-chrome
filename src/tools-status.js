@@ -89,7 +89,8 @@ export function createStatusTools({ bridge, assets, update = null, currentSite, 
           items: { type: 'object', additionalProperties: true },
         },
         error: { type: 'string' },
-        bridgeError: { type: 'string' },
+        // null means "no bridge start error"; a JSON type string rejects null.
+        bridgeError: {},
       }),
       render: (_args, value) => {
         const lines = [
