@@ -4,6 +4,8 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { registerContextViewer } from '../src/context-viewer.js'
+import { isLoopback, normalizeToken, parseRoute } from '../src/viewer-auth.js'
+import { normalizeHttpUrl } from '../src/viewer-input.js'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-context-viewer-'))
 const jpegPath = path.join(root, 'shot.jpg')
@@ -345,6 +347,23 @@ try {
   assert.equal(disabled.token, null)
   assert.equal(disabled.urlFor('ctx-1'), null)
   disabled.dispose()
+
+  // The viewer is split into auth/driver/input/html modules (Q28); their pure
+  // contracts stay directly testable, so a refactor cannot quietly widen the
+  // token/access/route surface.
+  assert.equal(normalizeToken(token), token)
+  assert.equal(normalizeToken('short'), null)
+  assert.equal(normalizeToken('bad token with spaces'), null)
+  assert.deepEqual(parseRoute('/dsh-chrome/context/ctx-1/frame'), { contextId: 'ctx-1', action: 'frame' })
+  assert.equal(parseRoute('/dsh-chrome/context/ctx-1/other'), null)
+  assert.equal(parseRoute('/dsh-chrome/context/ctx 1/view'), null)
+  assert.equal(isLoopback({ socket: { remoteAddress: '127.0.0.1' } }), true)
+  assert.equal(isLoopback({ socket: { remoteAddress: '::1' } }), true)
+  assert.equal(isLoopback({ socket: { remoteAddress: '::ffff:127.0.0.1' } }), true)
+  assert.equal(isLoopback({ socket: { remoteAddress: '10.0.0.2' } }), false)
+  assert.equal(normalizeHttpUrl('https://example.com/a'), 'https://example.com/a')
+  assert.equal(normalizeHttpUrl('file:///etc/passwd'), null)
+  assert.equal(normalizeHttpUrl('javascript:alert(1)'), null)
 
   console.log('CONTEXT VIEWER TEST: PASS')
 } finally {

@@ -11,7 +11,7 @@
 - [x] Q27 headless 视觉探针拆出
   - 新建 `src/headless-visual-probe.js`，迁移 `visualProbeAction` 及相关辅助（按依赖调整）；
   - 不改变探针判定/缓存行为；全量测试。
-- [ ] Q28 context-viewer 内部拆分
+- [x] Q28 context-viewer 内部拆分
   - 拆为 `viewer-auth` / `viewer-input` / `viewer-html` 等（按实际依赖），`context-viewer.js` 只做注册/编排；
   - token/access/loopback/输入语义不变；更新 `test/context-viewer.mjs`；全量测试。
 - [ ] Q29 update 内部拆分
