@@ -4,10 +4,10 @@
 
 ## 1. 获取测试包
 
-- 仓库：<https://github.com/TaiShuo150622/dsh-chrome>
-- 预览 Release：<https://github.com/TaiShuo150622/dsh-chrome/releases/tag/v0.1.93-win-preview.1>
+- **仓库（已公开）**：<https://github.com/TaiShuo150622/dsh-chrome>
+- **预览 Release**：<https://github.com/TaiShuo150622/dsh-chrome/releases/tag/v0.1.93-win-preview.1>
 
-如果打不开 GitHub（私有仓库需要权限），请让管理员把下面文件直接发给你：
+如果打不开 GitHub，请让管理员把下面文件直接发给你：
 
 | 文件 | 用途 |
 |---|---|
@@ -28,13 +28,26 @@
 
 ### 3.1 安装 DSH 插件（如果 DSH 里还没有）
 
-1. 把 `dsh-desktop-chrome-0.1.93.tgz` 解压或交给 DSH 的插件安装入口。
-2. 确认插件目录里存在：
+DSH 的「插件 → 添加插件」支持 **GitHub 仓库地址** 或 **本地目录**。
+
+**推荐（Windows，自带 host.exe）：用本地目录**
+
+1. 下载并解压 `dsh-desktop-chrome-0.1.93.tgz`。
+2. DSH → **插件** → **添加插件** → 输入解压后的 `package` 目录的**绝对路径**（含 `package.json`、`cordis.patch.yml` 的那一层）。
+3. 安装完成后确认插件目录里存在：
    ```text
    host\bin\win32-x64\dsh-chrome-host.exe
    ```
-3. 在 DSH 的插件/Provider 设置里启用 `dsh-desktop-chrome`。
-4. 启动/重启 DSH。
+4. 在 DSH 的插件/Provider 设置里启用 `dsh-desktop-chrome`，启动/重启 DSH。
+
+**也可以：GitHub 地址**
+
+- 在「添加插件」里输入：`https://github.com/TaiShuo150622/dsh-chrome`
+- 这种方式装的是源码，**git 里不含 Windows host.exe**；装完后还需要下载 release 里的 `dsh-chrome-host-win32-x64.exe`，放到该插件目录的：
+  ```text
+  host\bin\win32-x64\dsh-chrome-host.exe
+  ```
+- 如果不确定插件被装到哪，优先用上面的「本地目录」方式。
 
 > 如果 DSH 已经有 dsh-chrome 插件：把 tgz 解压后覆盖到现有插件目录即可，重点确认 `host\bin\win32-x64\dsh-chrome-host.exe` 存在。
 > 如果 DSH 不认这个包，把 DSH 版本和报错发给管理员，不要自己改注册表。
