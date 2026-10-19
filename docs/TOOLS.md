@@ -225,12 +225,13 @@ Read the recent site-policy audit log (~/.dsh/cache/dsh-chrome/audit.jsonl): tim
 
 ### `chrome_headless_login`
 
-Open a visible, dedicated Chrome window at a human-interaction step (login, CAPTCHA, payment, OTP) using the headless profile: op="start" opens about:blank, op="show" pauses the current headless session and reopens its current page in a visible window, op="finish" closes the visible window, op="status" reports it. The next backend:"headless" call resumes the page after show/finish. Requires hard confirmation.
+Open a visible, dedicated Chrome window at a human-interaction step (login, CAPTCHA, payment, OTP) using the headless profile: op="start" opens about:blank, op="show" pauses the current headless session and reopens its current page in a visible window, op="finish" closes the visible window, op="status" reports it. The next backend:"headless" call resumes the page after show/finish. With a context manager the window belongs to this session active headless context, so open one first (chrome_context {op:"create"} or any backend:"headless" call). Requires hard confirmation.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `op` | enum(start | show | status | finish) | yes |  |
 | `url` | string | no | start/show: http(s) URL (show defaults to the current headless page). |
+| `contextId` | string | no | Optional owned context id; defaults to this session active context. |
 
 ### `chrome_context`
 
