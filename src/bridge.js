@@ -41,6 +41,7 @@ export class BridgeServer {
     this.authed = false
     this.buffer = ''
     this.pending = new Map()
+    this.handlers = new Map()
     this.nextId = 0
     this.hostVersion = null
     this.extensionVersion = null
@@ -157,6 +158,26 @@ export class BridgeServer {
       }
       if (message?.id != null) {
         const key = String(message.id)
+        if (typeof message.method === 'string') {
+          // Extension -> provider request. The native host forwards it here;
+          // answer on the same id without touching the pending-call table.
+          const handler = this.handlers.get(message.method)
+          if (!handler) {
+            socket.write(`${JSON.stringify({ id: message.id, error: { code: 'UNSUPPORTED', message: `no sidecar handler for ${message.method}` } })}\n`)
+            continue
+          }
+          Promise.resolve()
+            .then(() => handler(message.params || {}, { method: message.method }))
+            .then((result) => {
+              if (!socket.destroyed) socket.write(`${JSON.stringify({ id: message.id, result })}\n`)
+            })
+            .catch((error) => {
+              if (!socket.destroyed) {
+                socket.write(`${JSON.stringify({ id: message.id, error: { code: error?.code || 'INTERNAL', message: String(error?.message || error) } })}\n`)
+              }
+            })
+          continue
+        }
         const request = this.pending.get(key)
         if (!request) continue
         this.pending.delete(key)
@@ -207,6 +228,16 @@ export class BridgeServer {
         reject(new BridgeError('NOT_CONNECTED', error?.message || 'bridge write failed'))
       }
     })
+  }
+
+  /** Register a provider-side handler for an extension -> provider request. */
+  registerHandler(method, handler) {
+    if (typeof method !== 'string' || !method) throw new BridgeError('INVALID_ARGUMENT', 'method is required')
+    if (typeof handler !== 'function') throw new BridgeError('INVALID_ARGUMENT', 'handler must be a function')
+    this.handlers.set(method, handler)
+    return () => {
+      if (this.handlers.get(method) === handler) this.handlers.delete(method)
+    }
   }
 
   /** Send an unsolicited provider -> extension event frame (host relays it). */
