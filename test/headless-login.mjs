@@ -44,9 +44,14 @@ try {
   }
   assert.equal(busyCode, 'HEADLESS_LOGIN_OPEN')
 
+  // An owner kept alive only by the login window is released when it closes.
+  driver.owners.set('login-owner', { owner: 'login-owner', tabs: new Map(), activeTabId: null, pending: 0 })
+  assert.equal(driver.maybeReleaseOwner(driver.owners.get('login-owner')), false)
+
   const finish = driver.loginFinish()
   assert.equal(finish.stopped, true)
   assert.equal(finish.running, false)
+  assert.equal(driver.owners.has('login-owner'), false, 'loginFinish releases an idle owner')
   const child = spawned.filter((entry) => entry?.pid === 4242).at(-1)
   assert.equal(child.killed, 'SIGTERM')
   assert.equal(driver.loginStatus().running, false)

@@ -313,6 +313,15 @@ export class HeadlessDriver {
     this.downloadByGuid = new Map()
     this.idleTimer = null
     this.lastActivity = Date.now()
+    // A Chrome/CDP exit is terminal for this driver object: the browser (and
+    // every tab/session it owned) is gone. `dead` makes later requests fail
+    // with CONTEXT_CRASHED instead of silently launching a new browser while
+    // the caller still holds tab ids from the old one. `closing` marks the
+    // intentional shutdown window, during which a launch must not start.
+    this.dead = false
+    this.deathReason = null
+    this.closing = false
+    this.closePromise = null
     this.loginProcess = null
     this.loginProfile = this.profileDir
     this.resumeUrl = null
@@ -414,6 +423,15 @@ export class HeadlessDriver {
   }
 
   async ensureStarted() {
+    if (this.dead) {
+      throw error(
+        'CONTEXT_CRASHED',
+        `the headless browser exited unexpectedly (${this.deathReason || 'unknown'}); create a new context`,
+      )
+    }
+    if (this.closing) {
+      throw error('CONTEXT_CRASHED', 'the headless context is closing; create a new context')
+    }
     if (this.loginProcess) {
       throw error('HEADLESS_LOGIN_OPEN', 'an interactive login window is open; finish it before using the headless backend')
     }
@@ -455,13 +473,18 @@ export class HeadlessDriver {
           await cdp.connect()
           const version = await cdp.send('Browser.getVersion')
           cdp.onMessage((message) => this.onCdpEvent(message))
-          cdp.onClose = () => this.handleBrowserExit('connection-closed')
+          cdp.onClose = () => {
+            if (this.cdp !== cdp) return // deliberate close already detached it
+            this.handleBrowserExit('connection-closed')
+          }
           await cdp
             .send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: this.downloadDir, eventsEnabled: true })
             .catch(() => {})
           this.cdp = cdp
           this.chrome = null
           this.browserVersion = version?.product || null
+          this.dead = false
+          this.deathReason = null
           this.startIdleTimer()
           this.logger?.info?.('headless Chrome reused: %s', this.browserVersion || 'unknown')
           return this
@@ -502,7 +525,8 @@ export class HeadlessDriver {
         childExit = code
         if (this.chrome !== child) return
         this.logger?.warn?.('headless Chrome exited: %s', code)
-        this.handleBrowserExit(code)
+        // The child is already gone; do not signal it again.
+        this.handleBrowserExit(code, { killChild: false })
       })
       const deadline = Date.now() + 15000
       let activePort = null
@@ -523,7 +547,10 @@ export class HeadlessDriver {
       cdp = new Cdp(activePort.url)
       cdp.onMessage((message) => this.onCdpEvent(message))
       await cdp.connect()
-      cdp.onClose = () => this.handleBrowserExit('connection-closed')
+      cdp.onClose = () => {
+        if (this.cdp !== cdp) return // deliberate close already detached it
+        this.handleBrowserExit('connection-closed')
+      }
       // These two CDP round trips are independent of each other; on a cold
       // browser each can take tens of milliseconds, so run them together.
       await fsp.mkdir(this.downloadDir, { recursive: true })
@@ -537,6 +564,8 @@ export class HeadlessDriver {
       // connection; every earlier failure is rolled back below.
       this.cdp = cdp
       this.browserVersion = version?.product || null
+      this.dead = false
+      this.deathReason = null
       this.startIdleTimer()
       this.logger?.info?.('headless Chrome started: %s', this.browserVersion || 'unknown')
       return this
@@ -566,6 +595,11 @@ export class HeadlessDriver {
     }
     if (this.chrome === child) this.chrome = null
     this.stopIdleTimer()
+    // A failed launch is not a crashed running context: the caller may retry
+    // (the start promise is cleared by ensureStarted), so clear the terminal
+    // marker an exit-during-startup may have set.
+    this.dead = false
+    this.deathReason = null
     if (portFileOwnedByLaunch) {
       try {
         fs.unlinkSync(activePortPath)
@@ -578,16 +612,31 @@ export class HeadlessDriver {
   startIdleTimer() {
     if (this.idleTimer) return
     this.idleTimer = setInterval(() => {
-      if (!this.cdp) return
-      if (this.tabs.size > 0) {
-        this.lastActivity = Date.now()
-        return
-      }
-      if (Date.now() - this.lastActivity < DEFAULT_IDLE_MINUTES * 60 * 1000) return
-      this.logger?.info?.('headless Chrome idle for %s min; closing', DEFAULT_IDLE_MINUTES)
-      this.close().catch(() => {})
+      this.checkIdle().catch(() => {})
     }, 30 * 1000)
     this.idleTimer.unref?.()
+  }
+
+  /**
+   * One idle-reap decision. Only a hidden browser owned by this driver is
+   * eligible: a visible/debug window belongs to the user (C17) and an open
+   * login window is likewise explicit, so neither may be killed by the
+   * background idle sweep. Returns whether this call closed the browser.
+   */
+  async checkIdle() {
+    if (!this.cdp || this.dead || this.closing) return false
+    if (this.visible || this.visibleMode || this.loginProcess) {
+      this.lastActivity = Date.now()
+      return false
+    }
+    if (this.tabs.size > 0) {
+      this.lastActivity = Date.now()
+      return false
+    }
+    if (Date.now() - this.lastActivity < DEFAULT_IDLE_MINUTES * 60 * 1000) return false
+    this.logger?.info?.('headless Chrome idle for %s min; closing', DEFAULT_IDLE_MINUTES)
+    await this.close()
+    return true
   }
 
   noteActivity() {
@@ -600,6 +649,10 @@ export class HeadlessDriver {
   }
 
   onCdpEvent(message) {
+    // A deliberate close detaches the client before Chrome's last frames/events
+    // arrive; a crashed connection can also deliver queued messages. Never let
+    // a late event touch a driver that no longer has a live browser.
+    if (!this.cdp) return
     const sessionTab = message.sessionId ? this.bySession.get(message.sessionId) : null
     if (handleConsoleEvent(this.consoleBuffers, sessionTab, message.method, message.params || {})) return
     if (message.method === 'Page.screencastFrame') {
@@ -668,6 +721,15 @@ export class HeadlessDriver {
       this.owners.set(key, entry)
     }
     return entry
+  }
+
+  /**
+   * Read an existing owner entry without creating one. Read-only requests
+   * (`tabs op=list`, `tab.resume`, closing an already-gone tab) must not leave
+   * an empty owner behind after the last tab was closed.
+   */
+  peekOwner(owner) {
+    return this.owners.get(String(owner || 'default')) || null
   }
 
   /**
@@ -1439,7 +1501,7 @@ export class HeadlessDriver {
         return { ok: true, ref: params.ref, selector: params.selector, files: files.length }
       }
       case 'tab.resume':
-        return { ok: true, tabId: this.ownerEntry(owner).activeTabId ?? null }
+        return { ok: true, tabId: this.peekOwner(owner)?.activeTabId ?? null }
       case 'browser.downloads': {
         const limit = Number(params.limit) > 0 ? Math.min(Number(params.limit), 100) : 20
         return {
@@ -1691,7 +1753,8 @@ export class HeadlessDriver {
         }
       }
       case 'tab.close_session': {
-        const entry = this.ownerEntry(owner)
+        const entry = this.peekOwner(owner)
+        if (!entry) return { closed: 0 }
         let closed = 0
         for (const tab of [...entry.tabs.values()]) {
           if (await this.closeTab(tab, { reason: 'session-closed' })) closed += 1
@@ -1745,9 +1808,11 @@ export class HeadlessDriver {
   }
 
   async tabsRequest(owner, params) {
-    const entry = this.ownerEntry(owner)
     const op = String(params.op || 'list')
     if (op === 'list') {
+      // Read-only: never create an owner entry just to answer an empty list.
+      const entry = this.peekOwner(owner)
+      if (!entry) return { tabs: [], groupId: null, activeTabId: null }
       for (const tab of entry.tabs.values()) await this.syncTabMeta(tab)
       return {
         tabs: [...entry.tabs.values()].map((tab) => ({
@@ -1761,16 +1826,20 @@ export class HeadlessDriver {
       }
     }
     if (op === 'new') {
+      // Validate before creating an owner entry: an invalid URL must not leave
+      // an empty owner behind.
       const url = safeTabUrl(params.url)
+      const entry = this.ownerEntry(owner)
       const tab = await this.attachTab(entry, url)
       if (url !== 'about:blank') await this.waitReady(tab)
       await this.syncTabMeta(tab)
       return { tabId: tab.tabId, url: tab.url, title: tab.title }
     }
     if (op === 'close') {
-      const tab = entry.tabs.get(Number(params.tabId))
+      const entry = this.peekOwner(owner)
+      const tab = entry?.tabs.get(Number(params.tabId))
       if (!tab) {
-        this.maybeReleaseOwner(entry)
+        if (entry) this.maybeReleaseOwner(entry)
         throw error('TAB_NOT_FOUND', `tab ${params.tabId} is not owned by this session`)
       }
       const tabId = tab.tabId
@@ -1780,12 +1849,14 @@ export class HeadlessDriver {
     if (op === 'claim') {
       const tab = await this.ensureTab(owner, params.tabId)
       await this.syncTabMeta(tab)
-      entry.activeTabId = tab.tabId
+      const entry = this.peekOwner(owner)
+      if (entry) entry.activeTabId = tab.tabId
       return { claimed: true, tabId: tab.tabId, url: tab.url, title: tab.title }
     }
     if (op === 'focus') {
       const tab = await this.ensureTab(owner, params.tabId)
-      entry.activeTabId = tab.tabId
+      const entry = this.peekOwner(owner)
+      if (entry) entry.activeTabId = tab.tabId
       return { focused: true, tabId: tab.tabId, url: tab.url, title: tab.title }
     }
     throw error('INVALID_ARGUMENT', `unknown tabs op: ${op}`)
@@ -1825,9 +1896,18 @@ export class HeadlessDriver {
   /**
    * Forget every tab, capture, download and owner after the browser is gone.
    * Used by normal close (including context close / idle reap) and by the
-   * child `exit` handler, so a crashed browser cannot leave phantom tabs.
+   * child `exit` / CDP `close` handlers. `dead` defaults to true (the browser
+   * exited unexpectedly); the deliberate `close()` path passes false so this
+   * same teardown is not mistaken for a crash. `killChild` is true for a CDP
+   * disconnect (Chrome may still be running and would otherwise be orphaned)
+   * and false when the child already emitted `exit`.
    */
-  handleBrowserExit(reason = 'browser-exit') {
+  handleBrowserExit(reason = 'browser-exit', { dead = true, killChild = Boolean(dead) } = {}) {
+    // Detach the CDP client first: closing it below invokes its onClose hook,
+    // and that hook must not treat an intentional teardown as a crash.
+    const cdp = this.cdp
+    const child = this.chrome
+    this.cdp = null
     for (const tab of [...this.tabs.values()]) this.cleanupTab(tab, { reason })
     for (const capture of this.captures.values()) {
       if (capture.timer) clearTimeout(capture.timer)
@@ -1841,10 +1921,24 @@ export class HeadlessDriver {
     this.captureByTab.clear()
     this.downloadByGuid.clear()
     this.downloads.length = 0
-    this.cdp = null
     this.chrome = null
+    this.browserVersion = null
     this.stopIdleTimer()
     this.lastActivity = Date.now()
+    try {
+      cdp?.close()
+    } catch {
+      // already closed
+    }
+    if (killChild) {
+      try {
+        child?.kill?.('SIGTERM')
+      } catch {
+        // already gone
+      }
+    }
+    this.dead = Boolean(dead)
+    this.deathReason = dead ? String(reason) : null
   }
 
   stopIdleTimer() {
@@ -1853,31 +1947,55 @@ export class HeadlessDriver {
     this.idleTimer = null
   }
 
-  async close() {
-    try {
-      this.loginProcess?.kill?.('SIGTERM')
-    } catch {
-      // ignore
+  /**
+   * Close the browser once. Concurrent callers (idle sweep, context close,
+   * login handoff) share the same in-flight close instead of returning before
+   * Chrome/profile teardown is done.
+   */
+  close() {
+    if (!this.closePromise) {
+      this.closePromise = this.#close().finally(() => {
+        this.closePromise = null
+      })
     }
-    this.loginProcess = null
-    this.visibleMode = false
+    return this.closePromise
+  }
+
+  async #close() {
+    this.closing = true
     try {
-      await this.cdp?.send('Browser.close')
-    } catch {
-      // browser already gone or does not support close
-    }
-    // Keep the child handle before teardown nulls it.
-    const child = this.chrome
-    try {
-      this.cdp?.close()
-    } catch {
-      // ignore
-    }
-    this.handleBrowserExit('closed')
-    try {
-      child?.kill('SIGTERM')
-    } catch {
-      // ignore
+      try {
+        this.loginProcess?.kill?.('SIGTERM')
+      } catch {
+        // ignore
+      }
+      this.loginProcess = null
+      this.visibleMode = false
+      // Detach the CDP client before asking Chrome to close: its onClose hook
+      // is a crash handler, and this is an intentional shutdown. `send` still
+      // uses the client object after it left `this`.
+      const cdp = this.cdp
+      this.cdp = null
+      try {
+        await cdp?.send('Browser.close')
+      } catch {
+        // browser already gone or does not support close
+      }
+      // Keep the child handle before teardown nulls it.
+      const child = this.chrome
+      try {
+        cdp?.close()
+      } catch {
+        // ignore
+      }
+      this.handleBrowserExit('closed', { dead: false })
+      try {
+        child?.kill('SIGTERM')
+      } catch {
+        // ignore
+      }
+    } finally {
+      this.closing = false
     }
   }
 }
