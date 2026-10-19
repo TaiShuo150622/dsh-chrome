@@ -238,7 +238,7 @@ Manage isolated browser contexts for sandbox verification: op="create" makes a p
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `op` | enum(create | use | list | current | close) | yes |  |
+| `op` | enum(create | use | list | current | close | viewer) | yes |  |
 | `preset` | enum(sandbox | sandbox-persistent | debug | collab) | no |  |
 | `profile` | string | no | Named profile label for sandbox-persistent/debug. |
 | `contextId` | string | no | Context id for use/close. |

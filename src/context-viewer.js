@@ -10,8 +10,9 @@
  *   POST /dsh-chrome/context/:id/input?token=...  JSON input -> driver tab.* call
  *
  * `getContext(contextId)` is injected by the caller and returns
- * `{ driver, owner? }` or null. The viewer always acts as the fixed driver
- * owner `viewer`, so its actions stay attributable to the viewer tab group.
+ * `{ driver, owner? }` or null. The viewer uses the context owner (the DSH
+ * session that created it) so it sees and controls the same tab as that session;
+ * it falls back to the fixed `viewer` owner for standalone/test contexts.
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -183,7 +184,7 @@ async function readJsonBody(req) {
 
 async function callDriver(driver, method, params = {}) {
   try {
-    return await driver.request(method, { ...params, owner: VIEWER_OWNER })
+    return await driver.request(method, { ...params, owner: driver.__dshContextViewerOwner || VIEWER_OWNER })
   } catch (error) {
     const code = typeof error?.code === 'string' && error.code ? error.code : 'DRIVER_ERROR'
     const status = code === 'CONTEXT_NOT_FOUND' || code === 'TAB_NOT_FOUND' ? 404 : 500
@@ -205,6 +206,7 @@ async function resolveContext(contextId, getContext) {
   if (!driver || typeof driver.request !== 'function') {
     throw new ViewerError(503, 'CONTEXT_UNAVAILABLE', `context ${contextId} has no driver`)
   }
+  if (value.owner) driver.__dshContextViewerOwner = String(value.owner)
   return { context: value, driver }
 }
 

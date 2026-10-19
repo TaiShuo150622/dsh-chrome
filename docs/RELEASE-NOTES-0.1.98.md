@@ -4,6 +4,8 @@
 
 ## 新增
 
+- **DSH 右侧边栏 viewer 原型**：`chrome_context {op:"viewer"}` 返回 per-context viewer URL（截图轮询 + click/type/key/scroll/navigate），可在 DSH 右侧边栏 Browser tab 使用；无需 DSH client plugin。
+
 - **`src/lease.js` / `BrowserLeaseManager`**：provider 内存态的 tab lease，支持 `acquire/renew/release/list/status/heartbeat/takeover/releaseTab`；
   - write 独占、read 可共享；
   - TTL 过期自动失效（默认 60s，上限 15min）；

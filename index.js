@@ -14,6 +14,8 @@ import { BackendRouter, wrapToolsForBackend } from './src/backend.js'
 import { BrowserContextManager } from './src/contexts.js'
 import { loadConfig } from './src/config.js'
 import { HeadlessContextRouter } from './src/headless-contexts.js'
+import { BrowserLeaseManager } from './src/lease.js'
+import { registerContextViewer } from './src/context-viewer.js'
 import { BridgeServer } from './src/bridge.js'
 import { HeadlessDriver, headlessSupported } from './src/headless.js'
 import { ensureInstallAssets } from './src/install.js'
@@ -41,11 +43,13 @@ export function apply(ctx) {
   const sessions = { current: null }
   const sandboxPolicy = { current: null }
   const userQuestions = { current: null }
+  const contextViewer = { current: null }
   const logger = ctx.logger
   const configInfo = loadConfig({ home, cwd: process.cwd() })
   if (configInfo.warnings.length > 0) {
     for (const warning of configInfo.warnings) logger?.warn?.('dsh-chrome config: %s', warning)
   }
+  const leases = new BrowserLeaseManager()
   const contexts = new BrowserContextManager({
     config: configInfo.config,
     home,
@@ -134,12 +138,31 @@ export function apply(ctx) {
 
   ctx.effect(() => {
     const webServer = ctx.get('webServer')
+    let viewer = null
     if (webServer) {
       registerLiveView({ webServer, home, logger })
+      viewer = registerContextViewer({
+        webServer,
+        home,
+        logger,
+        getContext: (contextId) => {
+          const ctx = contexts.get(contextId)
+          if (!ctx) return null
+          const driver = contexts.driverFor(contextId)
+          return driver ? { driver, owner: ctx.owner } : null
+        },
+      })
+      contextViewer.current = viewer
     } else {
       logger?.warn?.('dsh-chrome: webServer is not available; the live viewer is disabled')
     }
-    return () => unregisterLiveView()
+    return () => {
+      try {
+        viewer?.dispose()
+      } catch {}
+      contextViewer.current = null
+      unregisterLiveView()
+    }
   })
 
   ctx.effect(() => {
@@ -186,6 +209,8 @@ export function apply(ctx) {
         userQuestions: () => userQuestions.current,
         config: () => providerConfig,
         contexts,
+        leases,
+        contextViewer: () => contextViewer.current,
       }),
       router,
     )

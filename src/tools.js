@@ -141,7 +141,7 @@ function normalizeLeaseError(error) {
   return new BridgeError('INTERNAL', error?.message || String(error))
 }
 
-export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null }) {
+export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null, contextViewer = null }) {
   const list = []
   const ownerOf = (exec) => exec?.agent?.id ?? 'default'
   const pluginConfig = config?.() && typeof config() === 'object' ? config() : {}
@@ -1682,7 +1682,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
       parameters: {
         type: 'object',
         properties: {
-          op: { type: 'string', enum: ['create', 'use', 'list', 'current', 'close'] },
+          op: { type: 'string', enum: ['create', 'use', 'list', 'current', 'close', 'viewer'] },
           preset: { type: 'string', enum: ['sandbox', 'sandbox-persistent', 'debug', 'collab'] },
           profile: { type: 'string', description: 'Named profile label for sandbox-persistent/debug.' },
           contextId: { type: 'string', description: 'Context id for use/close.' },
@@ -1698,6 +1698,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           visible: { type: 'boolean' },
           isolation: { type: 'string' },
           contexts: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          url: { type: 'string' },
           error: { type: 'string' },
         }),
         render: (_args, value) => {
@@ -1722,6 +1723,13 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         if (op === 'current') {
           const ctx = contexts.activeFor(owner)
           return ctx ? { ok: true, ...contexts.view(ctx.contextId) } : { ok: false, error: 'NO_ACTIVE_CONTEXT' }
+        }
+        if (op === 'viewer') {
+          const ctx = contexts.activeFor(owner)
+          if (!ctx) return { ok: false, error: 'NO_ACTIVE_CONTEXT' }
+          const viewer = typeof contextViewer === 'function' ? contextViewer() : contextViewer
+          const url = viewer?.urlFor?.(ctx.contextId)
+          return url ? { ok: true, contextId: ctx.contextId, url } : { ok: false, error: 'VIEWER_UNAVAILABLE' }
         }
         if (op === 'use') {
           return { ok: true, ...contexts.setActive(owner, String(args?.contextId || '')) }

@@ -164,7 +164,7 @@ try {
   assert.equal(frame.headers['x-dsh-view-width'], '800')
   assert.equal(frame.headers['x-dsh-view-height'], '600')
   assert.deepEqual(frame.body, jpeg)
-  assert.deepEqual(lastCall('tab.screenshot').params, { format: 'jpeg', quality: 70, owner: 'viewer' })
+  assert.deepEqual(lastCall('tab.screenshot').params, { format: 'jpeg', quality: 70, owner: 'session-a' })
 
   // `meta=1` adds the current URL/title headers for the viewer's URL bar.
   calls.length = 0
@@ -174,14 +174,14 @@ try {
   assert.equal(metaFrame.headers['x-dsh-context-title'], encodeURIComponent('Example'))
   assert.equal(metaFrame.headers['x-dsh-context-tab'], '7')
   assert.ok(lastCall('tab.tabs'))
-  assert.deepEqual(lastCall('tab.tabs').params, { op: 'list', owner: 'viewer' })
+  assert.deepEqual(lastCall('tab.tabs').params, { op: 'list', owner: 'session-a' })
 
   // PNG frames are supported too.
   const pngFrame = await request(handler, `/dsh-chrome/context/ctx-1/frame?token=${token}&format=png&quality=90`)
   assert.equal(pngFrame.status, 200)
   assert.equal(pngFrame.headers['content-type'], 'image/png')
   assert.deepEqual(pngFrame.body, png)
-  assert.deepEqual(lastCall('tab.screenshot').params, { format: 'png', quality: 90, owner: 'viewer' })
+  assert.deepEqual(lastCall('tab.screenshot').params, { format: 'png', quality: 90, owner: 'session-a' })
 
   assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/frame?token=${token}`, { method: 'POST' })).status, 405)
 
@@ -203,40 +203,40 @@ try {
   assert.equal(clickBody.x, 12.4)
   assert.equal(clickBody.y, 34.6)
   assert.equal(clickBody.clickCount, 1)
-  assert.deepEqual(lastCall('tab.clickAt').params, { x: 12.4, y: 34.6, clickCount: 1, owner: 'viewer' })
+  assert.deepEqual(lastCall('tab.clickAt').params, { x: 12.4, y: 34.6, clickCount: 1, owner: 'session-a' })
 
   // type -> tab.type; without a selector the focused element is targeted.
   calls.length = 0
   const typed = await post({ kind: 'type', text: 'hello' })
   assert.equal(typed.status, 200)
   assert.equal(JSON.parse(String(typed.body)).value, 'hello')
-  assert.deepEqual(lastCall('tab.type').params, { text: 'hello', selector: ':focus', owner: 'viewer' })
+  assert.deepEqual(lastCall('tab.type').params, { text: 'hello', selector: ':focus', owner: 'session-a' })
 
   calls.length = 0
   const typedSelector = await post({ kind: 'type', text: 'x', selector: '#q', replace: true })
   assert.equal(typedSelector.status, 200)
-  assert.deepEqual(lastCall('tab.type').params, { text: 'x', selector: '#q', replace: true, owner: 'viewer' })
+  assert.deepEqual(lastCall('tab.type').params, { text: 'x', selector: '#q', replace: true, owner: 'session-a' })
 
   // key / scroll / history / navigate.
   calls.length = 0
   assert.equal((await post({ kind: 'key', key: 'Enter' })).status, 200)
-  assert.deepEqual(lastCall('tab.press').params, { key: 'Enter', owner: 'viewer' })
+  assert.deepEqual(lastCall('tab.press').params, { key: 'Enter', owner: 'session-a' })
 
   calls.length = 0
   const scrolled = await post({ kind: 'scroll', deltaY: -480 })
   assert.equal(scrolled.status, 200)
   assert.equal(JSON.parse(String(scrolled.body)).direction, 'up')
-  assert.deepEqual(lastCall('tab.scroll').params, { direction: 'up', amount: 480, owner: 'viewer' })
+  assert.deepEqual(lastCall('tab.scroll').params, { direction: 'up', amount: 480, owner: 'session-a' })
 
   calls.length = 0
   assert.equal((await post({ kind: 'history', op: 'reload' })).status, 200)
-  assert.deepEqual(lastCall('tab.history').params, { op: 'reload', owner: 'viewer' })
+  assert.deepEqual(lastCall('tab.history').params, { op: 'reload', owner: 'session-a' })
 
   calls.length = 0
   const navigated = await post({ kind: 'navigate', url: 'https://example.com/a' })
   assert.equal(navigated.status, 200)
   assert.equal(JSON.parse(String(navigated.body)).url, 'https://example.com/a')
-  assert.deepEqual(lastCall('tab.goto').params, { url: 'https://example.com/a', owner: 'viewer' })
+  assert.deepEqual(lastCall('tab.goto').params, { url: 'https://example.com/a', owner: 'session-a' })
 
   // Validation happens before the driver sees anything.
   calls.length = 0

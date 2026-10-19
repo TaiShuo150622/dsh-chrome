@@ -1,6 +1,6 @@
 # DSH 右侧边栏浏览器（方案 A viewer 原型）
 
-> 状态：**原型，未接入 `src/index.js`**。本文件描述 `src/context-viewer.js` 的契约与使用方式，接入由 Lead 合并时完成。
+> 状态：**已接入 `src/index.js`（0.1.98）**。`chrome_context {op:"viewer"}` 返回每个 context 的 viewer URL；在 DSH 右侧边栏现有 Browser tab 打开即可看到截图并基础操控。
 > 目标：不写 DSH client plugin，利用 DSH 右侧边栏现有的 **Browser tab** 打开一个 loopback viewer 页面，看到并基础操控隔离浏览器（I1/I2 context）。
 
 ## 1. 为什么是方案 A

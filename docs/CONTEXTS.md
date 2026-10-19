@@ -17,6 +17,7 @@
 | `current` | 当前 active context |
 | `use` | 切换当前会话的 active context |
 | `close` | 关闭 context（ephemeral profile 会清理） |
+| `viewer` | 返回当前 context 的 DSH 右侧边栏 viewer URL（需 Host webServer） |
 
 `backend:"headless"` 的工具调用会自动使用当前会话的 active context；没有则按配置默认 preset 新建。`chrome_context` 创建后可通过 `use` 切换。
 
