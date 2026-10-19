@@ -11,7 +11,7 @@
 - [x] Q24 拆出 misc 工具
   - 新建 `src/tools-misc.js`，迁移 `chrome_evaluate`、`chrome_pick`、`chrome_resume`、`chrome_storage`、`chrome_selection`；
   - 保留 evaluate 硬确认、pick 可见窗口约束、storage 读写语义；全量测试。
-- [ ] Q25 headless dispatch 动作表
+- [x] Q25 headless dispatch 动作表
   - 将 `HeadlessDriver.dispatch()` 中导航/输入类 handler（goto/history/click/clickAt/type/press/scroll/select/hover/drag/wait 等）抽到 `src/headless-actions.js` 的 handler 注册表（可先抽一层，保留 facade 与错误码）；
   - 不改变任何输出/截图/探针语义；全量测试。
 
