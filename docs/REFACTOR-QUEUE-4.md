@@ -5,7 +5,7 @@
 
 ## 队列
 
-- [ ] Q18 拆出 input 工具
+- [x] Q18 拆出 input 工具
   - 新建 `src/tools-input.js`，迁移 `chrome_click`、`chrome_click_at`、`chrome_type`、`chrome_press`、`chrome_hover`、`chrome_scroll`、`chrome_select`、`chrome_drag`、`chrome_upload`；
   - 注入实际依赖；`mutating` 元数据/审批/lease 语义不变；全量测试。
 - [ ] Q19 拆出 status/config/policy/audit 工具
