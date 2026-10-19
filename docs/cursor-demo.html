@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DSH Chrome · Cursor Demo</title>
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0d0f14;color:#e7eaf0;font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:900px;margin:0 auto;padding:48px 28px 90px}h1{font-size:30px;margin:0 0 6px}.sub{color:#8b94a7;margin:0 0 32px}
+.panel{background:#151a24;border:1px solid #263044;border-radius:14px;padding:22px;margin:18px 0;box-shadow:0 8px 24px #0006}
+button{border:0;border-radius:10px;padding:14px 22px;font-size:16px;font-weight:650;background:#2b6cff;color:#fff;cursor:pointer;margin:6px 8px 6px 0;transition:transform .15s,background .15s}
+button:hover{background:#3c7bff;transform:translateY(-1px)}button:active{transform:scale(.98)}
+input{border:1px solid #33405a;background:#0f141d;color:#e7eaf0;border-radius:10px;padding:12px 14px;font-size:16px;width:min(420px,100%);outline:none}
+input:focus{border-color:#2b6cff;box-shadow:0 0 0 3px #2b6cff33}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.muted{color:#8b94a7;font-size:14px}
+.spacer{height:820px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.card{background:#111722;border:1px solid #263044;border-radius:12px;padding:18px}.card b{display:block;margin-bottom:6px;color:#fff}
+#log{font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;color:#9bd1ff;white-space:pre-wrap}
+</style></head><body><main>
+<h1>DSH Chrome · 操作光标演示</h1>
+<p class="sub">真实 Chrome 页面上的鲸鱼 cursor、点击波纹和动作标签。</p>
+<div class="panel"><div class="row">
+<button id="primary">点击这个按钮</button>
+<button id="secondary">第二个按钮</button>
+<input id="name" placeholder="在这里输入文字" />
+</div><p class="muted" id="status">等待操作…</p></div>
+<div class="panel"><div class="cards">
+<div class="card"><b>视觉反馈</b>鲸鱼 cursor + 动作标签 + 点击波纹</div>
+<div class="card"><b>真实操作</b>点击/输入/滚动都走真实 Chrome</div>
+<div class="card"><b>安全边界</b>overlay 不拦截页面交互</div>
+</div><pre id="log"></pre></div>
+<div class="spacer"></div>
+<div class="panel"><h2>滚动到这里</h2><p class="muted">这一段用于演示滚动操作。</p><button id="bottom">底部按钮</button></div>
+</main><script>
+const log=(line)=>{document.getElementById('log').textContent=(new Date().toLocaleTimeString()+'  '+line+'\n'+document.getElementById('log').textContent).slice(0,1800)}
+document.getElementById('primary').addEventListener('click',()=>{document.getElementById('status').textContent='已点击主按钮 ✅';log('primary click')})
+document.getElementById('secondary').addEventListener('click',()=>{document.getElementById('status').textContent='已点击第二个按钮 ✅';log('secondary click')})
+document.getElementById('bottom').addEventListener('click',()=>{document.getElementById('status').textContent='已点击底部按钮 ✅';log('bottom click')})
+document.getElementById('name').addEventListener('input',(e)=>{log('input: '+e.target.value)})
+</script></body></html>
