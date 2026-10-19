@@ -11,7 +11,7 @@
 
 ## 队列
 
-- [ ] Q8 viewer 的 context 访问加上 per-context capability
+- [x] Q8 viewer 的 context 访问加上 per-context capability
   - `context-viewer.urlFor(contextId)` 生成每次运行随机的 access capability，并绑定 contextId；
   - `view` / `frame` / `input` 同时校验全局 token + access；viewer HTML 的 frame/input URL 带上 access；
   - 不改变 loopback/token 语义；更新 `test/context-viewer.mjs`；

@@ -117,14 +117,25 @@ try {
   assert.equal(viewer.enabled, true)
   assert.equal(routes.size, 1)
   assert.ok(routes.has('/dsh-chrome/context'))
-  assert.equal(
-    viewer.urlFor('ctx-1'),
-    `http://127.0.0.1:9999/dsh-chrome/context/ctx-1/view?token=${token}`,
-  )
+  const firstUrl = viewer.urlFor('ctx-1')
+  const parsedViewerUrl = new URL(String(firstUrl))
+  assert.equal(parsedViewerUrl.origin, 'http://127.0.0.1:9999')
+  assert.equal(parsedViewerUrl.pathname, '/dsh-chrome/context/ctx-1/view')
+  assert.equal(parsedViewerUrl.searchParams.get('token'), token)
+  const access = parsedViewerUrl.searchParams.get('access')
+  assert.match(access, /^[0-9a-f]{48}$/, 'urlFor must issue a random per-run capability')
+  assert.equal(new URL(String(viewer.urlFor('ctx-1'))).searchParams.get('access'), access, 'capability is stable for one context within a run')
+  const otherAccess = new URL(String(viewer.urlFor('ctx-2'))).searchParams.get('access')
+  assert.notEqual(otherAccess, access, 'each context gets its own capability')
   assert.equal(viewer.urlFor('bad id'), null)
 
+  function contextUrl(contextId, action, extra = '') {
+    const issued = new URL(String(viewer.urlFor(contextId)))
+    return `/dsh-chrome/context/${contextId}/${action}?token=${token}&access=${issued.searchParams.get('access')}${extra}`
+  }
+
   const handler = routes.get('/dsh-chrome/context')
-  const viewUrl = `/dsh-chrome/context/ctx-1/view?token=${token}`
+  const viewUrl = contextUrl('ctx-1', 'view')
 
   // GET view: inline HTML with the frame/input endpoints, no external assets.
   const view = await request(handler, viewUrl)
@@ -137,26 +148,33 @@ try {
   assert.ok(html.includes('/frame?token='))
   assert.ok(html.includes('/input?token='))
   assert.ok(html.includes(token))
+  assert.ok(html.includes('&access='), 'frame/input URLs must carry an access parameter')
+  assert.ok(html.includes(access), 'viewer HTML must embed this context capability into frame/input URLs')
   assert.match(view.headers['content-security-policy'], /connect-src 'self'/)
   assert.ok(!/(?:src|href)="https?:\/\//.test(html), 'viewer HTML must not load external resources')
 
-  // Token + loopback gates apply before routing.
-  assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/view?token=wrong-token`)).status, 403)
+  // Token + loopback + per-context capability gates apply before routing.
+  assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/view?token=wrong-token&access=${access}`)).status, 403)
   assert.equal((await request(handler, viewUrl, { remoteAddress: '10.0.0.2' })).status, 403)
   assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/view`)).status, 403)
-  assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/view?token=${token}`, { remoteAddress: '::1' })).status, 200)
+  assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/view?token=${token}`)).status, 403, 'global token alone must not reach a context')
+  assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/view?token=${token}&access=${otherAccess}`)).status, 403, 'a capability for another context must not work')
+  assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/frame?token=${token}`)).status, 403)
+  assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/frame?token=${token}&access=${otherAccess}`)).status, 403)
+  assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/input?token=${token}`, { method: 'POST', body: '{}' })).status, 403)
+  assert.equal((await request(handler, viewUrl, { remoteAddress: '::1' })).status, 200)
 
   // Method + route errors.
   const postView = await request(handler, viewUrl, { method: 'POST' })
   assert.equal(postView.status, 405)
   assert.equal(postView.headers.allow, 'GET')
-  assert.equal((await request(handler, `/dsh-chrome/context/missing/view?token=${token}`)).status, 404)
+  assert.equal((await request(handler, contextUrl('missing', 'view'))).status, 404)
   assert.equal((await request(handler, `/dsh-chrome/context/bad$id/view?token=${token}`)).status, 404)
   assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/unknown?token=${token}`)).status, 404)
 
   // GET frame: bytes come from the driver screenshot path.
   calls.length = 0
-  const frame = await request(handler, `/dsh-chrome/context/ctx-1/frame?token=${token}`)
+  const frame = await request(handler, contextUrl('ctx-1', 'frame'))
   assert.equal(frame.status, 200)
   assert.equal(frame.headers['content-type'], 'image/jpeg')
   assert.equal(frame.headers['cache-control'], 'no-store, max-age=0')
@@ -168,7 +186,7 @@ try {
 
   // `meta=1` adds the current URL/title headers for the viewer's URL bar.
   calls.length = 0
-  const metaFrame = await request(handler, `/dsh-chrome/context/ctx-1/frame?token=${token}&meta=1`)
+  const metaFrame = await request(handler, contextUrl('ctx-1', 'frame', '&meta=1'))
   assert.equal(metaFrame.status, 200)
   assert.equal(metaFrame.headers['x-dsh-context-url'], encodeURIComponent('https://example.com/'))
   assert.equal(metaFrame.headers['x-dsh-context-title'], encodeURIComponent('Example'))
@@ -177,17 +195,17 @@ try {
   assert.deepEqual(lastCall('tab.tabs').params, { op: 'list', owner: 'session-a' })
 
   // PNG frames are supported too.
-  const pngFrame = await request(handler, `/dsh-chrome/context/ctx-1/frame?token=${token}&format=png&quality=90`)
+  const pngFrame = await request(handler, contextUrl('ctx-1', 'frame', '&format=png&quality=90'))
   assert.equal(pngFrame.status, 200)
   assert.equal(pngFrame.headers['content-type'], 'image/png')
   assert.deepEqual(pngFrame.body, png)
   assert.deepEqual(lastCall('tab.screenshot').params, { format: 'png', quality: 90, owner: 'session-a' })
 
-  assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/frame?token=${token}`, { method: 'POST' })).status, 405)
+  assert.equal((await request(handler, contextUrl('ctx-1', 'frame'), { method: 'POST' })).status, 405)
 
   // POST input: click -> tab.clickAt with the fixed owner "viewer".
   const post = (body, options = {}) =>
-    request(handler, `/dsh-chrome/context/ctx-1/input?token=${token}`, {
+    request(handler, contextUrl('ctx-1', 'input'), {
       method: 'POST',
       body: typeof body === 'string' ? body : JSON.stringify(body),
       ...options,
@@ -255,7 +273,7 @@ try {
   assert.equal(tooLarge.status, 413)
 
   // Input route is POST-only.
-  const getInput = await request(handler, `/dsh-chrome/context/ctx-1/input?token=${token}`)
+  const getInput = await request(handler, contextUrl('ctx-1', 'input'))
   assert.equal(getInput.status, 405)
   assert.equal(getInput.headers.allow, 'POST')
 
@@ -276,7 +294,8 @@ try {
     logger,
     home: path.join(root, 'lookup-home'),
   })
-  const gone = await request(lookupRoutes.get('/dsh-chrome/context'), `/dsh-chrome/context/ctx-1/view?token=${token}`)
+  const throwingAccess = new URL(String(throwingLookup.urlFor('ctx-1'))).searchParams.get('access')
+  const gone = await request(lookupRoutes.get('/dsh-chrome/context'), `/dsh-chrome/context/ctx-1/view?token=${token}&access=${throwingAccess}`)
   assert.equal(gone.status, 404)
   throwingLookup.dispose()
 
@@ -294,7 +313,8 @@ try {
     logger,
     home: path.join(root, 'driver-home'),
   })
-  const failedFrame = await request(driverRoutes.get('/dsh-chrome/context'), `/dsh-chrome/context/ctx-1/frame?token=${token}`)
+  const failingAccess = new URL(String(failingDriver.urlFor('ctx-1'))).searchParams.get('access')
+  const failedFrame = await request(driverRoutes.get('/dsh-chrome/context'), `/dsh-chrome/context/ctx-1/frame?token=${token}&access=${failingAccess}`)
   assert.equal(failedFrame.status, 500)
   assert.match(String(failedFrame.body), /driver exploded/)
   failingDriver.dispose()
@@ -310,9 +330,13 @@ try {
   assert.equal(fs.readFileSync(tokenFile, 'utf8').trim(), first.token)
   assert.equal(fs.statSync(tokenFile).mode & 0o777, 0o600)
   assert.ok(first.urlFor('ctx-1').includes(first.token))
+  const firstAccess = new URL(String(first.urlFor('ctx-1'))).searchParams.get('access')
   first.dispose()
   const second = registerContextViewer({ webServer: tokenServer, getContext: () => null, home: tokenHome, logger })
   assert.equal(second.token, first.token)
+  const secondAccess = new URL(String(second.urlFor('ctx-1'))).searchParams.get('access')
+  assert.match(secondAccess, /^[0-9a-f]{48}$/)
+  assert.notEqual(secondAccess, firstAccess, 'capabilities are random per run and do not persist with the token')
   second.dispose()
 
   // Missing dependencies fail soft instead of throwing during provider load.

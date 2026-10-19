@@ -4,10 +4,15 @@
  * loopback URL with a random token and gets a small polling screenshot viewer
  * with basic input forwarding.
  *
- * Routes (all loopback-only, all token-checked, no CDP surface):
- *   GET  /dsh-chrome/context/:id/view?token=...   inline HTML (no external assets)
- *   GET  /dsh-chrome/context/:id/frame?token=...  one driver screenshot (JPEG/PNG)
- *   POST /dsh-chrome/context/:id/input?token=...  JSON input -> driver tab.* call
+ * Routes (all loopback-only, all token+capability checked, no CDP surface):
+ *   GET  /dsh-chrome/context/:id/view?token=...&access=...   inline HTML (no external assets)
+ *   GET  /dsh-chrome/context/:id/frame?token=...&access=...  one driver screenshot (JPEG/PNG)
+ *   POST /dsh-chrome/context/:id/input?token=...&access=...  JSON input -> driver tab.* call
+ *
+ * `access` is a per-run random capability bound to one contextId. It is only
+ * handed out through `urlFor(contextId)` (and embedded in the viewer HTML), so
+ * knowing the global token is not enough to reach a context the caller was not
+ * given a URL for.
  *
  * `getContext(contextId)` is injected by the caller and returns
  * `{ driver, owner? }` or null. The viewer uses the context owner (the DSH
@@ -93,7 +98,12 @@ function isLoopback(req) {
 function parseUrl(reqUrl) {
   try {
     const parsed = new URL(String(reqUrl || '/'), 'http://127.0.0.1')
-    return { pathname: parsed.pathname, token: parsed.searchParams.get('token') || '', searchParams: parsed.searchParams }
+    return {
+      pathname: parsed.pathname,
+      token: parsed.searchParams.get('token') || '',
+      access: parsed.searchParams.get('access') || '',
+      searchParams: parsed.searchParams,
+    }
   } catch {
     return null
   }
@@ -103,6 +113,27 @@ function tokenMatches(supplied, expected) {
   const a = Buffer.from(String(supplied || ''))
   const b = Buffer.from(String(expected || ''))
   return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b)
+}
+
+/**
+ * Per-run capability for one context. `urlFor` is the only issuer: the map is
+ * created fresh on each registration, so a capability never survives a provider
+ * reload and is never shared between contexts.
+ */
+function accessFor(state, contextId) {
+  let access = state.access.get(contextId)
+  if (!access) {
+    access = crypto.randomBytes(24).toString('hex')
+    state.access.set(contextId, access)
+  }
+  return access
+}
+
+function requireAccess(state, contextId, supplied) {
+  const expected = state.access.get(contextId)
+  if (!expected || !tokenMatches(supplied, expected)) {
+    throw new ViewerError(403, 'INVALID_ACCESS', 'invalid or missing viewer access capability')
+  }
 }
 
 function contextIdFromPath(rawId) {
@@ -284,7 +315,7 @@ async function serveView(res, contextId, { getContext, state }) {
     'referrer-policy': 'no-referrer',
     'x-content-type-options': 'nosniff',
   })
-  res.end(viewerHtml({ contextId, token: state.token }))
+  res.end(viewerHtml({ contextId, token: state.token, access: accessFor(state, contextId) }))
 }
 
 async function serveFrame(res, contextId, searchParams, { getContext, state, logger }) {
@@ -388,6 +419,7 @@ async function dispatch(req, res, deps) {
     }
     const route = parseRoute(parsed.pathname)
     if (!route) throw new ViewerError(404, 'NOT_FOUND', 'not found')
+    requireAccess(deps.state, route.contextId, parsed.access)
     if (route.action === 'view') {
       if (req.method !== 'GET') throw methodNotAllowed('GET')
       await serveView(res, route.contextId, deps)
@@ -412,7 +444,7 @@ async function dispatch(req, res, deps) {
   }
 }
 
-function viewerHtml({ contextId, token }) {
+function viewerHtml({ contextId, token, access }) {
   const base = `${ROUTE_PREFIX}/${encodeURIComponent(contextId)}`
   return `<!doctype html>
 <html lang="zh">
@@ -477,8 +509,9 @@ function viewerHtml({ contextId, token }) {
   'use strict'
   const base = ${JSON.stringify(base)}
   const token = ${JSON.stringify(token)}
-  const framePath = base + '/frame?token=' + encodeURIComponent(token)
-  const inputPath = base + '/input?token=' + encodeURIComponent(token)
+  const access = ${JSON.stringify(access)}
+  const framePath = base + '/frame?token=' + encodeURIComponent(token) + '&access=' + encodeURIComponent(access)
+  const inputPath = base + '/input?token=' + encodeURIComponent(token) + '&access=' + encodeURIComponent(access)
 
   const frame = document.getElementById('frame')
   const urlInput = document.getElementById('url')
@@ -673,6 +706,7 @@ export function registerContextViewer({ webServer, getContext, token, logger = n
     disposed: false,
     inflight: new Map(),
     metaCache: new Map(),
+    access: new Map(),
   }
   let disposeRoute
   try {
@@ -702,13 +736,15 @@ export function registerContextViewer({ webServer, getContext, token, logger = n
       const origin = state.origin || readOrigin(webServer)
       if (!origin) return null
       state.origin = origin
-      return `${origin}${ROUTE_PREFIX}/${encodeURIComponent(id)}/view?token=${encodeURIComponent(viewerToken)}`
+      const access = accessFor(state, id)
+      return `${origin}${ROUTE_PREFIX}/${encodeURIComponent(id)}/view?token=${encodeURIComponent(viewerToken)}&access=${encodeURIComponent(access)}`
     },
     dispose() {
       if (state.disposed) return
       state.disposed = true
       state.inflight.clear()
       state.metaCache.clear()
+      state.access.clear()
       try {
         disposeRoute?.()
       } catch {
