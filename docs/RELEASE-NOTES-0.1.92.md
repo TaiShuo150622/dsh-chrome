@@ -13,7 +13,7 @@
 
 - `test/overlay.mjs` 覆盖 auto click、iframe frameId、reload restore、export JSON。
 - sandbox 82 checks / 43 tools；全量 `npm test` 23 个文件。
-- 私有仓库 CI 绿。
+- CI 绿。
 
 ## 限制
 

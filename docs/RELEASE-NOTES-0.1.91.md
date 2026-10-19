@@ -13,7 +13,7 @@
 
 - `test/overlay.mjs`（真实 headless Chrome）：pointer 截图可见、highlight/box/circle/arrow/label/list/clear、snapshot 排除 overlay。
 - `test/sandbox-smoke.mjs` 覆盖两个新工具（82 checks / 43 tools）。
-- 全量 `npm test` 23 个测试文件；私有仓库 CI 绿。
+- 全量 `npm test` 23 个测试文件；CI 绿。
 
 ## 已知限制
 

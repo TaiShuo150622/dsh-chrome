@@ -18,4 +18,4 @@
 ## 测试
 
 - `test/sidepanel.mjs` 校验 manifest/permission/页面/逻辑/按钮；
-- 全量 `npm test` 24 个测试文件；私有仓库 CI 绿。
+- 全量 `npm test` 24 个测试文件；CI 绿。

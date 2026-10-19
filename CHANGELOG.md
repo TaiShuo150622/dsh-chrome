@@ -26,12 +26,12 @@
 
 - 新增 `chrome_pointer`（常驻虚拟鼠标/标签/点击波纹）与 `chrome_annotate`（文本高亮/框/圈/箭头/说明气泡/列出/清除）
 - 零依赖 overlay（`extension/overlay.js`），extension MAIN world content script + headless 共用；截图可见、snapshot 排除
-- 工具面 42（+evaluate 43）；test/overlay.mjs + sandbox 覆盖；私有仓库 CI
+- 工具面 42（+evaluate 43）；test/overlay.mjs + sandbox 覆盖；CI
 
 ## [0.1.90] - 2026-10-18
 
 - 新增 `chrome_headless_login op=show` 人工接管（显示到屏幕、finish 后 headless 恢复 URL）
-- CI 硬化：私有仓库 CI 绿、windows-host artifact、CI 环境跳过时序套件/CPU 采样、临时目录清理 retry
+- CI 硬化：CI 绿、windows-host artifact、CI 环境跳过时序套件/CPU 采样、临时目录清理 retry
 
 ## [0.1.89] - 2026-10-18
 
