@@ -11,6 +11,12 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.17] - 2026-10-19
+
+- 多引擎 headless 候选（Chrome/Chromium/Edge/Brave，含 Windows）
+- 密码 P1 基础：opaque credentialId + macOS Keychain adapter（未接填充 UI）
+- DSH 原生侧边栏 A0 client bundle 骨架（未安装）
+
 ## [0.2.16] - 2026-10-19
 
 - Windows bridge 改用命名管道（node:net 不支持普通文件路径），修复 Windows 永远 bridge.json 缺失/NOT_CONNECTED
