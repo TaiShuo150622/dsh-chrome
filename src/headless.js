@@ -13,6 +13,7 @@ import { buildLaunchArgs, parseDevToolsActivePort } from './headless-launch.js'
 import { decodePngFrame, encodePngFrame, jpegFrameSize, pngFrameSize } from './headless-png.js'
 import { handleConsoleEvent, handleNetworkEvent } from './headless-events.js'
 import { pageCall } from './headless-page-actions.js'
+import { createHeadlessLogin } from './headless-login.js'
 
 let overlaySourceCache = null
 function overlaySource() {
@@ -512,6 +513,11 @@ function chromeExecutable() {
   }
   return null
 }
+
+// Interactive login window lifecycle (Q21). The driver keeps same-named
+// facades; the launcher lookup and the shared error factory are injected so the
+// module stays independent of this file's private helpers.
+const headlessLogin = createHeadlessLogin({ chromeExecutable, error })
 
 // ---------------------------------------------------------------- CDP client
 class Cdp {
@@ -2746,76 +2752,20 @@ export class HeadlessDriver {
     throw error('INVALID_ARGUMENT', `unknown tabs op: ${op}`)
   }
 
-  async loginStart({ url } = {}) {
-    if (this.loginProcess) {
-      return { running: true, alreadyRunning: true, pid: this.loginProcess.pid ?? null, profile: this.loginProfile }
-    }
-    if (this.tabs.size > 0) {
-      throw error('HEADLESS_BUSY', 'close headless tabs (chrome_close_session {backend:"headless"}) before opening the login window')
-    }
-    if (this.chrome || this.cdp) await this.close()
-    const executable = chromeExecutable()
-    if (!executable) throw error('UNSUPPORTED_BACKEND', 'no Chrome/Chromium executable found (set DSH_HEADLESS_CHROME)')
-    const target = url && /^https?:\/\//i.test(String(url)) ? String(url) : 'about:blank'
-    await fsp.mkdir(this.loginProfile, { recursive: true })
-    const child = this.spawnImpl(
-      executable,
-      [
-        `--user-data-dir=${this.loginProfile}`,
-        '--new-window',
-        target,
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-sync',
-      ],
-      { stdio: 'ignore' },
-    )
-    this.loginProcess = child
-    child.once?.('exit', () => {
-      if (this.loginProcess === child) this.loginProcess = null
-    })
-    this.logger?.info?.('headless login window opened (pid=%s)', child.pid)
-    return { running: true, alreadyRunning: false, pid: child.pid ?? null, profile: this.loginProfile, url: target }
+  async loginStart(options) {
+    return headlessLogin.loginStart(this, options)
   }
 
-  async showVisible({ url } = {}) {
-    if (this.loginProcess) {
-      return { running: true, alreadyRunning: true, visible: true, pid: this.loginProcess.pid ?? null, profile: this.loginProfile, url: this.resumeUrl }
-    }
-    const active = [...this.tabs.values()].find((tab) => tab.url && tab.url !== 'about:blank')
-    const target = url || active?.url || 'about:blank'
-    if (url && !/^https?:\/\//i.test(String(url))) {
-      throw error('PROTECTED_PAGE', 'Only http(s) URLs are allowed.')
-    }
-    this.resumeUrl = target && target !== 'about:blank' ? String(target) : null
-    if (this.chrome || this.cdp || this.tabs.size > 0) await this.close()
-    this.visibleMode = true
-    const opened = await this.loginStart({ url: this.resumeUrl || 'about:blank' })
-    return { ...opened, visible: true, url: this.resumeUrl }
+  async showVisible(options) {
+    return headlessLogin.showVisible(this, options)
   }
 
   loginStatus() {
-    return {
-      running: Boolean(this.loginProcess),
-      pid: this.loginProcess?.pid ?? null,
-      profile: this.loginProfile,
-      visible: this.visibleMode,
-      resumeUrl: this.resumeUrl,
-    }
+    return headlessLogin.loginStatus(this)
   }
 
   loginFinish() {
-    const child = this.loginProcess
-    if (!child) return { running: false, stopped: false, profile: this.loginProfile }
-    try {
-      child.kill('SIGTERM')
-    } catch {
-      // already gone
-    }
-    this.loginProcess = null
-    this.visibleMode = false
-    this.logger?.info?.('headless visible window closed')
-    return { running: false, stopped: true, profile: this.loginProfile, resumeUrl: this.resumeUrl }
+    return headlessLogin.loginFinish(this)
   }
 
   async close() {

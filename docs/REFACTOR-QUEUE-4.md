@@ -14,7 +14,7 @@
 - [x] Q20 拆出 screencast/overlay 工具
   - 新建 `src/tools-screencast.js`，迁移 `chrome_screencast`、`chrome_pointer`、`chrome_annotate`、`chrome_emulate`（按实际依赖调整）；
   - 不改变截图/光标/注释行为；全量测试。
-- [ ] Q21 headless login 生命周期拆出
+- [x] Q21 headless login 生命周期拆出
   - 新建 `src/headless-login.js`，迁移 `HeadlessDriver` 的 `loginStart/showVisible/loginFinish/loginStatus` 相关逻辑（必要时注入 CDP/launcher）；
   - `HeadlessDriver` 保留同名 facade，输出/行为不变；全量测试。
 - [ ] Q22 runtime 接管 bridge/install/contexts 生命周期
