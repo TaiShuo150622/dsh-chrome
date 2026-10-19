@@ -11,6 +11,10 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.20] - 2026-10-19
+
+- 浏览器操作鼠标改为 GPT/Claude 风格箭头 cursor + 点击波纹/动作标签；可见 debug 窗口默认显示
+
 ## [0.2.19] - 2026-10-19
 
 - 自动更新跨平台：Windows host 热替换；macOS/Linux 下载 tgz+extension zip 到 cache/downloads（不热替换）

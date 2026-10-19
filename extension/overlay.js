@@ -7,8 +7,8 @@
  * (provider reads this file and evaluates it in the page).
  */
 ;(() => {
-  if (window.__dshOverlay && window.__dshOverlay.version === 1) return
-  const VERSION = 1
+  if (window.__dshOverlay && window.__dshOverlay.version === 2) return
+  const VERSION = 2
   const ROOT_ID = '__dsh_overlay__'
   const COLORS = ['#007aff', '#ff3b30', '#34c759', '#ff9f0a', '#af52de', '#5ac8fa']
   const state = { annotations: new Map(), seq: 1, auto: true }
@@ -75,15 +75,20 @@
     const ring = document.createElement('div')
     ring.setAttribute('data-dsh-pointer-ring', '1')
     ring.style.cssText =
-      'position:absolute;left:-16px;top:-16px;width:32px;height:32px;border-radius:50%;border:2px solid rgba(0,122,255,.6);opacity:0;transition:opacity .2s,transform .35s'
+      'position:absolute;left:-20px;top:-20px;width:40px;height:40px;border-radius:50%;border:2px solid rgba(0,122,255,.65);opacity:0;transition:opacity .2s,transform .35s'
+    // GPT/Claude-style arrow cursor. Kept as a data-attribute node so older
+    // selectors still find it; the ring remains the click ripple.
     const dot = document.createElement('div')
     dot.setAttribute('data-dsh-pointer-dot', '1')
-    dot.style.cssText =
-      'position:absolute;left:-7px;top:-7px;width:14px;height:14px;border-radius:50%;background:#007aff;border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.35)'
+    dot.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;filter:drop-shadow(0 2px 3px rgba(0,0,0,.35))'
+    dot.innerHTML =
+      '<svg width="24" height="26" viewBox="0 0 24 26" style="position:absolute;left:-3px;top:-2px">' +
+      '<path d="M2 1.5 L2 21 L7.6 16.2 L10.8 23.5 L15.2 21.6 L11.9 14.2 L20 14.0 Z" fill="#007aff" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/>' +
+      '</svg>'
     const tag = document.createElement('div')
     tag.setAttribute('data-dsh-pointer-label', '1')
     tag.style.cssText =
-      'position:absolute;left:16px;top:-12px;padding:2px 7px;border-radius:6px;background:#007aff;color:#fff;font:600 11px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.25)'
+      'position:absolute;left:24px;top:18px;padding:2px 7px;border-radius:6px;background:#007aff;color:#fff;font:600 11px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.25)'
     pointer.append(ring, dot, tag)
     el.appendChild(pointer)
     ;(document.documentElement || document.body).appendChild(el)

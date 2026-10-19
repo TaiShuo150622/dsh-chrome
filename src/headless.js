@@ -246,7 +246,7 @@ class Cdp {
 
 // ------------------------------------------------------------------ driver
 export class HeadlessDriver {
-  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null, visible = false, windowSize = null, engine = null, executable = null } = {}) {
+  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null, visible = false, windowSize = null, engine = null, executable = null, autoPointer = null } = {}) {
     this.home = home
     this.visible = Boolean(visible)
     this.windowSize = windowSize || (this.visible ? { width: 1440, height: 900 } : null)
@@ -277,7 +277,9 @@ export class HeadlessDriver {
     this.loginProfile = this.profileDir
     this.resumeUrl = null
     this.visibleMode = false
-    this.autoPointerEnabled = process.env.DSH_AUTO_POINTER === '1'
+    // Visible debug windows show the arrow cursor by default; hidden sandbox
+    // contexts stay opt-in via DSH_AUTO_POINTER / chrome_pointer auto.
+    this.autoPointerEnabled = autoPointer == null ? process.env.DSH_AUTO_POINTER === '1' : Boolean(autoPointer)
     this.captures = new Map()
     this.captureByTab = new Map()
     this.nextCaptureSeq = 1
@@ -584,7 +586,7 @@ export class HeadlessDriver {
         selector: params.selector,
         x: params.x,
         y: params.y,
-        label: 'DSH',
+        label: 'DSH · ' + kind,
         pulse: kind === 'click' || kind === 'type' || kind === 'key',
       }
       const value = await this.evalOn(tab, `window.__dshOverlay.handle(${JSON.stringify(payload)})`)

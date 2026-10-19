@@ -108,6 +108,7 @@ export function apply(ctx, config) {
         screenshotDir: path.join(profileDir, 'screenshots'),
         downloadDir: path.join(profileDir, 'downloads'),
         visible: visible === true,
+        autoPointer: visible === true ? true : null,
         engine: headlessConfig.engine,
         executable: headlessConfig.executable,
       }),

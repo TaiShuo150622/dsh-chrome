@@ -786,8 +786,13 @@ const PAGE_ACTIONS = {
 // DOM overlay; screenshots taken right after an action include it.
 const CURSOR_HELPER_SRC = `
 (() => {
-  if (window.__dshCursor) return
   const ID = '__dsh_cursor__'
+  if (window.__dshCursor && window.__dshCursorVersion === 2) return
+  if (window.__dshCursor) {
+    try { document.getElementById(ID)?.remove() } catch {}
+    window.__dshCursor = null
+  }
+  window.__dshCursorVersion = 2
   window.__dshCursor = (x, y, kind) => {
     try {
       let cursor = document.getElementById(ID)
@@ -796,15 +801,21 @@ const CURSOR_HELPER_SRC = `
         cursor.id = ID
         cursor.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none;opacity:0;transition:transform .22s cubic-bezier(.2,.8,.2,1),opacity .2s'
         const ring = document.createElement('div')
-        ring.style.cssText = 'position:absolute;left:-14px;top:-14px;width:28px;height:28px;border-radius:50%;border:2px solid rgba(0,122,255,.55);opacity:0;transition:opacity .2s,transform .3s'
+        ring.style.cssText = 'position:absolute;left:-18px;top:-18px;width:36px;height:36px;border-radius:50%;border:2px solid rgba(0,122,255,.55);opacity:0;transition:opacity .2s,transform .3s'
         const dot = document.createElement('div')
-        dot.style.cssText = 'position:absolute;left:-7px;top:-7px;width:14px;height:14px;border-radius:50%;background:rgba(0,122,255,.95);border:2px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.35)'
+        dot.style.cssText = 'position:absolute;left:0;top:0;width:24px;height:26px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.35))'
+        dot.innerHTML = '<svg width="24" height="26" viewBox="0 0 24 26"><path d="M2 1.5 L2 21 L7.6 16.2 L10.8 23.5 L15.2 21.6 L11.9 14.2 L20 14.0 Z" fill="#007aff" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/></svg>'
+        const label = document.createElement('div')
+        label.style.cssText = 'position:absolute;left:24px;top:18px;padding:2px 7px;border-radius:6px;background:#007aff;color:#fff;font:600 11px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.25)'
         cursor.appendChild(ring)
         cursor.appendChild(dot)
+        cursor.appendChild(label)
         document.documentElement.appendChild(cursor)
       }
       cursor.style.transform = 'translate(' + x + 'px,' + y + 'px)'
       cursor.style.opacity = '1'
+      const label = cursor.lastChild
+      if (label && label !== cursor.firstChild) label.textContent = 'DSH · ' + kind
       if (kind === 'click' || kind === 'type' || kind === 'key') {
         const ring = cursor.firstChild
         ring.style.transition = 'none'
@@ -818,7 +829,7 @@ const CURSOR_HELPER_SRC = `
       }
       try {
         if (window.__dshOverlay && window.__dshOverlay.auto !== false) {
-          window.__dshOverlay.handle({ op: 'follow', x, y, label: 'DSH', pulse: kind === 'click' || kind === 'type' || kind === 'key' })
+          window.__dshOverlay.handle({ op: 'follow', x, y, label: 'DSH · ' + kind, pulse: kind === 'click' || kind === 'type' || kind === 'key' })
         }
       } catch {}
       clearTimeout(cursor.__dshTimer)
