@@ -128,7 +128,10 @@ export function createScreencastTools({
         )
         const mode = bridge.backend || 'desktop'
         const previous = screencastGuards.get(owner)
-        if (previous) previous.disarm()
+        if (previous) {
+          previous.disarm()
+          screencastGuards.delete(owner)
+        }
         if (getLiveViewInfo().enabled) {
           const guard = createScreencastGuard({
             lastViewerAt: () => getViewerActivity().lastFrameAt,
@@ -169,7 +172,18 @@ export function createScreencastTools({
         } catch {
           meta = null
         }
-        if (status?.active !== true) screencastOwners.delete(owner)
+        if (status?.active !== true) {
+          // The backend stream may have ended on its own (tab closed, timeout,
+          // provider disconnect). Drop the ownership marker and stop the
+          // idle guard too: a disarmed guard still owns an interval until it is
+          // removed from the map.
+          screencastOwners.delete(owner)
+          const guard = screencastGuards.get(owner)
+          if (guard) {
+            guard.disarm()
+            screencastGuards.delete(owner)
+          }
+        }
         const metaOwner = typeof meta?.owner === 'string' && meta.owner ? meta.owner : null
         // Only the session that started an active stream may read the shared
         // frame file, and only while that frame is not attributed to another

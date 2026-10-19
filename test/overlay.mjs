@@ -73,6 +73,11 @@ try {
   await driver.request('tab.goto', { owner: 's1', url: `http://127.0.0.1:${port}/` })
   const restored = await overlay({ op: 'list' })
   assert.equal(restored.count, 1, 'annotations should restore after reload')
+  // op="restore" reloads the persisted set; it must not append a duplicate
+  // copy on every call (state + DOM + sessionStorage used to grow each time).
+  const restoredAgain = await overlay({ op: 'restore' })
+  assert.equal(restoredAgain.ok, true)
+  assert.equal((await overlay({ op: 'list' })).count, 1, 'restore is idempotent')
   assert.equal((await overlay({ op: 'clear' })).ok, true)
 
   // iframe: frame:true searches every frame and returns the matching frameId.

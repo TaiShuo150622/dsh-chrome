@@ -16,14 +16,20 @@ import {
   redactUrl,
 } from './headless-redact.js'
 
-export const CONSOLE_BUFFER_LIMIT = 200
+// CONTRACTS.md §4: the console buffer is capped at 500 entries, matching the
+// page-world hook (extension/console-hook.js) so both backends expose the same
+// newest-500 window.
+export const CONSOLE_BUFFER_LIMIT = 500
 const CONSOLE_TEXT_LIMIT = 2000
 
 /** Append one console entry, keeping the newest CONSOLE_BUFFER_LIMIT entries. */
 export function recordConsole(buffers, tab, entry) {
   if (!buffers || !tab) return
   const list = buffers.get(tab.tabId) || []
-  list.push({ ...entry, time: Date.now() })
+  // Truncate here as well as in handleConsoleEvent: recordConsole is exported
+  // and a direct caller must not be able to pin an unbounded string.
+  const text = entry?.text == null ? '' : String(entry.text)
+  list.push({ ...entry, text: text.slice(0, CONSOLE_TEXT_LIMIT), time: Date.now() })
   while (list.length > CONSOLE_BUFFER_LIMIT) list.shift()
   buffers.set(tab.tabId, list)
 }
@@ -82,7 +88,10 @@ export function handleNetworkEvent(tab, capture, send, method, params = {}) {
     }
     capture.byId.set(String(requestId), entry)
     capture.entries.push(entry)
-    if (params.request?.postData) entry._postDataRaw = String(params.request.postData)
+    // H1/M3: the raw request body is only kept for a capture that explicitly
+    // opted into bodies; otherwise it would sit unredacted in memory until the
+    // entry is evicted even though chrome_capture_requests never returns it.
+    if (capture.storeBodies && params.request?.postData) entry._postDataRaw = String(params.request.postData)
     return
   }
   const entry = capture.byId.get(String(requestId))
@@ -107,54 +116,73 @@ export function handleNetworkEvent(tab, capture, send, method, params = {}) {
     entry.canceled = Boolean(params.canceled)
     entry.errorText = String(params.errorText || '')
     entry.durationMs = entry.startMono != null ? Math.round((params.timestamp - entry.startMono) * 1000) : null
+    // A failed request never reaches loadingFinished, so its raw request body
+    // has no reader left.
+    delete entry._postDataRaw
     return
   }
   if (method === 'Network.loadingFinished') {
     entry.durationMs = entry.startMono != null ? Math.round((params.timestamp - entry.startMono) * 1000) : null
     entry.finishedAt = Date.now()
     if (Number.isFinite(params.encodedDataLength)) entry.encodedDataLength = params.encodedDataLength
-    if (!capture.storeBodies) return
+    if (!capture.storeBodies) {
+      // Metadata-only capture: drop any raw body kept from a request event.
+      delete entry._postDataRaw
+      return
+    }
     if (!['xhr', 'fetch', 'document'].includes(entry.resourceType)) return
     if (capture.bodyTasks >= 4) {
       entry.bodyUnavailable = 'burst'
+      delete entry._postDataRaw
       return
     }
     capture.bodyTasks += 1
+    const stillCurrent = () => capture.active && capture.byId.get(String(requestId)) === entry
     const bodyTask = (async () => {
       try {
-        const response = await send('Network.getResponseBody', { requestId: String(requestId) }, tab.sessionId)
-        const raw = response?.base64Encoded
-          ? Buffer.from(response.body || '', 'base64').toString('utf8')
-          : String(response?.body ?? '')
-        const materialized = materializeCaptureBody(capture, raw, entry.mimeType, CAPTURE_RESPONSE_BODY_CHARS)
-        if (materialized) {
-          entry.responseBody = materialized.text
-          entry.bodyTruncated = materialized.truncated
-          entry.redacted = true
-        }
-      } catch {
-        entry.bodyUnavailable = 'evicted'
-      }
-      if (entry._postDataRaw == null && entry.hasPostData) {
+        if (!stillCurrent()) return
         try {
-          const request = await send('Network.getRequestPostData', { requestId: String(requestId) }, tab.sessionId)
-          if (request?.postData) entry._postDataRaw = String(request.postData)
+          const response = await send('Network.getResponseBody', { requestId: String(requestId) }, tab.sessionId)
+          if (!stillCurrent()) return
+          const raw = response?.base64Encoded
+            ? Buffer.from(response.body || '', 'base64').toString('utf8')
+            : String(response?.body ?? '')
+          const materialized = materializeCaptureBody(capture, raw, entry.mimeType, CAPTURE_RESPONSE_BODY_CHARS)
+          if (materialized) {
+            entry.responseBody = materialized.text
+            entry.bodyTruncated = materialized.truncated
+            entry.redacted = true
+          }
         } catch {
-          // request body unavailable
+          if (stillCurrent()) entry.bodyUnavailable = 'evicted'
         }
-      }
-      if (entry._postDataRaw != null) {
-        const requestMime = /^{|^\[/.test(String(entry._postDataRaw).trim())
-          ? 'application/json'
-          : 'application/x-www-form-urlencoded'
-        const materialized = materializeCaptureBody(capture, entry._postDataRaw, requestMime, CAPTURE_REQUEST_BODY_CHARS)
-        if (materialized) {
-          entry.requestBody = materialized.text
-          entry.redacted = true
+        if (!stillCurrent()) return
+        if (entry._postDataRaw == null && entry.hasPostData) {
+          try {
+            const request = await send('Network.getRequestPostData', { requestId: String(requestId) }, tab.sessionId)
+            if (request?.postData && stillCurrent()) entry._postDataRaw = String(request.postData)
+          } catch {
+            // request body unavailable
+          }
         }
-        delete entry._postDataRaw
+        if (!stillCurrent()) return
+        if (entry._postDataRaw != null) {
+          const requestMime = /^{|^\[/.test(String(entry._postDataRaw).trim())
+            ? 'application/json'
+            : 'application/x-www-form-urlencoded'
+          const materialized = materializeCaptureBody(capture, entry._postDataRaw, requestMime, CAPTURE_REQUEST_BODY_CHARS)
+          if (materialized) {
+            entry.requestBody = materialized.text
+            entry.redacted = true
+          }
+          delete entry._postDataRaw
+        }
+      } finally {
+        // Always release the in-flight slot, including a synchronous send
+        // failure or a capture that stopped while the body was in flight.
+        capture.bodyTasks = Math.max(0, (capture.bodyTasks || 0) - 1)
+        if (!capture.active) delete entry._postDataRaw
       }
-      capture.bodyTasks -= 1
     })()
     capture.bodyTasksSet = capture.bodyTasksSet || new Set()
     capture.bodyTasksSet.add(bodyTask)

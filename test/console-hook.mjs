@@ -63,6 +63,11 @@ fakeConsole.log('x'.repeat(5000))
 assert.equal(hook.entries.at(-1).text.length, 2000, 'a single entry must be truncated')
 assert.equal(hook.entries.length, 500)
 
+// Truncation applies to the joined argument text, not per argument: three
+// 1000-char arguments still yield one 2000-char entry.
+fakeConsole.log('a'.repeat(1000), 'b'.repeat(1000), 'c'.repeat(1000))
+assert.equal(hook.entries.at(-1).text.length, 2000, 'joined argument text must be truncated')
+
 // Uncaught errors and unhandled rejections use the same bounded path.
 listeners.get('error')?.({ message: 'boom', filename: 'app.js', lineno: 9 })
 assert.equal(hook.entries.at(-1).level, 'error')

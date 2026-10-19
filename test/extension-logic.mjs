@@ -29,6 +29,10 @@ const tabs = new Map([
   [7, { id: 7, url: 'https://example.com/', title: 'Example Domain', active: true, status: 'complete', windowId: 1 }],
 ])
 const debuggerCalls = []
+// Attached targets reported by chrome.debugger.getTargets(); the worker runs
+// detachOrphanedTargets() on start and tests can seed a target left attached by
+// a previous worker generation.
+const orphanTargets = []
 const dialogCommands = []
 const eventListeners = new Set()
 let nextPageValue = { ok: true, tag: 'button', label: 'OK' }
@@ -229,8 +233,11 @@ const chrome = {
     async attach(target) {
       debuggerCalls.push({ method: 'attach', target })
     },
-    async detach() {
-      debuggerCalls.push({ method: 'detach' })
+    async detach(target) {
+      debuggerCalls.push({ method: 'detach', target })
+    },
+    async getTargets() {
+      return orphanTargets
     },
     async sendCommand(target, method, params) {
       debuggerCalls.push({ method, target, params })
@@ -850,7 +857,7 @@ const emitNetwork = (method, params) => {
 }
 const captureStart = await sandbox.handleRequest({
   method: 'tab.capture_start',
-  params: { owner: 's1', maxEntries: 2 },
+  params: { owner: 's1', maxEntries: 2, storeBodies: true },
   id: 'capture-start',
 })
 check('tab.capture_start returns a capture id', typeof captureStart?.captureId === 'string' && captureStart?.active === true)
@@ -929,7 +936,7 @@ check('capture buffer stays readable after stop and ignores new events', frozen?
 // C2: capture edge branches (failed/cache/type filter/owner isolation/detach freeze)
 const edgeStart = await sandbox.handleRequest({
   method: 'tab.capture_start',
-  params: { owner: 's1', maxEntries: 10 },
+  params: { owner: 's1', maxEntries: 10, storeBodies: true },
   id: 'capture-edge-start',
 })
 check('new capture_start after stop becomes active', edgeStart?.active === true)
@@ -1046,6 +1053,246 @@ check(
   'action re-attaches after debugger detach',
   afterDetach != null && counts.attach === 1 && counts.detach === 1,
   JSON.stringify(counts),
+)
+
+// C3: capture reclamation. A stopped capture keeps a redacted summary for a
+// bounded TTL/count, then releases entries/bodies/timers; bodies are opt-in.
+const debuggerSessionsMap = vm.runInContext('debuggerSessions', sandbox)
+const capturesMap = vm.runInContext('captures', sandbox)
+const captureSummaryTtlMs = vm.runInContext('CAPTURE_SUMMARY_TTL_MS', sandbox)
+const captureSummaryLimit = vm.runInContext('CAPTURE_SUMMARY_LIMIT', sandbox)
+const networkBodyCalls = () => debuggerCalls.filter((call) => call.method === 'Network.getResponseBody').length
+
+const bodyCallsBeforeDefault = networkBodyCalls()
+const defaultCapture = await sandbox.handleRequest({
+  method: 'tab.capture_start',
+  params: { owner: 's1', maxEntries: 5 },
+  id: 'capture-default-start',
+})
+check(
+  'capture without storeBodies is metadata-only by default',
+  defaultCapture?.storeBodies === false && defaultCapture?.active === true,
+  JSON.stringify(defaultCapture),
+)
+emitNetwork('Network.requestWillBeSent', {
+  requestId: 'd1',
+  request: { url: 'https://api.test/default-body', method: 'POST', hasPostData: true, postData: 'token=SECRET' },
+  type: 'XHR',
+  timestamp: 300,
+})
+emitNetwork('Network.responseReceived', { requestId: 'd1', response: { status: 200, mimeType: 'application/json' }, timestamp: 301 })
+emitNetwork('Network.loadingFinished', { requestId: 'd1', timestamp: 300.5 })
+await new Promise((resolve) => setTimeout(resolve, 30))
+const defaultRead = await sandbox.handleRequest({
+  method: 'tab.capture_requests',
+  params: { owner: 's1', captureId: defaultCapture.captureId, includeBodies: true },
+  id: 'capture-default-read',
+})
+const defaultEntry = defaultRead?.entries?.find((entry) => entry.id === 'd1')
+const defaultCaptureObject = capturesMap.get(defaultCapture.captureId)
+check(
+  'default capture stores no response/request body and never asks CDP for one',
+  defaultEntry != null &&
+    defaultEntry.responseBody === undefined &&
+    defaultEntry.requestBody === undefined &&
+    networkBodyCalls() === bodyCallsBeforeDefault &&
+    defaultCaptureObject?.requests.get('d1')?.postDataRaw === undefined,
+  JSON.stringify({ entry: defaultEntry, bodyCalls: networkBodyCalls() - bodyCallsBeforeDefault }),
+)
+const defaultStop = await sandbox.handleRequest({
+  method: 'tab.capture_stop',
+  params: { owner: 's1', captureId: defaultCapture.captureId },
+  id: 'capture-default-stop',
+})
+check(
+  'capture stop keeps entries readable and arms the summary TTL',
+  defaultStop?.active === false &&
+    defaultCaptureObject?.order.length === 1 &&
+    Boolean(defaultCaptureObject?.expireTimer) &&
+    defaultCaptureObject?.bodyTasks?.size === 0,
+  JSON.stringify({ active: defaultStop?.active, entries: defaultCaptureObject?.order.length, ttl: Boolean(defaultCaptureObject?.expireTimer) }),
+)
+const frozenDefaultRead = await sandbox.handleRequest({
+  method: 'tab.capture_requests',
+  params: { owner: 's1', captureId: defaultCapture.captureId },
+  id: 'capture-default-frozen-read',
+})
+check(
+  'a second read of the frozen summary still works',
+  frozenDefaultRead?.total === 1 && frozenDefaultRead?.entries?.[0]?.id === 'd1',
+  JSON.stringify({ total: frozenDefaultRead?.total }),
+)
+
+// TTL: an expired stopped summary is dropped lazily and its entries freed.
+defaultCaptureObject.stoppedAt = Date.now() - captureSummaryTtlMs - 1
+let expiredCode = null
+try {
+  await sandbox.handleRequest({
+    method: 'tab.capture_requests',
+    params: { owner: 's1', captureId: defaultCapture.captureId },
+    id: 'capture-expired-read',
+  })
+} catch (error) {
+  expiredCode = error?.code || String(error?.message || error)
+}
+check(
+  'an expired capture is CAPTURE_LOST and its entries are released',
+  expiredCode === 'CAPTURE_LOST' &&
+    !capturesMap.has(defaultCapture.captureId) &&
+    defaultCaptureObject.order.length === 0 &&
+    defaultCaptureObject.requests.size === 0 &&
+    defaultCaptureObject.expireTimer === null,
+  JSON.stringify({ code: expiredCode, size: defaultCaptureObject.order.length, requests: defaultCaptureObject.requests.size }),
+)
+
+// Count cap: start/stop 10 captures; only the newest CAPTURE_SUMMARY_LIMIT survive.
+const recentCaptureIds = []
+for (let index = 0; index < 10; index += 1) {
+  const started = await sandbox.handleRequest({
+    method: 'tab.capture_start',
+    params: { owner: 's1', maxEntries: 1 },
+    id: `capture-prune-${index}-start`,
+  })
+  await sandbox.handleRequest({
+    method: 'tab.capture_stop',
+    params: { owner: 's1', captureId: started.captureId },
+    id: `capture-prune-${index}-stop`,
+  })
+  recentCaptureIds.push(started.captureId)
+}
+check(
+  'stopped capture summaries are bounded by count',
+  capturesMap.size <= captureSummaryLimit && capturesMap.has(recentCaptureIds.at(-1)) && !capturesMap.has(recentCaptureIds[0]),
+  JSON.stringify({ size: capturesMap.size, limit: captureSummaryLimit }),
+)
+
+// A debugger detach (target closed / DevTools steals it) must clear the
+// screencast auto-stop timer, not only the capture.
+const detachCast = await sandbox.handleRequest({ method: 'tab.screencast_start', params: { owner: 's1' }, id: 'detach-cast-start' })
+const detachCastTimer = debuggerSessionsMap.get(7)?.screencast?.timer
+for (const listener of debuggerDetachListeners) listener({ tabId: 7 }, 'target_closed')
+await new Promise((resolve) => setTimeout(resolve, 20))
+check(
+  'debugger detach clears the session and screencast timer',
+  detachCast?.active === true &&
+    detachCastTimer?._destroyed === true &&
+    !debuggerSessionsMap.has(7),
+  JSON.stringify({ active: detachCast?.active, timerDestroyed: detachCastTimer?._destroyed, sessions: debuggerSessionsMap.size }),
+)
+
+// Extension reload: prepareForReload detaches every debuggee and drops state.
+const reloadCapture = await sandbox.handleRequest({
+  method: 'tab.capture_start',
+  params: { owner: 's1', maxEntries: 5 },
+  id: 'reload-capture-start',
+})
+const reloadDetachMark = debuggerCalls.filter((call) => call.method === 'detach').length
+await sandbox.prepareForReload()
+await new Promise((resolve) => setTimeout(resolve, 20))
+check(
+  'prepareForReload detaches sessions and drops captures',
+  reloadCapture?.active === true &&
+    !debuggerSessionsMap.has(7) &&
+    !capturesMap.has(reloadCapture.captureId) &&
+    debuggerCalls.filter((call) => call.method === 'detach').length > reloadDetachMark,
+  JSON.stringify({ sessions: debuggerSessionsMap.size, captures: capturesMap.size }),
+)
+
+// A target left attached by a previous worker generation is detached on the
+// worker-start recovery path.
+orphanTargets.push({ attached: true, tabId: 99, type: 'page' })
+await sandbox.detachOrphanedTargets()
+const orphanDetach = debuggerCalls.find((call) => call.method === 'detach' && call.target?.tabId === 99)
+check('worker start detaches an orphaned debugger target', Boolean(orphanDetach), JSON.stringify(orphanDetach))
+orphanTargets.length = 0
+
+// Capture timeout: endCapture runs outside withDebugger, so it must release the
+// debugger itself; otherwise a 10-minute auto-stop leaves Chrome attached.
+const timeoutCapture = await sandbox.handleRequest({
+  method: 'tab.capture_start',
+  params: { owner: 's1', maxEntries: 5 },
+  id: 'timeout-capture-start',
+})
+const timeoutCaptureObject = capturesMap.get(timeoutCapture.captureId)
+const timeoutDetachMark = debuggerCalls.filter((call) => call.method === 'detach').length
+sandbox.endCapture(timeoutCaptureObject, 'timeout')
+await new Promise((resolve) => setTimeout(resolve, 20))
+check(
+  'capture timeout releases the debugger session',
+  timeoutCapture?.active === true &&
+    !debuggerSessionsMap.has(7) &&
+    timeoutCaptureObject?.active === false &&
+    timeoutCaptureObject?.endedReason === 'timeout' &&
+    debuggerCalls.filter((call) => call.method === 'detach').length > timeoutDetachMark,
+  JSON.stringify({ sessions: debuggerSessionsMap.size, reason: timeoutCaptureObject?.endedReason }),
+)
+
+// Screencast auto-stop: the 10-minute timer must clear state, stop CDP and drop
+// the now-idle debugger session (the callback is invoked directly).
+const autoCast = await sandbox.handleRequest({ method: 'tab.screencast_start', params: { owner: 's1' }, id: 'auto-cast-start' })
+const autoCastTimer = debuggerSessionsMap.get(7)?.screencast?.timer
+const autoStopMark = debuggerCalls.length
+autoCastTimer?._onTimeout?.()
+await new Promise((resolve) => setTimeout(resolve, 20))
+check(
+  'screencast auto-stop timer clears state, timer and debugger session',
+  autoCast?.active === true &&
+    autoCastTimer?._destroyed === true &&
+    !debuggerSessionsMap.has(7) &&
+    debuggerCalls.slice(autoStopMark).some((call) => call.method === 'Page.stopScreencast'),
+  JSON.stringify({ timerDestroyed: autoCastTimer?._destroyed, sessions: debuggerSessionsMap.size }),
+)
+
+// Tab close: capture + screencast state and their timers are released.
+const closeCapture = await sandbox.handleRequest({
+  method: 'tab.capture_start',
+  params: { owner: 's1', maxEntries: 5, storeBodies: true },
+  id: 'tab-close-capture-start',
+})
+const closeCast = await sandbox.handleRequest({ method: 'tab.screencast_start', params: { owner: 's1' }, id: 'tab-close-cast-start' })
+const closeSession = debuggerSessionsMap.get(7)
+const closeCastTimer = closeSession?.screencast?.timer
+const closeCaptureObject = capturesMap.get(closeCapture.captureId)
+tabs.delete(7)
+for (const listener of tabRemovedListeners) listener(7)
+await new Promise((resolve) => setTimeout(resolve, 20))
+check(
+  'tab close releases capture, screencast and timers',
+  closeCast?.active === true &&
+    !debuggerSessionsMap.has(7) &&
+    !capturesMap.has(closeCapture.captureId) &&
+    closeCaptureObject?.order.length === 0 &&
+    closeCastTimer?._destroyed === true,
+  JSON.stringify({
+    sessions: debuggerSessionsMap.size,
+    captures: capturesMap.size,
+    entries: closeCaptureObject?.order.length,
+    timerDestroyed: closeCastTimer?._destroyed,
+  }),
+)
+
+// Provider disconnect: the provider that owned the session is gone, so every
+// debuggee must be detached and both tables cleared.
+const providerTab = { id: 8, url: 'https://example.com/8', title: '8', active: true, status: 'complete', windowId: 1 }
+tabs.set(8, providerTab)
+const claimed = await sandbox.handleRequest({ method: 'tab.claim', params: { owner: 's1', tabId: 8 }, id: 'provider-claim' })
+const providerCapture = await sandbox.handleRequest({
+  method: 'tab.capture_start',
+  params: { owner: 's1', tabId: 8, maxEntries: 5 },
+  id: 'provider-capture-start',
+})
+const providerDetachMark = debuggerCalls.filter((call) => call.method === 'detach').length
+for (const listener of nativePortListeners.disconnect) listener()
+await new Promise((resolve) => setTimeout(resolve, 30))
+check(
+  'provider disconnect detaches every debuggee and clears capture state',
+  claimed?.claimed === true &&
+    providerCapture?.active === true &&
+    debuggerSessionsMap.size === 0 &&
+    capturesMap.size === 0 &&
+    debuggerCalls.filter((call) => call.method === 'detach').length > providerDetachMark &&
+    debuggerCalls.some((call) => call.method === 'detach' && call.target?.tabId === 8),
+  JSON.stringify({ sessions: debuggerSessionsMap.size, captures: capturesMap.size }),
 )
 
 check('unknown method is rejected', unsupported === 'UNSUPPORTED')
