@@ -5,7 +5,7 @@
 
 ## 队列
 
-- [ ] M1 attachTab 事务化 + 容量检查前置
+- [x] M1 attachTab 事务化 + 容量检查前置
   - `MAX_TABS` 检查放到 `Target.createTarget` 之前；使用可配置 `maxTabs`（默认 12，env/config 可覆盖）。
   - `createTarget`/`attachToTarget`/`Page.enable`/`Runtime.enable`/visual tracker 任一步失败：close target、detach session、删除已写入的 maps，rethrow；不增加 `nextTabId` 或提交注册。
   - 注册所有 maps 放在初始化成功后一次性提交（或事务化 commit）。

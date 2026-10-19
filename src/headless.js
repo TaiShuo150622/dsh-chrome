@@ -82,7 +82,25 @@ const EXTRA_CHROME_ARGS = String(process.env.DSH_HEADLESS_CHROME_ARGS || '')
   .filter(Boolean)
 
 const DEFAULT_IDLE_MINUTES = Number(process.env.DSH_HEADLESS_IDLE_MINUTES) || 5
-const MAX_TABS = Number(process.env.DSH_HEADLESS_MAX_TABS) || 12
+// Per-browser tab cap (M1). One headless Chrome can host several pages, but
+// every page costs a renderer process, so the driver bounds how many it will
+// attach. The effective value is `maxTabs` option > DSH_HEADLESS_MAX_TABS >
+// DEFAULT_MAX_TABS, resolved per driver (see resolveMaxTabs) so the provider's
+// `browser.maxTabs` setting can reach it (M4).
+export const DEFAULT_MAX_TABS = 12
+export const MAX_TABS_LIMIT = 64
+const MAX_TABS_ENV = 'DSH_HEADLESS_MAX_TABS'
+
+/** Resolve the tab cap: explicit option, then env, then the default; capped at 64. */
+export function resolveMaxTabs(value, env = process.env) {
+  for (const candidate of [value, env?.[MAX_TABS_ENV]]) {
+    if (candidate === undefined || candidate === null || candidate === '') continue
+    const number = Number(candidate)
+    if (!Number.isFinite(number) || number < 1) continue
+    return Math.min(MAX_TABS_LIMIT, Math.floor(number))
+  }
+  return DEFAULT_MAX_TABS
+}
 
 // waitReady polls document.readyState. Local/real navigations often finish in
 // tens of milliseconds, so a 100ms poll handed most of the load time back as
@@ -246,7 +264,7 @@ class Cdp {
 
 // ------------------------------------------------------------------ driver
 export class HeadlessDriver {
-  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null, visible = false, windowSize = null, engine = null, executable = null, autoPointer = null } = {}) {
+  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null, visible = false, windowSize = null, engine = null, executable = null, autoPointer = null, maxTabs = null } = {}) {
     this.home = home
     this.visible = Boolean(visible)
     this.windowSize = windowSize || (this.visible ? { width: 1440, height: 900 } : null)
@@ -254,6 +272,7 @@ export class HeadlessDriver {
     this.executable = executable || null
     this.logger = logger
     this.spawnImpl = spawnImpl
+    this.maxTabs = resolveMaxTabs(maxTabs)
     this.profileDir = profileDir || path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'profile')
     this.chrome = null
     this.cdp = null
@@ -280,6 +299,10 @@ export class HeadlessDriver {
     // Visible debug windows show the arrow cursor by default; hidden sandbox
     // contexts stay opt-in via DSH_AUTO_POINTER / chrome_pointer auto.
     this.autoPointerEnabled = autoPointer == null ? process.env.DSH_AUTO_POINTER === '1' : Boolean(autoPointer)
+    // In-flight attaches count against `maxTabs` so two concurrent
+    // `chrome_tabs {op:"new"}` calls cannot overshoot the cap while both are
+    // waiting inside `Target.createTarget`.
+    this.pendingTabs = 0
     this.captures = new Map()
     this.captureByTab = new Map()
     this.nextCaptureSeq = 1
@@ -466,39 +489,86 @@ export class HeadlessDriver {
 
   async attachTab(entry, url) {
     const targetUrl = safeTabUrl(url)
-    const created = await this.cdp.send('Target.createTarget', { url: targetUrl })
-    const targetId = created.targetId
-    const attached = await this.cdp.send('Target.attachToTarget', { targetId, flatten: true })
-    const sessionId = attached.sessionId
-    const tabId = this.nextTabId++
-    if (this.tabs.size >= MAX_TABS) {
-      throw error('RESOURCE_LIMIT', `headless tab limit reached (${MAX_TABS}); close a tab first`)
+    // M1: capacity is checked before `Target.createTarget`, and one browser
+    // shares the cap across every owner, so an over-limit `chrome_tabs
+    // {op:"new"}` never creates (or briefly leaks) a target.
+    const limit = this.maxTabs
+    if (this.tabs.size + this.pendingTabs >= limit) {
+      throw error('RESOURCE_LIMIT', `headless tab limit reached (${limit}); close a tab first`)
     }
-    const tab = {
-      tabId,
-      targetId,
-      sessionId,
-      url: targetUrl,
-      title: '',
-      renderChangeAt: 0,
-      shotStream: null,
-      visualTracker: false,
-      visualSkips: 0,
-      renderChangeRetires: 0,
+    this.pendingTabs += 1
+    let targetId = null
+    let sessionId = null
+    try {
+      const created = await this.cdp.send('Target.createTarget', { url: targetUrl })
+      targetId = created?.targetId
+      if (!targetId) throw error('HEADLESS_CDP_FAILED', 'Target.createTarget returned no targetId')
+      const attached = await this.cdp.send('Target.attachToTarget', { targetId, flatten: true })
+      sessionId = attached?.sessionId
+      if (!sessionId) throw error('HEADLESS_CDP_FAILED', `Target.attachToTarget returned no sessionId for ${targetId}`)
+      // Both domain enables are independent; on a fresh target each cold round
+      // trip is tens of milliseconds, so don't serialise them. A rejected
+      // enable means the target is not usable, so it rolls back with the rest
+      // instead of registering a half-initialised tab.
+      await Promise.all([
+        this.cdp.send('Page.enable', {}, sessionId),
+        this.cdp.send('Runtime.enable', {}, sessionId),
+      ])
+      const tab = {
+        tabId: this.nextTabId,
+        targetId,
+        sessionId,
+        url: targetUrl,
+        title: '',
+        renderChangeAt: 0,
+        shotStream: null,
+        visualTracker: false,
+        visualSkips: 0,
+        renderChangeRetires: 0,
+      }
+      // The visual tracker is best-effort by design (a page that refuses the
+      // script only loses the paint-free shortcut), but if the install itself
+      // throws, the attach counts as failed and is rolled back.
+      await this.installVisualTracker(tab)
+      // Commit point: every initialization step succeeded, so all maps below
+      // become visible in one synchronous step. Nothing above this line wrote
+      // driver state; nothing below can throw.
+      this.nextTabId += 1
+      this.bySession.set(sessionId, tab)
+      this.consoleBuffers.set(tab.tabId, [])
+      this.tabs.set(tab.tabId, tab)
+      entry.tabs.set(tab.tabId, tab)
+      entry.activeTabId = tab.tabId
+      return tab
+    } catch (failure) {
+      await this.rollbackAttach(targetId, sessionId)
+      throw failure
+    } finally {
+      this.pendingTabs -= 1
     }
-    this.bySession.set(sessionId, tab)
-    this.consoleBuffers.set(tabId, [])
-    this.tabs.set(tabId, tab)
-    entry.tabs.set(tabId, tab)
-    entry.activeTabId = tabId
-    // Both domain enables are independent; on a fresh target each cold round
-    // trip is tens of milliseconds, so don't serialise them.
-    await Promise.all([
-      this.cdp.send('Page.enable', {}, sessionId).catch(() => {}),
-      this.cdp.send('Runtime.enable', {}, sessionId).catch(() => {}),
-    ])
-    await this.installVisualTracker(tab)
-    return tab
+  }
+
+  /**
+   * Undo a partial attach. Best-effort and never throws: the original failure
+   * is what the caller must see. Detaching first releases the flattened
+   * session, then closing the target reclaims the renderer process; both are
+   * attempted even if the first one fails.
+   */
+  async rollbackAttach(targetId, sessionId) {
+    if (sessionId) {
+      try {
+        await this.cdp.send('Target.detachFromTarget', { sessionId })
+      } catch {
+        // session already gone
+      }
+    }
+    if (targetId) {
+      try {
+        await this.cdp.send('Target.closeTarget', { targetId })
+      } catch {
+        // target already gone
+      }
+    }
   }
 
   async ensureTab(owner, tabId) {
