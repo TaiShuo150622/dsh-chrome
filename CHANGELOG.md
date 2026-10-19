@@ -11,6 +11,11 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.10] - 2026-10-19
+
+- 结构重构批次：owner-aware context API、viewer per-context access、mutating 单一来源、runtime/artifact store/headless events 拆分
+- chrome_verify 明确 headless-only，不再假装支持 backend
+
 ## [0.2.9] - 2026-10-19
 
 - chrome_verify 移到 src/tools-verify.js（步骤解释/artifacts 独立）
