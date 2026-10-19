@@ -16,11 +16,10 @@ import { loadConfig } from './src/config.js'
 import { HeadlessContextRouter } from './src/headless-contexts.js'
 import { BrowserLeaseManager } from './src/lease.js'
 import { createUpdateChecker } from './src/update.js'
-import { registerContextViewer } from './src/context-viewer.js'
+import { createViewerRuntime } from './src/runtime.js'
 import { BridgeServer } from './src/bridge.js'
 import { HeadlessDriver, headlessSupported } from './src/headless.js'
 import { ensureInstallAssets } from './src/install.js'
-import { registerLiveView, unregisterLiveView } from './src/liveview.js'
 import { wrapToolsForOperationLog } from './src/operation-log.js'
 import { chromeTools } from './src/tools.js'
 
@@ -149,30 +148,29 @@ export function apply(ctx) {
 
   ctx.effect(() => {
     const webServer = ctx.get('webServer')
-    let viewer = null
-    if (webServer) {
-      registerLiveView({ webServer, home, logger })
-      viewer = registerContextViewer({
-        webServer,
-        home,
-        logger,
-        getContext: (contextId) => {
-          const ctx = contexts.get(contextId)
-          if (!ctx) return null
-          const driver = contexts.driverFor(contextId)
-          return driver ? { driver, owner: ctx.owner } : null
-        },
-      })
-      contextViewer.current = viewer
-    } else {
+    if (!webServer) {
       logger?.warn?.('dsh-chrome: webServer is not available; the live viewer is disabled')
+      return () => {}
     }
+    const runtime = createViewerRuntime({
+      webServer,
+      home,
+      logger,
+      getContext: (contextId) => {
+        const ctx = contexts.get(contextId)
+        if (!ctx) return null
+        const driver = contexts.driverFor(contextId)
+        return driver ? { driver, owner: ctx.owner } : null
+      },
+    })
+    contextViewer.current = runtime.viewer
     return () => {
       try {
-        viewer?.dispose()
-      } catch {}
+        runtime.dispose()
+      } catch {
+        // unloading continues
+      }
       contextViewer.current = null
-      unregisterLiveView()
     }
   })
 

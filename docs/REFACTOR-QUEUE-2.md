@@ -21,7 +21,7 @@
   - `test/tool-metadata.mjs` 不再正则扫描 `src/tools.js`，改为从实际工具定义/抽出模块校验；
   - 给有状态但不是 mutating 的工具（capture/screencast/context）补显式说明或 metadata；
   - 全量测试。
-- [ ] Q10 index runtime 化（小步）
+- [x] Q10 index runtime 化（小步）
   - 新建 `src/runtime.js`，先只收拢「contextViewer + liveview」注册和 dispose（不一次性搬 bridge/tools）；
   - `index.js` 的 webServer effect 改为调用 runtime；清理顺序不变；
   - 全量测试。
