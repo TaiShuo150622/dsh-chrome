@@ -403,6 +403,153 @@ check(
   ),
 )
 
+// ------------------------------------------- H5 sensitive field page actions
+// The page actions run inside Chrome in production; here they are called
+// directly with a minimal fake DOM so the fail-closed decision (and that the
+// value is never returned for a sensitive field) is unit-tested without Chrome.
+class FakeInput {
+  constructor(attrs = {}) {
+    this.tagName = 'INPUT'
+    this.attrs = attrs
+    this._value = attrs.value || ''
+    this.events = []
+    this.focused = false
+  }
+  get value() {
+    return this._value
+  }
+  set value(next) {
+    this._value = String(next)
+  }
+  getAttribute(name) {
+    return this.attrs[name] ?? null
+  }
+  focus() {
+    this.focused = true
+  }
+  getBoundingClientRect() {
+    return { left: 0, top: 0, width: 10, height: 10 }
+  }
+  dispatchEvent(event) {
+    this.events.push(event.type)
+    return true
+  }
+  get form() {
+    return null
+  }
+}
+class FakeTextArea extends FakeInput {
+  constructor(attrs = {}) {
+    super(attrs)
+    this.tagName = 'TEXTAREA'
+  }
+}
+class FakeKeyboardEvent {
+  constructor(type, init = {}) {
+    this.type = type
+    this.key = init.key
+  }
+}
+const bodyElement = {
+  tagName: 'BODY',
+  events: [],
+  getBoundingClientRect() {
+    return { left: 0, top: 0, width: 0, height: 0 }
+  },
+  dispatchEvent(event) {
+    this.events.push(event.type)
+    return true
+  },
+}
+let pageElement = null
+sandbox.HTMLInputElement = FakeInput
+sandbox.HTMLTextAreaElement = FakeTextArea
+sandbox.Event = class {
+  constructor(type) {
+    this.type = type
+  }
+}
+sandbox.KeyboardEvent = FakeKeyboardEvent
+sandbox.window = sandbox
+sandbox.document = {
+  body: bodyElement,
+  querySelector: () => pageElement,
+  activeElement: bodyElement,
+}
+
+const detectorCases = [
+  [{ type: 'password' }, 'password'],
+  [{ name: 'user_password' }, 'password'],
+  [{ autocomplete: 'current-password' }, 'password'],
+  [{ name: 'otp' }, 'otp'],
+  [{ autocomplete: 'one-time-code' }, 'otp'],
+  [{ placeholder: 'Verification code' }, 'otp'],
+  [{ autocomplete: 'cc-number' }, 'payment'],
+  [{ name: 'card_number' }, 'payment'],
+  [{ name: 'cvv' }, 'payment'],
+]
+for (const [attrs, expected] of detectorCases) {
+  const info = sandbox.sensitiveInputInfo(new FakeInput(attrs))
+  check(
+    `sensitive detector: ${JSON.stringify(attrs)} -> ${expected}`,
+    info?.sensitive === expected,
+    JSON.stringify(info),
+  )
+}
+check('sensitive detector ignores a normal text field', sandbox.sensitiveInputInfo(new FakeInput({ type: 'text', name: 'name' })) === null)
+
+const passwordField = new FakeInput({ type: 'password', name: 'password' })
+pageElement = passwordField
+sandbox.document.activeElement = passwordField
+const refusedType = sandbox.typeIntoRef(1, 'DSH_SENTINEL_PASSWORD', false, false, '', false)
+check(
+  'type into a password field without approval is refused before any write',
+  refusedType?.reason === 'SENSITIVE_FIELD' && passwordField.value === '' && passwordField.events.length === 0,
+  JSON.stringify(refusedType),
+)
+check('the refusal does not leak typed text', JSON.stringify(refusedType).includes('DSH_SENTINEL_PASSWORD') === false)
+const approvedType = sandbox.typeIntoRef(1, 'DSH_SENTINEL_PASSWORD', false, false, '', true)
+check(
+  'type into a password field after approval writes but returns no value',
+  approvedType?.ok === true && approvedType.sensitive === 'password' && !Object.hasOwn(approvedType, 'value'),
+  JSON.stringify(approvedType),
+)
+check('the approved result does not echo the secret', JSON.stringify(approvedType).includes('DSH_SENTINEL_PASSWORD') === false)
+
+const otpField = new FakeInput({ name: 'otp' })
+pageElement = otpField
+const refusedOtp = sandbox.typeIntoRef(2, '123456', false, false, '', false)
+check('type into an OTP field is refused without approval', refusedOtp?.reason === 'SENSITIVE_FIELD' && otpField.value === '')
+
+const cardField = new FakeInput({ autocomplete: 'cc-number' })
+pageElement = cardField
+const refusedCard = sandbox.typeIntoRef(3, '4242424242424242', false, false, '', false)
+check('type into a payment field is refused without approval', refusedCard?.reason === 'SENSITIVE_FIELD' && cardField.value === '')
+
+const normalField = new FakeInput({ type: 'text', name: 'name' })
+pageElement = normalField
+const normalType = sandbox.typeIntoRef(4, 'hello', false, false, '', false)
+check('a normal text field still returns its value', normalType?.ok === true && normalType.value === 'hello')
+
+const eventsBeforePress = passwordField.events.length
+const refusedPress = sandbox.pressKey('X', false)
+check(
+  'press on a focused password field without approval dispatches no key',
+  refusedPress?.reason === 'SENSITIVE_FIELD' && passwordField.events.length === eventsBeforePress,
+  JSON.stringify(refusedPress),
+)
+const approvedPress = sandbox.pressKey('X', true)
+check(
+  'press on a focused password field after approval dispatches keys',
+  approvedPress?.ok === true &&
+    approvedPress.sensitive === 'password' &&
+    passwordField.events.length === eventsBeforePress + 3,
+  JSON.stringify(approvedPress),
+)
+sandbox.document.activeElement = bodyElement
+const bodyPress = sandbox.pressKey('X', false)
+check('press outside a sensitive field needs no approval', bodyPress?.ok === true && !bodyPress.sensitive)
+
 // ------------------------------------------------------- per-method dispatch
 const pageCases = [
   ['tab.snapshot', { maxChars: 1000, owner: 's1' }, { title: 'T', url: 'u', controls: [], text: 'x', truncated: false }],

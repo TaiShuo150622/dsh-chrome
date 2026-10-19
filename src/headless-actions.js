@@ -227,6 +227,7 @@ export function createHeadlessActions({ error, safeTabUrl, visualProbeEnabled })
           Boolean(params.replace),
           Boolean(params.submit),
           visualProbeEnabled,
+          params.sensitiveApproved === true,
         ]),
       (value) => value?.ok === true && value.changed === false && value.submitted === false,
       (before) => typeProbeEligible(before),
@@ -236,7 +237,7 @@ export function createHeadlessActions({ error, safeTabUrl, visualProbeEnabled })
     )
     if (!result?.ok) throw error(result?.code || 'REF_NOT_FOUND', result?.message || 'type failed')
     await driver.autoPointer(tab, params, 'type')
-    return { ok: true, value: result.value, submitted: result.submitted, tabId: tab.tabId }
+    return { ok: true, value: result.value, submitted: result.submitted, tabId: tab.tabId, ...(result.sensitive ? { sensitive: result.sensitive } : {}) }
   })
 
   actions.set('tab.clickAt', async (driver, params, owner) => {
@@ -314,6 +315,15 @@ export function createHeadlessActions({ error, safeTabUrl, visualProbeEnabled })
   actions.set('tab.press', async (driver, params, owner) => {
     const tab = await driver.ensureTab(owner, params.tabId)
     const key = String(params.key || '')
+    // H5: a key press while a password/OTP/payment field holds focus can enter
+    // or submit a secret. Refuse before dispatching any CDP key event unless
+    // the provider already obtained a hard confirmation for this call.
+    if (params.sensitiveApproved !== true) {
+      const active = await driver.pageAction(tab, 'activeFieldInfo', [])
+      if (active?.sensitive) {
+        throw error('SENSITIVE_FIELD', `key press targets a sensitive ${active.sensitive} field; hard confirmation is required`)
+      }
+    }
     const keyCode = key === 'Enter' ? 13 : key === 'Tab' ? 9 : key === 'Escape' ? 27 : 0
     // A key press with no UA default action outside an editable field cannot
     // paint unless a page handler changes something the tracker sees, so the

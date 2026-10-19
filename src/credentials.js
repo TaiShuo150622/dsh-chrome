@@ -44,6 +44,9 @@ export const CREDENTIAL_BACKENDS = Object.freeze({
 export const CREDENTIAL_ERROR_CODES = Object.freeze({
   NOT_FOUND: 'CREDENTIAL_NOT_FOUND',
   UNSUPPORTED_PLATFORM: 'UNSUPPORTED_PLATFORM',
+  TARGET_REQUIRED: 'CREDENTIAL_TARGET_REQUIRED',
+  TARGET_MISMATCH: 'CREDENTIAL_TARGET_MISMATCH',
+  INSECURE_TARGET: 'CREDENTIAL_INSECURE_TARGET',
 })
 
 export class CredentialError extends Error {
@@ -104,6 +107,57 @@ function normalizeOrigin(value) {
     throw new TypeError('origin must not contain a path, query or fragment')
   }
   return parsed.origin
+}
+
+// The fill destination is always explicit: a credential registered for
+// (scope, origin) may only be used on that exact scope+origin, and plain http is
+// accepted only for loopback (local test servers). Everything else fails closed
+// before the Keychain is read.
+export function isLoopbackHost(hostname) {
+  const host = String(hostname ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+  if (!host) return false
+  if (host === 'localhost' || host.endsWith('.localhost')) return true
+  if (host === '::1') return true
+  return /^127(?:\.\d{1,3}){3}$/.test(host)
+}
+
+function normalizeFillTarget(target) {
+  if (
+    !target ||
+    typeof target !== 'object' ||
+    Array.isArray(target) ||
+    typeof target.origin !== 'string' ||
+    !target.origin.trim() ||
+    typeof target.scope !== 'string' ||
+    !target.scope.trim()
+  ) {
+    throw new CredentialError(
+      CREDENTIAL_ERROR_CODES.TARGET_REQUIRED,
+      'credential fill requires an explicit target { origin, scope }',
+    )
+  }
+  let origin
+  let scope
+  try {
+    origin = normalizeOrigin(target.origin)
+    scope = normalizeScope(target.scope)
+  } catch {
+    throw new CredentialError(
+      CREDENTIAL_ERROR_CODES.TARGET_REQUIRED,
+      'credential fill requires an exact target origin and scope',
+    )
+  }
+  const parsed = new URL(origin)
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopbackHost(parsed.hostname))) {
+    throw new CredentialError(
+      CREDENTIAL_ERROR_CODES.INSECURE_TARGET,
+      'credential fill requires https (plain http is allowed only for loopback)',
+    )
+  }
+  return { origin, scope }
 }
 
 function normalizeUsername(value) {
@@ -299,10 +353,21 @@ export class CredentialStore {
    * time; it is not a per-call argument, so a caller cannot smuggle in a
    * callback that captures the plaintext. This MVP wires no sink at all.
    * The only return value is `{ filled: true }` — no secret, no metadata echo.
+   *
+   * The caller must name the destination `{ origin, scope }` on every fill
+   * (H5): it has to match the registered credential exactly, and https is
+   * required except for loopback. Validation happens before the Keychain read.
    */
-  async fill(credentialId) {
+  async fill(credentialId, target) {
     const entry = this.#entry(credentialId)
     this.#assertSupported()
+    const destination = normalizeFillTarget(target)
+    if (destination.origin !== entry.origin || destination.scope !== entry.scope) {
+      throw new CredentialError(
+        CREDENTIAL_ERROR_CODES.TARGET_MISMATCH,
+        'credential fill target does not match the registered scope/origin',
+      )
+    }
     if (!this.#fillSink) {
       // Programming error, not a credential error: this MVP deliberately has
       // no implicit "fill" that would claim success without touching a page.

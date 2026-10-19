@@ -71,6 +71,22 @@ export function createInputTools({
     }
   }
 
+  // H5: the browser backend refuses to touch a password/OTP/payment field
+  // (SENSITIVE_FIELD) until the provider has asked the human. The confirmation
+  // never contains the text, key, field value or any page label, and approval
+  // is one-shot: the retry carries `sensitiveApproved` for this call only.
+  async function confirmSensitiveInput(exec, toolName, site, actionLabel) {
+    await hardConfirmAsk(exec, toolName, {
+      header: '向敏感字段输入（密码 / OTP / 支付）',
+      question: `允许在 ${site?.origin || '当前页面'} 上向被识别为密码/OTP/支付字段的控件执行一次「${actionLabel}」吗？`,
+      detail:
+        '浏览器把目标字段识别为敏感字段。输入内容不会出现在工具结果里，也不会写入日志或审计；' +
+        '允许只对本次调用生效，不会保存或自动填入任何凭据。',
+      timeoutMs: evaluateConfirmTimeoutMs,
+      site,
+    })
+  }
+
   const select = {
     name: 'chrome_select',
     mutating: true,
@@ -343,24 +359,37 @@ export function createInputTools({
         ),
     },
     async execute(args, exec) {
-      await guard(exec, 'chrome_type', `type into ref ${args?.ref}`, { tabId: args?.tabId })
-      const result = await call('tab.type', {
-        ref: args?.ref,
-        selector: args?.selector,
-        frameRef: args?.frameRef,
-        text: String(args?.text ?? ''),
-        replace: Boolean(args?.replace),
-        submit: Boolean(args?.submit),
-        snapshot: Boolean(args?.snapshot),
-        dialog: args?.dialog,
-        tabId: args?.tabId,
-        owner: ownerOf(exec),
-      })
+      const site = await guard(exec, 'chrome_type', `type into ref ${args?.ref}`, { tabId: args?.tabId })
+      const typeOnce = (sensitiveApproved) =>
+        call('tab.type', {
+          ref: args?.ref,
+          selector: args?.selector,
+          frameRef: args?.frameRef,
+          text: String(args?.text ?? ''),
+          replace: Boolean(args?.replace),
+          submit: Boolean(args?.submit),
+          snapshot: Boolean(args?.snapshot),
+          dialog: args?.dialog,
+          tabId: args?.tabId,
+          owner: ownerOf(exec),
+          sensitiveApproved,
+        })
+      let result
+      try {
+        result = await typeOnce(false)
+      } catch (error) {
+        // The backend refuses before focus/value write. Ask the human, then
+        // retry exactly once with the per-call approval flag. Any other error
+        // (including a denied/timed-out confirmation) propagates unchanged.
+        if (error?.code !== 'SENSITIVE_FIELD') throw error
+        await confirmSensitiveInput(exec, 'chrome_type', site, '输入文本')
+        result = await typeOnce(true)
+      }
       // Typed text can be a password, OTP or card number, so the field value
       // must never reach the model. The driver/extension still return it for
       // their own probes; the tool contract deliberately does not.
       if (!result || typeof result !== 'object') return result
-      const { value: _fieldValue, ...safe } = result
+      const { value: _fieldValue, field: _fieldInfo, ...safe } = result
       return safe
     },
   }
@@ -412,8 +441,27 @@ export function createInputTools({
       render: (_args, value) => renderText(`Pressed ${value.key} on <${value.target}>${value.page ? '\n[page snapshot attached]' : ''}`),
     },
     async execute(args, exec) {
-      await guard(exec, 'chrome_press', `press ${args?.key}`, { tabId: args?.tabId })
-      return call('tab.press', { key: String(args?.key ?? ''), snapshot: Boolean(args?.snapshot), dialog: args?.dialog, tabId: args?.tabId, owner: ownerOf(exec) })
+      const site = await guard(exec, 'chrome_press', `press ${args?.key}`, { tabId: args?.tabId })
+      const pressOnce = (sensitiveApproved) =>
+        call('tab.press', {
+          key: String(args?.key ?? ''),
+          snapshot: Boolean(args?.snapshot),
+          dialog: args?.dialog,
+          tabId: args?.tabId,
+          owner: ownerOf(exec),
+          sensitiveApproved,
+        })
+      let result
+      try {
+        result = await pressOnce(false)
+      } catch (error) {
+        if (error?.code !== 'SENSITIVE_FIELD') throw error
+        await confirmSensitiveInput(exec, 'chrome_press', site, '按键')
+        result = await pressOnce(true)
+      }
+      if (!result || typeof result !== 'object') return result
+      const { field: _fieldInfo, ...safe } = result
+      return safe
     },
   }
 

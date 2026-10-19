@@ -40,6 +40,47 @@ export function createLoginTool({ bridge, contexts = null, ownerOf = null, hardC
     throw new BridgeError('UNSUPPORTED_BACKEND', 'this provider has no headless driver (headless is unavailable)')
   }
 
+  // H5: the confirmation card names the exact page a human is about to see,
+  // with the full URL and the origin called out separately. Embedded
+  // credentials are stripped from the preview (the driver gets the clean URL),
+  // and only http(s) targets are shown as themselves.
+  function displayLoginTarget(raw) {
+    const text = String(raw ?? '').trim()
+    if (!text) return { url: 'about:blank', origin: '', note: '', invalid: false }
+    try {
+      const parsed = new URL(text)
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return { url: 'about:blank', origin: '', note: `只允许 http(s)：${parsed.protocol}`, invalid: true }
+      }
+      parsed.username = ''
+      parsed.password = ''
+      return { url: parsed.toString(), origin: parsed.origin, note: '', invalid: false }
+    } catch {
+      return { url: 'about:blank', origin: '', note: '不是合法 URL', invalid: true }
+    }
+  }
+
+  // showVisible() itself opens the active headless tab (or about:blank), so the
+  // card must describe that same page. A stale resumeUrl is not a preview.
+  function currentHeadlessUrl(driver) {
+    try {
+      for (const tab of driver?.tabs?.values?.() || []) {
+        if (tab?.url && tab.url !== 'about:blank') return tab.url
+      }
+    } catch {
+      // no tab list on this driver shape
+    }
+    return ''
+  }
+
+  function targetCard(target) {
+    return (
+      `\n目标 URL: ${target.url}` +
+      `\nOrigin: ${target.origin || '(无)'}` +
+      (target.note ? `\n${target.note}` : '')
+    )
+  }
+
   return {
     name: 'chrome_headless_login',
     description:
@@ -81,11 +122,16 @@ export function createLoginTool({ bridge, contexts = null, ownerOf = null, hardC
       const driver = resolveDriver(args, exec)
       const op = String(args?.op || 'status')
       if (op === 'start') {
+        const target = displayLoginTarget(args?.url)
+        if (args?.url && target.invalid) {
+          throw new BridgeError('PROTECTED_PAGE', 'Only http(s) URLs are allowed.')
+        }
         await hardConfirmAsk(exec, 'chrome_headless_login', {
           header: '打开可见 Chrome 登录窗口（持久 profile）',
-          question: '允许打开一个可见的专用 Chrome 窗口用于一次性登录吗？',
+          question: `允许打开一个可见的专用 Chrome 窗口用于一次性登录吗？（${target.origin || target.url}）`,
           detail:
-            '登录窗口使用 headless 专用 profile（' +
+            targetCard(target) +
+            '\n登录窗口使用 headless 专用 profile（' +
             (driver.loginProfile || '~/.dsh/cache/dsh-chrome/headless/profile') +
             '），cookie/登录态会落在这个 profile 里，之后 backend:"headless" 会复用它；不影响你日常 Chrome。完成登录后务必调用 op:"finish" 关掉窗口。',
           timeoutMs: evaluateConfirmTimeoutMs,
@@ -93,17 +139,24 @@ export function createLoginTool({ bridge, contexts = null, ownerOf = null, hardC
           // about:blank tab and loginStart refuses while any tab is open.
           site: null,
         })
-        return driver.loginStart({ url: args?.url })
+        return driver.loginStart({ url: target.url })
       }
       if (op === 'show') {
+        const requested = args?.url ? displayLoginTarget(args.url) : null
+        if (requested?.invalid) {
+          throw new BridgeError('PROTECTED_PAGE', 'Only http(s) URLs are allowed.')
+        }
+        const target = requested || displayLoginTarget(currentHeadlessUrl(driver))
         await hardConfirmAsk(exec, 'chrome_headless_login', {
           header: '把后台浏览器显示到屏幕（人工操作）',
-          question: '允许暂停 headless 浏览器，并把当前页面在一个可见 Chrome 窗口中打开，供你手动操作吗？',
-          detail: '用于登录/CAPTCHA/支付/OTP 等必须人工的步骤；操作完调用 op:"finish" 关闭可见窗口，下一次 backend:"headless" 调用会回到同一页面。',
+          question: `允许暂停 headless 浏览器，并把当前页面在一个可见 Chrome 窗口中打开，供你手动操作吗？（${target.origin || target.url}）`,
+          detail:
+            targetCard(target) +
+            '\n用于登录/CAPTCHA/支付/OTP 等必须人工的步骤；操作完调用 op:"finish" 关闭可见窗口，下一次 backend:"headless" 调用会回到同一页面。',
           timeoutMs: evaluateConfirmTimeoutMs,
           site: null,
         })
-        return driver.showVisible({ url: args?.url })
+        return driver.showVisible({ url: requested ? requested.url : undefined })
       }
       if (op === 'finish') return driver.loginFinish()
       return driver.loginStatus()

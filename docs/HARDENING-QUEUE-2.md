@@ -9,7 +9,7 @@
   - `chrome_download` 只返回本会话启动后/当前窗口可见的下载，或显式 `includeHistory:true` + hardConfirm；默认不读全机历史。
   - `chrome_audit` 按 session/owner 过滤（若记录里有）；无 owner 的旧截图默认隐藏，提供显式排障开关并审计。
   - 补双会话测试；错误语义不变。
-- [ ] H5 密码/OTP 字段硬确认
+- [x] H5 密码/OTP 字段硬确认
   - 扩展/headless 的 type/press/verify.type 识别 password/OTP/payment 字段；命中走 `hardConfirmAsk` 或 credential 模式，不自动明文输入。
   - `chrome_headless_login` 确认卡显示完整 URL/origin；`credentials.fill` 接收 target origin/scope，默认只允许 https（loopback 例外）。
   - 补测试：敏感字段确认/拒绝、不泄漏值、origin 不匹配失败。

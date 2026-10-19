@@ -222,7 +222,17 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
 
   list.push(createLeaseTool({ leases, ownerOf, outputSchema, renderText, normalizeLeaseError }))
 
-  list.push(createVerifyTool({ contexts, artifactStore, ownerOf, fsp, randomUUID, outputSchema, renderText }))
+  list.push(createVerifyTool({
+    contexts,
+    artifactStore,
+    ownerOf,
+    fsp,
+    randomUUID,
+    outputSchema,
+    renderText,
+    hardConfirmAsk,
+    evaluateConfirmTimeoutMs,
+  }))
 
   // ------------------------------------------------ 4h-2. pointer/annotate
   list.push(screencastTools.pointer)

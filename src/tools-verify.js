@@ -3,7 +3,43 @@
  * out of the main tool file so its step interpreter and artifact layout can be
  * tested without loading every chrome_* tool.
  */
-export function createVerifyTool({ contexts, artifactStore, ownerOf, fsp, randomUUID, outputSchema, renderText }) {
+export function createVerifyTool({
+  contexts,
+  artifactStore,
+  ownerOf,
+  fsp,
+  randomUUID,
+  outputSchema,
+  renderText,
+  hardConfirmAsk = null,
+  evaluateConfirmTimeoutMs = 120000,
+}) {
+  // H5: a verify `type` step is model-supplied input too. The driver refuses a
+  // password/OTP/payment target with SENSITIVE_FIELD; only after this one-shot
+  // hard confirmation is the step retried. The step text never enters the card.
+  async function confirmSensitiveType(exec, targetUrl) {
+    if (typeof hardConfirmAsk !== 'function') {
+      const error = new Error('hard confirmation service is unavailable; refusing to type into a sensitive field')
+      error.code = 'APPROVAL_DENIED'
+      throw error
+    }
+    let origin = ''
+    try {
+      origin = new URL(String(targetUrl)).origin
+    } catch {
+      origin = ''
+    }
+    await hardConfirmAsk(exec, 'chrome_verify', {
+      header: 'verify：向敏感字段输入（密码 / OTP / 支付）',
+      question: `允许 verify 步骤在 ${origin || '当前页面'} 上向被识别为密码/OTP/支付字段的控件输入一次明文吗？`,
+      detail:
+        '该字段被浏览器识别为敏感字段。步骤文本不会出现在结果、报告或审计里；' +
+        '允许只对本次步骤生效，不会保存或自动填入任何凭据。',
+      timeoutMs: evaluateConfirmTimeoutMs,
+      site: targetUrl ? { origin, url: String(targetUrl), tabId: null } : null,
+    })
+  }
+
   return {
       name: 'chrome_verify',
       description:
@@ -139,7 +175,20 @@ export function createVerifyTool({ contexts, artifactStore, ownerOf, fsp, random
               continue
             }
             if (action === 'type') {
-              await driver.request('tab.type', { owner, selector: step.selector, ref: step.ref, text: String(step.text ?? ''), replace: step.replace !== false })
+              const typeParams = {
+                owner,
+                selector: step.selector,
+                ref: step.ref,
+                text: String(step.text ?? ''),
+                replace: step.replace !== false,
+              }
+              try {
+                await driver.request('tab.type', typeParams)
+              } catch (error) {
+                if (error?.code !== 'SENSITIVE_FIELD') throw error
+                await confirmSensitiveType(exec, lastUrl || step.url || '')
+                await driver.request('tab.type', { ...typeParams, sensitiveApproved: true })
+              }
               continue
             }
             if (action === 'assert') {

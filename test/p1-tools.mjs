@@ -56,6 +56,11 @@ async function waitFor(predicate, timeoutMs, label) {
 }
 
 const requests = []
+// H5 fake backend: ref 42 (typing) and key "X" (pressing) model a password
+// field. They refuse until the provider retries with `sensitiveApproved`, so
+// the test can assert the confirmation boundary rather than a typed result.
+const sensitiveTyped = []
+let sensitivePressed = 0
 await bridge.start()
 const host = spawn(process.execPath, [path.join(root, 'host', 'host.mjs')], {
   env: { ...process.env, DSH_HOME: home },
@@ -96,6 +101,32 @@ host.stdout.on(
       else if (params?.op === 'new') result = { tabId: 9, url: params.url || 'about:blank', title: 'New tab' }
       else result = { closed: params.tabId ?? 9, remaining: 0 }
     }
+    if (method === 'tab.type' && params?.ref === 42) {
+      if (params?.sensitiveApproved !== true) {
+        host.stdin.write(
+          encodeNative({
+            id: message.id,
+            error: { code: 'SENSITIVE_FIELD', message: 'target is a sensitive password field' },
+          }),
+        )
+        return
+      }
+      sensitiveTyped.push(String(params.text ?? ''))
+      result = { ok: true, submitted: false, tabId: 7, sensitive: 'password' }
+    }
+    if (method === 'tab.press' && params?.key === 'X') {
+      if (params?.sensitiveApproved !== true) {
+        host.stdin.write(
+          encodeNative({
+            id: message.id,
+            error: { code: 'SENSITIVE_FIELD', message: 'key press targets a sensitive password field' },
+          }),
+        )
+        return
+      }
+      sensitivePressed += 1
+      result = { ok: true, key: 'X', target: 'input', sensitive: 'password' }
+    }
     host.stdin.write(
       encodeNative(
         result
@@ -116,11 +147,28 @@ const approvalService = {
   },
 }
 
+// H5 hard confirmation. Its card must never echo the text being typed.
+let confirmMode = 'allowed'
+const confirmations = []
+const userQuestions = () => ({
+  ask: async (request) => {
+    const question = request?.questions?.[0] || {}
+    confirmations.push({
+      header: String(question.header || ''),
+      question: String(question.question || ''),
+      detail: String(question.detail || ''),
+    })
+    return { answers: [{ id: 'confirm', selected: [confirmMode === 'allowed' ? '允许一次' : '拒绝'] }] }
+  },
+})
+
 const tools = chromeTools({
   bridge,
   attachments: () => null,
   assets: () => ({ extensionId: 'test', extensionDir: '/tmp/ext', nativeManifestPath: '/tmp/nm', instructionsPath: '/tmp/i.md' }),
   approval: () => approvalService,
+  userQuestions,
+  config: () => ({ evaluateConfirmTimeoutMs: 5000 }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
 check('forty-six tools registered', tools.length === 46, tools.map((t) => t.name).join(', '))
@@ -144,6 +192,66 @@ check('type params reach the extension', requests.at(-1)?.params?.text === 'hell
 
 const press = await byName.chrome_press.execute({ key: 'Enter' }, exec())
 check('chrome_press executes', press.key === 'Enter')
+
+// Sensitive field: one hard confirmation, then a retry carrying the per-call
+// approval flag. The typed text is never echoed in the result or the card.
+const SENTINEL = 'DSH_SENTINEL_PASSWORD_DO_NOT_USE'
+const beforeSensitive = requests.length
+const confirmationsBefore = confirmations.length
+const sensitive = await byName.chrome_type.execute({ ref: 42, text: SENTINEL, replace: true }, exec())
+check('sensitive type asks exactly one hard confirmation', confirmations.length === confirmationsBefore + 1)
+const sensitiveCard = confirmations.at(-1)
+check(
+  'sensitive confirmation names the field class and target origin',
+  sensitiveCard.header.includes('敏感字段') &&
+    sensitiveCard.question.includes('https://example.com') &&
+    sensitiveCard.question.includes('密码/OTP/支付'),
+  JSON.stringify(sensitiveCard),
+)
+check(
+  'sensitive confirmation and result never echo the typed text',
+  JSON.stringify(sensitiveCard).includes(SENTINEL) === false &&
+    JSON.stringify(sensitive).includes(SENTINEL) === false,
+)
+const sensitiveRequests = requests.slice(beforeSensitive).filter((request) => request.method === 'tab.type')
+check(
+  'sensitive type first refuses then retries with sensitiveApproved',
+  sensitiveRequests.length === 2 &&
+    sensitiveRequests[0].params.sensitiveApproved !== true &&
+    sensitiveRequests[1].params.sensitiveApproved === true,
+  JSON.stringify(sensitiveRequests.map((request) => request.params?.sensitiveApproved)),
+)
+check('only the approved retry reaches the fake password field', sensitiveTyped.length === 1 && sensitiveTyped[0] === SENTINEL)
+check('sensitive type result carries no field value', sensitive.sensitive === 'password' && !Object.hasOwn(sensitive, 'value'))
+
+confirmMode = 'denied'
+const deniedTypedBefore = sensitiveTyped.length
+const deniedRequestsBefore = requests.length
+let sensitiveDenied = null
+try {
+  await byName.chrome_type.execute({ ref: 42, text: SENTINEL, replace: true }, exec())
+} catch (error) {
+  sensitiveDenied = error
+}
+check('a denied sensitive confirmation fails closed', sensitiveDenied?.code === 'APPROVAL_DENIED', String(sensitiveDenied?.code))
+check(
+  'a denied sensitive confirmation never retries with approval',
+  requests
+    .slice(deniedRequestsBefore)
+    .filter((request) => request.method === 'tab.type')
+    .every((request) => request.params.sensitiveApproved !== true),
+)
+check('a denied sensitive confirmation types nothing', sensitiveTyped.length === deniedTypedBefore)
+check('the denial error never echoes the typed text', String(sensitiveDenied?.message || '').includes(SENTINEL) === false)
+confirmMode = 'allowed'
+
+const confirmationsBeforePress = confirmations.length
+const sensitivePress = await byName.chrome_press.execute({ key: 'X' }, exec())
+check(
+  'sensitive press confirms once and retries with approval',
+  confirmations.length === confirmationsBeforePress + 1 && sensitivePress.sensitive === 'password' && sensitivePressed === 1,
+  JSON.stringify(sensitivePress),
+)
 
 const scroll = await byName.chrome_scroll.execute({ direction: 'down', amount: 500 }, exec())
 check('chrome_scroll executes', scroll.y === 600)

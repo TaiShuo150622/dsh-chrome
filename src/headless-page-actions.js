@@ -152,11 +152,53 @@ export function clickPage(ref, selector, clickCount, button) {
   }
 }
 
-export function typePage(ref, selector, text, replace, submit, probe) {
+// Page-side detector for password/OTP/payment fields (H5). Self-contained
+// because pageCall() serializes it into every page evaluation; it returns only
+// tag/type/reason, never the value, label, name or id.
+export function sensitiveInputInfo(element) {
+  if (!element) return null
+  const tag = String(element.tagName || '').toLowerCase()
+  if (tag !== 'input' && tag !== 'textarea') return null
+  const attr = (name) => String(element.getAttribute?.(name) || '').toLowerCase()
+  const type = attr('type')
+  const autocomplete = attr('autocomplete')
+  const hay = `${attr('name')} ${attr('id')} ${attr('placeholder')} ${attr('aria-label')} ${autocomplete}`
+  if (type === 'password' || autocomplete.includes('password')) {
+    return { tag, type: type || 'text', sensitive: 'password' }
+  }
+  if (
+    autocomplete.startsWith('cc-') ||
+    /(^|[^a-z])(?:card|cc-?num|cc-?name|cc-?exp|cvv2?|cvc|payment|billing)([^a-z]|$)/.test(hay)
+  ) {
+    return { tag, type: type || 'text', sensitive: 'payment' }
+  }
+  if (/(^|[^a-z])(?:otp|totp|one[-_ ]?time|verification[-_ ]?code|auth(?:entication)?[-_ ]?code|mfa|2fa)([^a-z]|$)/.test(hay)) {
+    return { tag, type: type || 'text', sensitive: 'otp' }
+  }
+  if (/(^|[^a-z])(?:pass(?:word|wd|phrase)?|pwd)([^a-z]|$)/.test(hay)) {
+    return { tag, type: type || 'text', sensitive: 'password' }
+  }
+  return null
+}
+
+export function typePage(ref, selector, text, replace, submit, probe, sensitiveApproved) {
   const el = selector
     ? document.querySelector(selector)
     : document.querySelector(`[data-dsh-ref="${Number(ref)}"]`)
   if (!el) return { ok: false, code: 'REF_NOT_FOUND', message: `no element for ${selector || `ref ${ref}`}` }
+  const tag = el.tagName.toLowerCase()
+  // H5: fail closed before focus/value write. Without the provider's approval
+  // flag the secret never reaches the page, and the refusal carries no value.
+  const field = sensitiveInputInfo(el)
+  if (field && sensitiveApproved !== true) {
+    return {
+      ok: false,
+      code: 'SENSITIVE_FIELD',
+      sensitive: field.sensitive,
+      field: { tag: field.tag, type: field.type, sensitive: field.sensitive },
+      message: `target is a sensitive ${field.sensitive} field; hard confirmation is required before typing`,
+    }
+  }
   // The pre-action tracker snapshot travels inside this same evaluate when the
   // caller asks for it (docs/HEADLESS.md §4.1.16): the type always has to make
   // one page round trip anyway, so the probe costs the page-side snapshot work
@@ -176,7 +218,6 @@ export function typePage(ref, selector, text, replace, submit, probe) {
   const caretBefore = [el.selectionStart, el.selectionEnd]
   let changeEvents = 0
   el.focus()
-  const tag = el.tagName.toLowerCase()
   if (tag === 'input' || tag === 'textarea') {
     const proto = tag === 'input' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype
     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
@@ -211,7 +252,17 @@ export function typePage(ref, selector, text, replace, submit, probe) {
     valueAfter !== valueBefore ||
     caretAfter[0] !== caretBefore[0] ||
     caretAfter[1] !== caretBefore[1]
+  if (field) return { ok: true, submitted, changed, changeEvents, probeBefore, sensitive: field.sensitive }
   return { ok: true, value: valueAfter.slice(0, 200), submitted, changed, changeEvents, probeBefore }
+}
+
+// H5: used before a keyboard press so the headless action can ask the provider
+// for a hard confirmation when focus sits in a password/OTP/payment field.
+export function activeFieldInfo() {
+  const active = document.activeElement
+  const field = sensitiveInputInfo(active)
+  if (!field) return { ok: true, active: false, sensitive: null }
+  return { ok: true, active: true, tag: field.tag, type: field.type, sensitive: field.sensitive }
 }
 
 export function currentSelection(maxChars) {
@@ -356,10 +407,11 @@ export function dragPage(fromRef, toRef) {
   return { ok: true, from: Number(fromRef), to: Number(toRef) }
 }
 
-export const PAGE_HELPERS = { snapshotPage, clickPage, typePage, currentSelection, findPage, selectPage, dragPage }
+export const PAGE_HELPERS = { snapshotPage, clickPage, typePage, currentSelection, findPage, selectPage, dragPage, activeFieldInfo }
 
 // Function.prototype.toString() is not free; serialize each page helper once.
 const helperSources = new Map()
+let sensitiveHelperSource = null
 
 export function pageCall(name, args) {
   let source = helperSources.get(name)
@@ -367,6 +419,9 @@ export function pageCall(name, args) {
     source = PAGE_HELPERS[name].toString()
     helperSources.set(name, source)
   }
-  return `(() => { const fn = ${source}; return fn(...${JSON.stringify(args)}); })()`
+  // A serialized page helper cannot close over module scope, so the sensitive
+  // field detector is embedded as a local binding under the name it calls.
+  sensitiveHelperSource ||= `const sensitiveInputInfo = ${sensitiveInputInfo.toString()};`
+  return `(() => { ${sensitiveHelperSource} const fn = ${source}; return fn(...${JSON.stringify(args)}); })()`
 }
 

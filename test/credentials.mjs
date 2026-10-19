@@ -16,6 +16,7 @@ import {
   CredentialError,
   SECURITY_TIMEOUT_MS,
   createCredentialStore,
+  isLoopbackHost,
   keychainAccountFor,
 } from '../src/credentials.js'
 
@@ -25,6 +26,7 @@ const META = Object.freeze({
   origin: 'https://example.com',
   username: 'alice',
 })
+const TARGET = Object.freeze({ scope: META.scope, origin: META.origin })
 
 let checks = 0
 let failures = 0
@@ -139,7 +141,7 @@ await check('macOS Keychain success hands the secret only to the sink', async ()
   const store = storeWith(exec, { logger, fillSink: sink })
   const meta = store.register(META)
 
-  const result = await store.fill(meta.credentialId)
+  const result = await store.fill(meta.credentialId, TARGET)
 
   assert.equal(sink.calls.length, 1)
   const seen = sink.calls[0]
@@ -177,7 +179,7 @@ await check('Keychain output keeps leading/trailing spaces and strips one traili
   const sink = sinkSpy()
   const store = storeWith(exec, { fillSink: sink })
   const meta = store.register(META)
-  await store.fill(meta.credentialId)
+  await store.fill(meta.credentialId, TARGET)
   assert.equal(sink.calls[0].secret, `  ${SENTINEL}  `)
 })
 
@@ -193,7 +195,7 @@ await check('Keychain not-found (exit 44) fails closed without leaking CLI outpu
   const store = storeWith(exec, { logger, fillSink: sink })
   const meta = store.register(META)
 
-  await expectCredentialError(store.fill(meta.credentialId), CREDENTIAL_ERROR_CODES.NOT_FOUND)
+  await expectCredentialError(store.fill(meta.credentialId, TARGET), CREDENTIAL_ERROR_CODES.NOT_FOUND)
   assert.equal(sink.calls.length, 0)
   noSentinel('log lines', logger.lines.join('\n'))
 })
@@ -204,7 +206,7 @@ await check('a non-zero Keychain exit reported without throwing is not found', a
   const sink = sinkSpy()
   const store = storeWith(exec, { logger, fillSink: sink })
   const meta = store.register(META)
-  await expectCredentialError(store.fill(meta.credentialId), CREDENTIAL_ERROR_CODES.NOT_FOUND)
+  await expectCredentialError(store.fill(meta.credentialId, TARGET), CREDENTIAL_ERROR_CODES.NOT_FOUND)
   assert.equal(sink.calls.length, 0)
   noSentinel('log lines', logger.lines.join('\n'))
 })
@@ -220,7 +222,7 @@ await check('a generic Keychain error is mapped to not-found and never echoes st
   const sink = sinkSpy()
   const store = storeWith(exec, { logger, fillSink: sink })
   const meta = store.register(META)
-  await expectCredentialError(store.fill(meta.credentialId), CREDENTIAL_ERROR_CODES.NOT_FOUND)
+  await expectCredentialError(store.fill(meta.credentialId, TARGET), CREDENTIAL_ERROR_CODES.NOT_FOUND)
   assert.equal(sink.calls.length, 0)
   noSentinel('log lines', logger.lines.join('\n'))
 })
@@ -236,7 +238,7 @@ await check('a missing security CLI is UNSUPPORTED_PLATFORM, not a leaked spawn 
   const sink = sinkSpy()
   const store = storeWith(exec, { logger, fillSink: sink })
   const meta = store.register(META)
-  await expectCredentialError(store.fill(meta.credentialId), CREDENTIAL_ERROR_CODES.UNSUPPORTED_PLATFORM)
+  await expectCredentialError(store.fill(meta.credentialId, TARGET), CREDENTIAL_ERROR_CODES.UNSUPPORTED_PLATFORM)
   assert.equal(sink.calls.length, 0)
   noSentinel('log lines', logger.lines.join('\n'))
 })
@@ -246,7 +248,7 @@ await check('an empty Keychain value is not treated as a credential', async () =
   const sink = sinkSpy()
   const store = storeWith(exec, { fillSink: sink })
   const meta = store.register(META)
-  await expectCredentialError(store.fill(meta.credentialId), CREDENTIAL_ERROR_CODES.NOT_FOUND)
+  await expectCredentialError(store.fill(meta.credentialId, TARGET), CREDENTIAL_ERROR_CODES.NOT_FOUND)
   assert.equal(sink.calls.length, 0)
 })
 
@@ -270,7 +272,7 @@ await check('Windows/Linux are declared, report NOT_SUPPORTED and never execute 
     const meta = store.register(META)
     assert.equal(meta.backend, backend)
     // No sink is configured: the platform error must win over the wiring error.
-    await expectCredentialError(store.fill(meta.credentialId), CREDENTIAL_ERROR_CODES.UNSUPPORTED_PLATFORM)
+    await expectCredentialError(store.fill(meta.credentialId, TARGET), CREDENTIAL_ERROR_CODES.UNSUPPORTED_PLATFORM)
     assert.equal(exec.calls.length, 0, `${platform}: exec must not run`)
     noSentinel(`${platform} log lines`, logger.lines.join('\n'))
   }
@@ -280,8 +282,8 @@ await check('unknown or malformed credential ids fail closed without touching Ke
   const exec = fakeExec()
   const store = storeWith(exec)
   // No sink is configured: lookup failures must still be CREDENTIAL_NOT_FOUND.
-  await expectCredentialError(store.fill(`cred_${'0'.repeat(32)}`), CREDENTIAL_ERROR_CODES.NOT_FOUND)
-  await expectCredentialError(store.fill('not-a-credential-id'), CREDENTIAL_ERROR_CODES.NOT_FOUND)
+  await expectCredentialError(store.fill(`cred_${'0'.repeat(32)}`, TARGET), CREDENTIAL_ERROR_CODES.NOT_FOUND)
+  await expectCredentialError(store.fill('not-a-credential-id', TARGET), CREDENTIAL_ERROR_CODES.NOT_FOUND)
   assert.throws(
     () => store.describe('not-a-credential-id'),
     (error) => error instanceof CredentialError && error.code === CREDENTIAL_ERROR_CODES.NOT_FOUND,
@@ -293,12 +295,75 @@ await check('fill without a helper-internal sink is a programming error and read
   const exec = fakeExec({ stdout: `${SENTINEL}\n` })
   const store = storeWith(exec)
   const meta = store.register(META)
-  await assert.rejects(store.fill(meta.credentialId), (error) => {
+  await assert.rejects(store.fill(meta.credentialId, TARGET), (error) => {
     assert.ok(error instanceof TypeError, 'expected TypeError')
     noSentinel('error message', error.message)
     return true
   })
   assert.equal(exec.calls.length, 0)
+})
+
+await check('fill requires an explicit target and never reads the Keychain without one', async () => {
+  const exec = fakeExec({ stdout: `${SENTINEL}\n` })
+  const sink = sinkSpy()
+  const store = storeWith(exec, { fillSink: sink })
+  const meta = store.register(META)
+  for (const target of [undefined, null, {}, { origin: META.origin }, { scope: META.scope }]) {
+    await expectCredentialError(store.fill(meta.credentialId, target), CREDENTIAL_ERROR_CODES.TARGET_REQUIRED)
+  }
+  assert.equal(exec.calls.length, 0, 'Keychain must not be read without a valid destination')
+  assert.equal(sink.calls.length, 0)
+})
+
+await check('fill rejects a mismatched scope or origin before reading the Keychain', async () => {
+  const exec = fakeExec({ stdout: `${SENTINEL}\n` })
+  const sink = sinkSpy()
+  const store = storeWith(exec, { fillSink: sink })
+  const meta = store.register(META)
+  const mismatches = [
+    { scope: 'desktop', origin: META.origin },
+    { scope: META.scope, origin: 'https://other.example' },
+    { scope: META.scope, origin: 'https://example.com:8443' },
+  ]
+  for (const target of mismatches) {
+    await expectCredentialError(store.fill(meta.credentialId, target), CREDENTIAL_ERROR_CODES.TARGET_MISMATCH)
+  }
+  assert.equal(exec.calls.length, 0, 'a mismatched destination must not read the Keychain')
+  assert.equal(sink.calls.length, 0)
+  noSentinel('mismatch logs', '')
+})
+
+await check('fill allows https and loopback http but refuses plain http elsewhere', async () => {
+  assert.equal(isLoopbackHost('localhost'), true)
+  assert.equal(isLoopbackHost('app.localhost'), true)
+  assert.equal(isLoopbackHost('127.0.0.1'), true)
+  assert.equal(isLoopbackHost('127.8.9.10'), true)
+  assert.equal(isLoopbackHost('[::1]'), true)
+  assert.equal(isLoopbackHost('example.com'), false)
+  assert.equal(isLoopbackHost('127.0.0.1.example.com'), false)
+
+  const insecureExec = fakeExec({ stdout: `${SENTINEL}\n` })
+  const insecureSink = sinkSpy()
+  const insecureStore = storeWith(insecureExec, { fillSink: insecureSink })
+  const insecure = insecureStore.register({ ...META, origin: 'http://example.com' })
+  await expectCredentialError(
+    insecureStore.fill(insecure.credentialId, { scope: insecure.scope, origin: insecure.origin }),
+    CREDENTIAL_ERROR_CODES.INSECURE_TARGET,
+  )
+  assert.equal(insecureExec.calls.length, 0)
+  assert.equal(insecureSink.calls.length, 0)
+
+  for (const origin of ['http://127.0.0.1:8080', 'http://localhost:3000', 'http://[::1]:8081']) {
+    const exec = fakeExec({ stdout: `${SENTINEL}\n` })
+    const sink = sinkSpy()
+    const store = storeWith(exec, { fillSink: sink })
+    const meta = store.register({ ...META, origin })
+    const result = await store.fill(meta.credentialId, { scope: meta.scope, origin: meta.origin })
+    assert.deepEqual(result, { filled: true })
+    assert.equal(sink.calls.length, 1, `${origin}: sink`)
+    assert.equal(sink.calls[0].secret, SENTINEL)
+    assert.equal(exec.calls.length, 1, `${origin}: Keychain read`)
+  }
 })
 
 await check('registration rejects non-exact origins and invalid scopes/usernames', () => {

@@ -867,6 +867,42 @@ const CURSOR_HELPER_SRC = `
 })();
 `
 
+// Shared page-side detector for password/OTP/payment fields. The function body
+// is self-contained and injected into every page evaluation through
+// PAGE_HELPER_SRC, so typeIntoRef/pressKey never touch a field without asking
+// the provider for a hard confirmation first (H5). The descriptor carries only
+// tag/type/reason: never the field value, label, name or id.
+function sensitiveInputInfo(element) {
+  if (!element) return null
+  const tag = String(element.tagName || '').toLowerCase()
+  if (tag !== 'input' && tag !== 'textarea') return null
+  const attr = (name) => String(element.getAttribute?.(name) || '').toLowerCase()
+  const type = attr('type')
+  const autocomplete = attr('autocomplete')
+  const hay = `${attr('name')} ${attr('id')} ${attr('placeholder')} ${attr('aria-label')} ${autocomplete}`
+  if (type === 'password' || autocomplete.includes('password')) {
+    return { tag, type: type || 'text', sensitive: 'password' }
+  }
+  if (
+    autocomplete.startsWith('cc-') ||
+    /(^|[^a-z])(?:card|cc-?num|cc-?name|cc-?exp|cvv2?|cvc|payment|billing)([^a-z]|$)/.test(hay)
+  ) {
+    return { tag, type: type || 'text', sensitive: 'payment' }
+  }
+  if (/(^|[^a-z])(?:otp|totp|one[-_ ]?time|verification[-_ ]?code|auth(?:entication)?[-_ ]?code|mfa|2fa)([^a-z]|$)/.test(hay)) {
+    return { tag, type: type || 'text', sensitive: 'otp' }
+  }
+  if (/(^|[^a-z])(?:pass(?:word|wd|phrase)?|pwd)([^a-z]|$)/.test(hay)) {
+    return { tag, type: type || 'text', sensitive: 'password' }
+  }
+  return null
+}
+
+// Injected before every serialized page action. A function declaration cannot
+// cross the Runtime.evaluate boundary, so its source is embedded as a local
+// binding under the name the page actions call.
+const PAGE_HELPER_SRC = `const sensitiveInputInfo = ${sensitiveInputInfo.toString()};`
+
 const DEEP_HELPERS_SRC = `
 (() => {
   // Version bump so a page that still holds an older injected helper (e.g.
@@ -1153,6 +1189,7 @@ async function withDebugger(tabId, fn, options = {}) {
 async function evalInTarget(target, fn, args, timeoutMs = 10000) {
   const expression = `(() => { ${CURSOR_HELPER_SRC}
     ${DEEP_HELPERS_SRC}
+    ${PAGE_HELPER_SRC}
     return (${fn.toString()})(...${JSON.stringify(args)})
   })()`
   const response = await withTimeout(
@@ -2039,6 +2076,7 @@ async function evalInTab(tabId, fn, args, timeoutMs, dialogOptions) {
     async (session) => {
       const expression = `(() => { ${CURSOR_HELPER_SRC}
       ${DEEP_HELPERS_SRC}
+      ${PAGE_HELPER_SRC}
       return (${fn.toString()})(...${JSON.stringify(args)})
     })()`
       const response = await withTimeout(
@@ -2366,6 +2404,7 @@ async function readFrameTree(target) {
 function frameExpression(fn, args) {
   return `(() => { ${CURSOR_HELPER_SRC}
     ${DEEP_HELPERS_SRC}
+    ${PAGE_HELPER_SRC}
     return (${fn.toString()})(...${JSON.stringify(args)})
   })()`
 }
@@ -2722,7 +2761,7 @@ async function typeText(owner, params) {
       tabId,
       frameId,
       'type',
-      [parsed.ref, String(params.text ?? ''), Boolean(params.replace), Boolean(params.submit), selector],
+      [parsed.ref, String(params.text ?? ''), Boolean(params.replace), Boolean(params.submit), selector, params.sensitiveApproved === true],
       15000,
     )
     if (result) result.frameRef = frameRef
@@ -2730,7 +2769,7 @@ async function typeText(owner, params) {
     result = await callInPage(
       tabId,
       'type',
-      [Number.isFinite(ref) ? ref : null, String(params.text ?? ''), Boolean(params.replace), Boolean(params.submit), selector],
+      [Number.isFinite(ref) ? ref : null, String(params.text ?? ''), Boolean(params.replace), Boolean(params.submit), selector, params.sensitiveApproved === true],
       15000,
       params.dialog,
     )
@@ -2746,7 +2785,10 @@ async function press(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const key = String(params.key || '')
   if (!key) throw bridgeError('INTERNAL', 'key is required')
-  const result = await callInPage(tabId, 'press', [key], 15000, params.dialog)
+  const result = await callInPage(tabId, 'press', [key, params.sensitiveApproved === true], 15000, params.dialog)
+  if (!result?.ok) {
+    throw bridgeError(result?.reason || 'INTERNAL', result?.message || 'press failed')
+  }
   return attachSnapshotIfRequested(tabId, { ...result, tabId }, params)
 }
 
@@ -3619,7 +3661,7 @@ function clickByRef(ref, selector, buttonName, clickCount) {
 }
 
 /** Runs inside the page; self-contained. */
-function typeIntoRef(ref, text, replace, submit, selector) {
+function typeIntoRef(ref, text, replace, submit, selector, sensitiveApproved) {
   const element = ref
     ? window.__dshDeep?.byRef(ref) || document.querySelector(`[data-dsh-ref="${ref}"]`)
     : selector
@@ -3638,15 +3680,29 @@ function typeIntoRef(ref, text, replace, submit, selector) {
       message: ref ? `ref ${ref} not found; take a new snapshot` : `selector not found: ${selector}`,
     }
   }
+  const tag = element.tagName.toLowerCase()
+  if (tag !== 'input' && tag !== 'textarea') {
+    return { ok: false, reason: 'UNSUPPORTED', message: `ref ${ref} is a ${tag}, not a text field` }
+  }
+  // H5: a password/OTP/payment field is never filled from plaintext model input
+  // without a provider-side hard confirmation. This is the final fail-closed
+  // boundary: without the approval flag it returns before focus, value write or
+  // any event, and the descriptor never carries the field value.
+  const field = sensitiveInputInfo(element)
+  if (field && sensitiveApproved !== true) {
+    return {
+      ok: false,
+      reason: 'SENSITIVE_FIELD',
+      sensitive: field.sensitive,
+      field: { tag: field.tag, type: field.type, sensitive: field.sensitive },
+      message: `target is a sensitive ${field.sensitive} field; hard confirmation is required before typing`,
+    }
+  }
   element.focus()
   try {
     const rect = element.getBoundingClientRect()
     window.__dshCursor?.(rect.left + rect.width / 2, rect.top + rect.height / 2, 'type')
   } catch {}
-  const tag = element.tagName.toLowerCase()
-  if (tag !== 'input' && tag !== 'textarea') {
-    return { ok: false, reason: 'UNSUPPORTED', message: `ref ${ref} is a ${tag}, not a text field` }
-  }
   const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
   const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
   const next = `${replace ? '' : element.value || ''}${text}`
@@ -3671,14 +3727,28 @@ function typeIntoRef(ref, text, replace, submit, selector) {
       }
     }
   }
+  if (field) return { ok: true, submitted, sensitive: field.sensitive }
   return { ok: true, value: element.value, submitted }
 }
 
 /** Runs inside the page; self-contained. */
-function pressKey(key) {
+function pressKey(key, sensitiveApproved) {
   const target = document.activeElement && document.activeElement !== document.body
     ? document.activeElement
     : document.body
+  // H5: a key press while a password/OTP/payment field holds focus can enter or
+  // submit a secret just like typing. Refuse before dispatching anything unless
+  // the provider already obtained a hard confirmation for this call.
+  const field = sensitiveInputInfo(target)
+  if (field && sensitiveApproved !== true) {
+    return {
+      ok: false,
+      reason: 'SENSITIVE_FIELD',
+      sensitive: field.sensitive,
+      field: { tag: field.tag, type: field.type, sensitive: field.sensitive },
+      message: `key press targets a sensitive ${field.sensitive} field; hard confirmation is required`,
+    }
+  }
   try {
     const rect = target.getBoundingClientRect()
     window.__dshCursor?.(rect.left + rect.width / 2, rect.top + rect.height / 2, 'key')
@@ -3687,7 +3757,7 @@ function pressKey(key) {
   target.dispatchEvent(new KeyboardEvent('keydown', options))
   target.dispatchEvent(new KeyboardEvent('keypress', options))
   target.dispatchEvent(new KeyboardEvent('keyup', options))
-  return { ok: true, key, target: target.tagName.toLowerCase() }
+  return { ok: true, key, target: target.tagName.toLowerCase(), ...(field ? { sensitive: field.sensitive } : {}) }
 }
 
 /** Runs inside the page; self-contained. */

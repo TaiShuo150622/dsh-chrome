@@ -53,6 +53,7 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Sandbox Sm
 <label>Name <input id="name" placeholder="name"></label>
 <label>Password <input id="pw" type="password" name="password" autocomplete="current-password"></label>
 <label>OTP <input id="otp" name="otp" inputmode="numeric"></label>
+<label>Card <input id="card" name="card_number" autocomplete="cc-number"></label>
 <button id="go" type="button"
   onclick="document.getElementById('out').textContent = 'hello ' + document.getElementById('name').value">Go</button>
 <div id="out">(empty)</div>
@@ -203,6 +204,7 @@ const attachments = () => ({
 
 const confirmations = []
 let denyCaptureOnce = false
+let denySensitiveOnce = false
 const userQuestions = () => ({
   async ask(request) {
     const question = request?.questions?.[0] || {}
@@ -212,7 +214,18 @@ const userQuestions = () => ({
       approve = false
       denyCaptureOnce = false
     }
-    confirmations.push({ header, approve, question: String(question.question || '') })
+    // H5: one-shot refusal hook, used to prove a denied password/OTP/payment
+    // confirmation leaves the field untouched.
+    if (denySensitiveOnce && /敏感字段/.test(header)) {
+      approve = false
+      denySensitiveOnce = false
+    }
+    confirmations.push({
+      header,
+      approve,
+      question: String(question.question || ''),
+      detail: String(question.detail || ''),
+    })
     return { answers: [{ id: 'confirm', selected: [approve ? '允许一次' : '拒绝'] }] }
   },
 })
@@ -836,6 +849,59 @@ try {
   } else {
     checks += 1
   }
+
+  await check('chrome_type hard-confirms sensitive fields and denial types nothing', async () => {
+    const sentinel = 'DSH_SENTINEL_PASSWORD_CONFIRM_DO_NOT_USE'
+    const fieldValue = async (id) =>
+      (await raw('tab.evaluate', { expression: `document.getElementById(${JSON.stringify(id)}).value` })).value
+    const clear = (id) =>
+      raw('tab.evaluate', { expression: `document.getElementById(${JSON.stringify(id)}).value = ""` })
+
+    await clear('pw')
+    const before = confirmations.length
+    const typed = await run('chrome_type', { selector: '#pw', text: sentinel, replace: true })
+    assert.equal(typed.sensitive, 'password')
+    assert.equal(JSON.stringify(typed).includes(sentinel), false, 'the type result leaked the password value')
+    const card = confirmations.slice(before).find((entry) => /敏感字段/.test(entry.header))
+    assert.ok(card, `no sensitive-field confirmation: ${JSON.stringify(confirmations.slice(before))}`)
+    assert.equal(card.approve, true)
+    assert.ok(card.question.includes(BASE), `confirmation did not name the target origin: ${card.question}`)
+    assert.equal(JSON.stringify(card).includes(sentinel), false, 'the confirmation card leaked the password value')
+    assert.equal(JSON.stringify(card.detail).includes(sentinel), false, 'the confirmation detail leaked the password value')
+    assert.equal(await fieldValue('pw'), sentinel, 'approved type did not reach the password field')
+
+    // A denied confirmation must fail closed: no retry, no value written.
+    await clear('pw')
+    denySensitiveOnce = true
+    const beforeDeny = confirmations.length
+    const denial = await expectError(
+      'sensitive password denial',
+      () => run('chrome_type', { selector: '#pw', text: sentinel, replace: true }),
+      { code: 'APPROVAL_DENIED' },
+    )
+    assert.equal(String(denial?.message || '').includes(sentinel), false, 'the denial leaked the password value')
+    const deniedCard = confirmations.slice(beforeDeny).find((entry) => /敏感字段/.test(entry.header))
+    assert.ok(deniedCard)
+    assert.equal(deniedCard.approve, false)
+    assert.equal(await fieldValue('pw'), '', 'a denied confirmation still wrote the password')
+
+    // OTP and payment fields are detected by the same boundary.
+    for (const id of ['otp', 'card']) {
+      await clear(id)
+      denySensitiveOnce = true
+      const beforeField = confirmations.length
+      await expectError(
+        `sensitive ${id} denial`,
+        () => run('chrome_type', { selector: `#${id}`, text: sentinel, replace: true }),
+        { code: 'APPROVAL_DENIED' },
+      )
+      const fieldCard = confirmations.slice(beforeField).find((entry) => /敏感字段/.test(entry.header))
+      assert.ok(fieldCard, `${id}: no sensitive-field confirmation`)
+      assert.equal(fieldCard.approve, false)
+      assert.equal(await fieldValue(id), '', `${id}: a denied confirmation still wrote the value`)
+      assert.equal(JSON.stringify(fieldCard).includes(sentinel), false, `${id}: the card leaked the value`)
+    }
+  })
 
   await check('chrome_selection refuses password and OTP fields', async () => {
     const sentinel = 'DSH_SENTINEL_SELECTION_DO_NOT_USE'
