@@ -1209,13 +1209,19 @@ try {
   })
 
   // --------------------------------------------------------------- coverage
+  await check('chrome_lease reports LEASES_UNAVAILABLE when no lease manager is wired', async () => {
+    const result = await run('chrome_lease', { op: 'list' })
+    assert.equal(result.ok, false)
+    assert.equal(result.error, 'LEASES_UNAVAILABLE')
+  })
+
   await check('all chrome_* tool definitions were exercised', () => {
     const missing = tools.map((tool) => tool.name).filter((name) => !covered.has(name))
     assert.deepEqual(missing, [], `tools never exercised: ${missing.join(', ')}`)
-    assert.equal(tools.length, 45, 'expected 44 default tools + conditional chrome_evaluate')
+    assert.equal(tools.length, 46, 'expected 45 default tools + conditional chrome_evaluate')
   })
 
-  await check('default registration is 44 tools (chrome_evaluate is opt-in)', () => {
+  await check('default registration is 45 tools (chrome_evaluate is opt-in)', () => {
     const defaultTools = chromeTools({
       bridge: router,
       attachments,
@@ -1225,7 +1231,7 @@ try {
       userQuestions,
       config: () => ({}),
     })
-    assert.equal(defaultTools.length, 44)
+    assert.equal(defaultTools.length, 45)
     assert.equal(defaultTools.some((tool) => tool.name === 'chrome_evaluate'), false)
   })
 

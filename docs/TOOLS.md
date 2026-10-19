@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：44
+> 工具数量：45
 
 ### `chrome_status`
 
@@ -242,6 +242,20 @@ Manage isolated browser contexts for sandbox verification: op="create" makes a p
 | `preset` | enum(sandbox | sandbox-persistent | debug | collab) | no |  |
 | `profile` | string | no | Named profile label for sandbox-persistent/debug. |
 | `contextId` | string | no | Context id for use/close. |
+
+### `chrome_lease`
+
+Manage in-memory tab leases for shared-visible/collab sessions: acquire read or write ownership of a tab, renew, release, list, inspect status, or take over as the user. Write leases are exclusive; read leases may be shared. Leases expire automatically after ttlMs. This is the I3 lease foundation only: acquiring a lease does not yet gate every chrome_* write action.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `op` | enum(acquire | renew | release | list | status | takeover) | yes |  |
+| `tabId` | number | no | Target tab id for acquire/status/takeover, or an optional list filter. |
+| `mode` | enum(read | write) | no | Lease mode for acquire (default read); optional list filter. |
+| `ttlMs` | number | no | Lease lifetime in milliseconds (default 60000, max 900000). |
+| `leaseId` | string | no | Lease id for renew/release. Omit renew leaseId to heartbeat all leases owned by this session. |
+| `owner` | string | no | Optional owner filter for list. Acquisition/renewal/release always use the calling session owner. |
+| `by` | enum(user) | no | takeover only: must be "user". |
 
 ### `chrome_verify`
 

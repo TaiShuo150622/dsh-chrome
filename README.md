@@ -2,10 +2,10 @@
 
 **DSH 桌面端（DeepSeek Harness Desktop）的 Chrome 操控插件**：让模型直接操作你当前已登录的 Google Chrome —— 读页面、点击、填表、开后台标签、截图看图、按会话隔离，危险动作先问你。
 
-> 状态：**P1 真机可用（40 个工具；含后台 headless Chromium 同套工具面）**（2026-10-17）
-> 版本：扩展 **0.1.93** / provider **0.1.93**；`npm test` **28 个测试文件全过**；CI 绿。
+> 状态：**P1 真机可用（45 个工具；+evaluate 配置开启后 46；含后台 headless Chromium 同套工具面）**（2026-10-19）
+> 版本：扩展 **0.1.98** / provider **0.1.98**；`npm test` **30 个测试文件全过**；CI 绿。
 > 重点能力：桌面 Chrome 可见操作 + `backend:"headless"` 后台无窗口浏览器 + screencast 实时画面 viewer。
-> 最新发布说明：[docs/RELEASE-NOTES-0.1.97.md](docs/RELEASE-NOTES-0.1.97.md)；Windows 外部测试说明：[docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md](docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md)。
+> 最新发布说明：[docs/RELEASE-NOTES-0.1.98.md](docs/RELEASE-NOTES-0.1.98.md)；Windows 外部测试说明：[docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md](docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md)。
 
 Windows 预览包：[v0.1.93-win-preview.1](https://github.com/TaiShuo150622/dsh-chrome/releases/tag/v0.1.93-win-preview.1)。
 
@@ -18,12 +18,13 @@ Windows 预览包：[v0.1.93-win-preview.1](https://github.com/TaiShuo150622/dsh
 
 完整步骤、排障与卸载：[docs/INSTALL.md](docs/INSTALL.md)。
 
-## 当前能力（40 个工具；+evaluate 配置开启后 41）
+## 当前能力（45 个工具；+evaluate 配置开启后 46）
 
 | 类别 | 能力 |
 |---|---|
 | **后台浏览器** | 同一套工具加 `backend:"headless"` → 本地 headless Chromium（无窗口、独立 profile）；38/39 浏览器工具可用 |
 | 会话/标签 | 每会话一个后台标签组（可读组名、自动合并重复组）、claim 当前标签、关闭会话；不抢焦点 |
+| 协作/租约 | `chrome_lease` 提供 shared-visible/collab 的 tab lease 基础（write 独占、read 共享、TTL、用户 takeover）；**尚未接入所有写动作**，见 [docs/LEASES.md](docs/LEASES.md) |
 | 导航/等待 | goto / history / wait（load、networkidle、文本） |
 | 读取 | snapshot（稳定 ref/boxes）、find、get_text（text/markdown）、a11y、console、network、区域/整页/高亮截图 |
 | 交互 | click / click_at / type / press / scroll / select / hover / drag / **pick**，带**虚拟光标**可视化 |
@@ -73,6 +74,8 @@ Windows 预览包：[v0.1.93-win-preview.1](https://github.com/TaiShuo150622/dsh
 - [审批说明：什么动作会问人、你会看到什么、拒绝后怎样](docs/APPROVAL.md)
 - [安装指南（macOS 本地/开发者）](docs/INSTALL.md) · [工具参考（自动生成）](docs/TOOLS.md)
 - [用法示例：典型任务的工具序列](docs/EXAMPLES.md) · [FAQ](docs/FAQ.md)
+- [发布说明 0.1.98（shared lease 基础）](docs/RELEASE-NOTES-0.1.98.md)
+- [Tab lease（I3 基础：语义、错误码、接入点）](docs/LEASES.md)
 - [发布说明 0.1.97（visible-isolated I2）](docs/RELEASE-NOTES-0.1.97.md)
 - [发布说明 0.1.96（验证 artifacts 保留）](docs/RELEASE-NOTES-0.1.96.md)
 - [发布说明 0.1.95（chrome_verify 验证编排）](docs/RELEASE-NOTES-0.1.95.md)
