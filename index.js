@@ -50,14 +50,14 @@ export function apply(ctx) {
     config: configInfo.config,
     home,
     logger,
-    createDriver: async ({ profileDir }) =>
+    createDriver: async ({ profileDir, visible }) =>
       new HeadlessDriver({
         home,
         logger,
         profileDir,
         screenshotDir: path.join(profileDir, 'screenshots'),
         downloadDir: path.join(profileDir, 'downloads'),
-        visible: options.visible === true,
+        visible: visible === true,
       }),
   })
   const headless = headlessSupported() ? new HeadlessContextRouter({ manager: contexts, logger }) : null
