@@ -1703,6 +1703,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         }),
         render: (_args, value) => {
           if (!value?.ok) return renderText(`Context error: ${value?.error || 'unknown'}`)
+          if (typeof value.url === 'string' && value.url) return renderText(`Context viewer: ${value.url}`)
           if (Array.isArray(value.contexts)) {
             return renderText(value.contexts.length ? value.contexts.map((ctx) => `${ctx.contextId} ${ctx.preset} ${ctx.isolation}${ctx.visible ? ' visible' : ''} owner=${ctx.owner}`).join('\n') : 'No browser contexts for this session.')
           }
