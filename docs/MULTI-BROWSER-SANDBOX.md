@@ -1,16 +1,16 @@
 # 多浏览器 / 多沙盒实例：现状、设计与分阶段计划
 
-> 2026-10-19 · 基线：provider/扩展 **0.2.13**，仓库提交 `a126271` · 本文是只读调查与设计稿，未改代码、未提交。
+> 2026-10-19 · 基线：provider/扩展 **0.2.13**，仓库提交 `a126271` · 本文主体是只读调查与设计稿；文末「headless 多引擎候选 MVP」附录记录后续已落地的解析/选择 MVP（主体行为判断仍以 `a126271` 为基线）。
 > 调查期间仓库有并行会话的未提交改动（`src/headless.js` 的截图/screencast 拆分）；本文行为判断以 `a126271` 为基线，行号可能随重构漂移，以文件/符号名为准。
 >
-> **一句话结论**：同引擎的“每个 DSH agent 一个 headless context”已经真实落地，但仍只到**串行可用**；并发创建、崩溃恢复、登录接管、资源预算还没做完。多引擎目前只有 **安装路径表**，没有运行时调度；桌面扩展后端还被**单 socket bridge** 挡着。Safari 不是 Chromium，不能复用现有 CDP/扩展链路，应单独立项 spike。
+> **一句话结论**：同引擎的“每个 DSH agent 一个 headless context”已经真实落地，但仍只到**串行可用**；并发创建、崩溃恢复、登录接管、资源预算还没做完。多引擎目前有 **安装路径表 + headless 可执行文件候选解析（MVP）**，但没有运行时按 context 调度；桌面扩展后端还被**单 socket bridge** 挡着。Safari 不是 Chromium，不能复用现有 CDP/扩展链路，应单独立项 spike。
 
 本文把三件容易混在一起的事分开讨论：
 
 | 说法 | 实际含义 | 当前状态 |
 |---|---|---|
 | 多实例（同引擎） | 一个 provider 内多个 context，各自独立 Chrome 进程/profile | 已落地基础；并发/生命周期有缺口 |
-| 多引擎 | Chrome / Edge / Brave / Chromium 可被选择、可同时存在 | 仅安装路径表；headless 候选只覆盖部分引擎；桌面后端单连接 |
+| 多引擎 | Chrome / Edge / Brave / Chromium 可被选择、可同时存在 | 安装路径表 + headless 候选解析（MVP）；运行时调度与桌面多引擎未做 |
 | Safari | Safari Web Extension，独立产品线 | 只有可行性文档，无实现 |
 
 ---
@@ -485,19 +485,19 @@ new HeadlessDriver({ ..., onExit: (code) => manager.markCrashed(contextId, code)
 | native manifest 写入 | ✅ mac/linux/win | ✅ 路径表；真机未验证 | ✅ 路径表；真机未验证 | ✅ 路径表；真机未验证 | ❌ |
 | 扩展代码复用 MV3 | ✅ | ✅（理论同源） | ✅（理论同源） | ✅（理论同源） | ❌ 需 Safari Web Extension |
 | 桌面后端运行时同时连接 | 单浏览器 | 单浏览器 | 单浏览器 | 单浏览器 | — |
-| headless 可执行文件探测 | ✅ mac/linux | ❌ | ❌ | ✅ mac/linux | ❌ |
+| headless 可执行文件候选解析 | ✅ 候选表（MVP） | ✅ 候选表（MVP） | ✅ 候选表（MVP） | ✅ 候选表（MVP） | ❌ |
 | headless 运行时调度/选择 | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Windows headless | ❌ | ❌ | ❌ | ❌ | — |
+| Windows headless | ❌（仅候选解析） | ❌（仅候选解析） | ❌（仅候选解析） | ❌（仅候选解析） | — |
 | 真机验证 | macOS 本机 | ❌ | ❌ | ❌ | ❌ |
 
 ### 3.2 具体卡点
 
 1. **桌面 bridge 是单 socket**：`BridgeServer.#accept()` 在新连接到来时会 `destroy` 旧 socket（`src/bridge.js:90-95`）。Chrome 和 Edge 各自拉起 native host 时，第二个连接会把第一个踢掉。因此“同时连两个浏览器”不是配置问题，是架构问题。
 2. **安装器一次只装一个浏览器**：`ensureInstallAssets({ browser = process.env.DSH_CHROME_BROWSER || 'chrome' })`（`src/install.js:316-320`）每次只写一个浏览器的 manifest/注册表。没有“给所有已安装浏览器都装”的循环，也没有运行时浏览器选择。
-3. **headless 候选是硬编码的**：`CHROME_CANDIDATES`（`src/headless.js` 顶部）只有 `DSH_HEADLESS_CHROME`、mac Chrome、mac Chromium、Linux Chrome/Chromium；没有 Edge/Brave，没有 Windows 路径，也没有复用 `src/platform.js` 的 `browserPaths().executableCandidates`。
+3. **headless 候选已表驱动（MVP），但没有 per-context engine**：`src/headless-browsers.js` 复用 `browserPaths().executableCandidates`，覆盖 Chrome/Chromium/Edge/Brave × mac/linux/win，并解析 `DSH_CHROME_BROWSER`、config `browser.engine` / `browser.headless.chromeExecutable`、`DSH_HEADLESS_CHROME`；仍缺 `chrome_context create {engine}`、`chrome_status` 的 engine 字段和真机启动验证。
 4. **`headlessSupported()` 在 provider 启动时一次性判定**：没有 Chrome/Chromium 时 `headless = null`；之后装了浏览器也不会自动恢复，需要重载 provider。
 5. **没有引擎身份**：`BridgeServer` 的 hello 只带 `hostVersion`，`chrome_status` 不报告 engine；`chrome_*` 工具没有 `engine` 参数；没有 `chrome_browsers` 工具（`docs/ROADMAP.md` 只把它列为 P3 设想）。
-6. **`browser.headless.chromeExecutable` 没接**：即使想通过配置指定 Edge，也无效；只能靠环境变量 `DSH_HEADLESS_CHROME` 指到一个 Chromium 系可执行文件。这不算多引擎调度，也没有引擎校验。
+6. **`browser.headless.chromeExecutable` 已接线但仍为全局**：显式路径/引擎不存在时报 `HEADLESS_EXECUTABLE_NOT_FOUND`，不会静默回退；但解析结果属于 provider 级配置，不是 per-context engine，也没有 `chrome_status` 的 engine/实际路径字段。
 
 ### 3.3 设计目标
 
@@ -519,6 +519,8 @@ context = engine × preset × profile × owner
 - 每个 context 的 profile 目录仍按 contextId/profileId 隔离，与 engine 无关。
 
 ### 3.4 headless 多引擎（优先做）
+
+> 状态（2026-10-19）：可执行文件候选解析/选择 MVP 已落地（见文末附录与 `src/headless-browsers.js`）；下面的 per-context engine 透传、`availableEngines()`、`chrome_status` engine 字段和真机矩阵仍未做。
 
 建议新增 `src/engines.js`（名字可改，关键是单一职责）：
 
@@ -760,6 +762,8 @@ RSS 求和会重复计算共享页；`docs/HEADLESS.md` §4.1 对**单个** head
 
 ### 6.2 阶段 B（headless 多引擎）
 
+> 状态（2026-10-19）：第 1 项的候选解析/选择 MVP 已落地（`src/headless-browsers.js` + `test/headless-browsers.mjs`）；其余（per-context engine、`availableEngines()`、状态字段、真机矩阵）未做。
+
 1. `src/engines.js` + `browserPaths()` 复用 + PATH/X_OK/Windows 候选；
 2. `HeadlessDriver` 接受 `engine/executable`；`headlessSupported()` → `availableEngines()`；
 3. `BrowserContextManager.create({engine})`、`chrome_context create {engine}`、配置 `browser.engine`；
@@ -805,6 +809,7 @@ RSS 求和会重复计算共享页；`docs/HEADLESS.md` §4.1 对**单个** head
 | `chrome_verify` + 全局 artifacts | `src/tools-verify.js`、`test/chrome-verify.mjs` | 可能跑 visible context（C13） |
 | context viewer | `src/context-viewer.js`、`test/context-viewer.mjs` | token + per-context access + loopback |
 | 4×3 安装路径表 | `src/platform.js`、`test/install-platform.mjs` | 仅路径/manifest；真机未验证 |
+| headless 可执行文件候选解析（4×3） | `src/headless-browsers.js`、`test/headless-browsers.mjs` | MVP；只解析/选择，未启动真机 |
 | Windows native host 注册表/打包 | `src/install.js`、`docs/WINDOWS-HOST.md` | 与多引擎无关 |
 | lease 基础/写门控 | `src/lease.js`、`src/tool-guards.js`、`test/lease.mjs` | `collab` 未接入 |
 
@@ -824,8 +829,8 @@ RSS 求和会重复计算共享页；`docs/HEADLESS.md` §4.1 对**单个** head
 | named profile 回收 | 无（C15） |
 | close 超时 | 无（C16） |
 | visible 不被 driver idle 关闭 | driver timer 不判断 visible；初始窗口不计 tab（C17） |
-| headless Edge/Brave/Chromium 选择 | 候选只有 Chrome/Chromium（mac/Linux） |
-| headless Windows | 无候选 |
+| headless Edge/Brave/Chromium 选择 | 候选解析/全局显式选择已实现（MVP）；无 per-context engine、无 status engine 字段 |
+| headless Windows | 候选路径已表驱动解析；未真机启动 |
 | 桌面多浏览器同时连接 | bridge 单 socket，后到踢先到 |
 | `chrome_browsers` | 不存在 |
 | 跨 provider 进程协调 | 不存在 |
@@ -864,7 +869,7 @@ RSS 求和会重复计算共享页；`docs/HEADLESS.md` §4.1 对**单个** head
 | R12 | `chrome_status` 误报 | C11/C12 | 中：排障被误导 | 修 headlessInfo | A |
 | R13 | close 卡住/进程残留 | C16 | 中：provider 卸载慢 | close 超时 + SIGKILL | A |
 | R14 | Edge/Brave 只是路径表，真机未验 | `docs/EDGE.md`、`test/install-platform.mjs` | 中：宣称支持但不可用 | 真机矩阵 | B |
-| R15 | headless Windows 不支持 | CHROME_CANDIDATES 无 Windows | 中：Windows 只能桌面 | 补候选/真机 | B |
+| R15 | headless Windows 只解析未验证 | 候选表已含 Windows；无真机启动 | 中：Windows 只能桌面 | 真机矩阵 | B |
 | R16 | `headlessSupported` 启动时固定 | `index.js:85` | 低中：装浏览器后要重载 | 重新探测/提示 | B |
 | R17 | Safari 成本被低估 | `docs/SAFARI-SPIKE.md` | 高：App Store/签名/API 限制 | 先 spike，不承诺 | D |
 | R18 | 多 provider 进程冲突 | `bridge.sock`/`bridge.json` 固定 | 中：同一 DSH_HOME 双开 | 文档限制/文件锁 | E |
@@ -954,3 +959,20 @@ node test/install-platform.mjs
 - 新增 16 并发/同 owner 去重/profile 互斥/失败回滚测试。
 
 多引擎（Edge/Brave/Windows 桌面）与 Safari 仍未实现，仍按本文 B/C/D 阶段。
+
+## 附：headless 多引擎候选 MVP（2026-10-19，`feat/multi-engine`）
+
+**已实现（只到可执行文件解析/选择）**
+
+- `src/headless-browsers.js`：复用 `src/platform.js` 的 4 浏览器 × 3 平台候选表，解析 Chrome / Chromium / Microsoft Edge（`msedge`）/ Brave；Linux 裸命令名按 `PATH` 查找，Windows 路径由 `%PROGRAMFILES%` 等变量展开，mac/win 均为表内绝对路径。
+- 选择来源：`DSH_CHROME_BROWSER=chrome|chromium|edge|brave`、`DSH_HEADLESS_CHROME`（显式路径）、config `browser.engine` / `browser.headless.chromeExecutable`；环境变量覆盖 config。
+- 显式指定但不存在时报 `HEADLESS_EXECUTABLE_NOT_FOUND`（错误里列出候选路径），未知引擎报 `HEADLESS_ENGINE_UNKNOWN`；**不会**静默回退到 Chrome。
+- 未指定时保持旧行为：Chrome → Chromium；两者都不存在时返回 null（`headlessSupported()` 为 false）。
+- 解析结果接到 `HeadlessDriver`（含交互登录窗口），provider 启动时一次性判定；测试 `test/headless-browsers.mjs` 已接入 `npm test`。
+
+**未做**
+
+- 未启动真实 Edge/Brave/Chromium 或 Windows 浏览器做冒烟；本阶段只做解析/选择。
+- 没有 per-context engine（`chrome_context create {engine}`）、`availableEngines()`、`chrome_status` 的 engine/实际路径字段；engine 目前是 provider 级配置。
+- 桌面多引擎（bridge 多 client、安装器多浏览器、`chrome_browsers`）仍按 §3.5 / 阶段 C，未做。
+- Safari 未做（阶段 D）。

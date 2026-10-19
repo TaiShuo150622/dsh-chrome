@@ -62,6 +62,15 @@ export function apply(ctx) {
     root: configInfo.config.verification.artifactDir || path.join(home, 'cache', 'dsh-chrome', 'artifacts'),
     retentionRuns: configInfo.config.verification.artifactRetentionRuns,
   })
+  // Headless browser selection (multi-engine MVP): config `browser.engine` /
+  // `browser.headless.chromeExecutable` are passed down to every driver, so
+  // explicit Edge/Brave/Chromium selection works; the environment overrides
+  // (DSH_CHROME_BROWSER / DSH_HEADLESS_CHROME) are applied by the resolver.
+  const headlessConfig = {
+    engine: configInfo.config.browser.engine,
+    executable: configInfo.config.browser.headless.chromeExecutable,
+  }
+  const headlessSupportedNow = headlessSupported(headlessConfig)
   const contexts = new BrowserContextManager({
     config: configInfo.config,
     home,
@@ -74,6 +83,8 @@ export function apply(ctx) {
         screenshotDir: path.join(profileDir, 'screenshots'),
         downloadDir: path.join(profileDir, 'downloads'),
         visible: visible === true,
+        engine: headlessConfig.engine,
+        executable: headlessConfig.executable,
       }),
   })
   // The bridge and its native-host install assets are owned by the runtime
@@ -82,11 +93,11 @@ export function apply(ctx) {
   const bridgeRuntime = createBridgeRuntime({ home, root, assets, contexts, logger })
   const bridge = bridgeRuntime.bridge
 
-  const headless = headlessSupported() ? new HeadlessContextRouter({ manager: contexts, logger }) : null
+  const headless = headlessSupportedNow ? new HeadlessContextRouter({ manager: contexts, logger }) : null
   const router = new BackendRouter({
     desktop: bridge,
     headless,
-    headlessSupported: headlessSupported(),
+    headlessSupported: headlessSupportedNow,
   })
 
   ctx.inject(['attachments'], (scoped) => {
