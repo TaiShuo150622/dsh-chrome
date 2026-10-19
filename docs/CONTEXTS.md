@@ -27,7 +27,9 @@
 | `sandbox` | ephemeral | 否 | ✅ 默认，headless |
 | `sandbox-persistent` | named | 否 | ✅ headless + 保留 profile |
 | `debug` | named | 是 | ✅ I2：独立 profile + 可见 Chrome 窗口 |
-| `collab` | shared | 是 | ⏳ I3；需要 tab lease |
+| `collab` | shared | 是 | ⏳ I3；lease 基础已落地（0.1.98），collab 仍未启用 |
+
+> tab lease 的语义、错误码与接入点见 [LEASES.md](LEASES.md)；0.1.98 只提供 lease 模块和 `chrome_lease` 工具，尚未接入所有 chrome_* 写动作。
 
 ## 4. 配置
 
@@ -73,7 +75,7 @@
 
 ## 6. 当前限制
 
-- **只实现 headless 隔离**；`debug`/`collab` 目前会分别创建 named/visible 模型，但 shared 模式在 I1 直接拒绝（`UNSUPPORTED_MODE`），visible 窗口需要后续 I2；
+- 隔离 preset（`sandbox` / `sandbox-persistent` / `debug`）已实现；shared `collab` 仍未启用（0.1.98 只落地 lease 基础，见 [LEASES.md](LEASES.md)）；
 - 还没有 `chrome_verify` 断言编排；先用 snapshot/screenshot/console/network 让 agent 断言；
 - 还没有跨平台 Chrome 路径自动探测的完整矩阵（沿用现有 headless 探测）；
 - `chrome_verify` 的 report/screenshot 会保存到全局 artifacts 目录（`~/.dsh/cache/dsh-chrome/artifacts/verify-<runId>/`），context 关闭后仍保留；默认保留最近 50 次，可用 `verification.artifactRetentionRuns` 调整。

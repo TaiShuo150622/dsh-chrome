@@ -45,7 +45,7 @@ function validateSchema(schema, pathLabel) {
 const names = tools.map((tool) => tool.name)
 check('tool names are unique', new Set(names).size === names.length)
 check('all tool names use the chrome_ namespace', names.every((name) => name.startsWith('chrome_')))
-check('tool count is 44', tools.length === 44, String(tools.length))
+check('tool count is 45', tools.length === 45, String(tools.length))
 
 for (const tool of tools) {
   const label = tool.name

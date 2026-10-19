@@ -11,6 +11,13 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.98] - 2026-10-19
+
+- I3 shared lease 基础：`src/lease.js` 的 `BrowserLeaseManager`（write 独占/read 共享、TTL、renew、heartbeat、release、`releaseTab`、显式 `takeover(by:"user")`，仅内存）
+- 新增 `chrome_lease` 工具（第 45 个默认工具；+evaluate 46），无 manager 时返回 `LEASES_UNAVAILABLE`
+- `test/lease.mjs` 覆盖并发单写者/TTL/renew/release/takeover/read 共享/错误码；`docs/LEASES.md` 说明当前未接入所有写动作
+- 版本 0.1.98；默认工具计数 44→45，sandbox/p0/p1/p2/tool-schemas 同步
+
 ## [0.1.97] - 2026-10-19
 
 - I2 visible-isolated：`chrome_context preset:"debug"` 创建独立 profile 的可见 Chrome 窗口；visible context 不参与空闲回收
