@@ -154,6 +154,8 @@ try {
   assert.ok(html.includes(access), 'viewer HTML must embed this context capability into frame/input URLs')
   assert.match(view.headers['content-security-policy'], /connect-src 'self'/)
   assert.ok(!/(?:src|href)="https?:\/\//.test(html), 'viewer HTML must not load external resources')
+  assert.ok(html.includes("payload.kind === 'type'"), 'viewer type results use a dedicated status without the field value')
+  assert.ok(html.includes('已输入'))
 
   // Token + loopback + per-context capability gates apply before routing.
   assert.equal((await request(handler, `/dsh-chrome/context/ctx-1/view?token=wrong-token&access=${access}`)).status, 403)
@@ -229,12 +231,16 @@ try {
   calls.length = 0
   const typed = await post({ kind: 'type', text: 'hello' })
   assert.equal(typed.status, 200)
-  assert.equal(JSON.parse(String(typed.body)).value, 'hello')
+  const typedBody = JSON.parse(String(typed.body))
+  assert.equal(Object.hasOwn(typedBody, 'value'), false, 'viewer type response must not echo the field value')
+  assert.equal(typedBody.typed, true)
+  assert.equal(typedBody.submitted, false)
   assert.deepEqual(lastCall('tab.type').params, { text: 'hello', selector: ':focus', owner: 'session-a' })
 
   calls.length = 0
   const typedSelector = await post({ kind: 'type', text: 'x', selector: '#q', replace: true })
   assert.equal(typedSelector.status, 200)
+  assert.equal(Object.hasOwn(JSON.parse(String(typedSelector.body)), 'value'), false)
   assert.deepEqual(lastCall('tab.type').params, { text: 'x', selector: '#q', replace: true, owner: 'session-a' })
 
   // key / scroll / history / navigate.

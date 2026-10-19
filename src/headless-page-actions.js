@@ -217,6 +217,22 @@ export function typePage(ref, selector, text, replace, submit, probe) {
 export function currentSelection(maxChars) {
   const active = document.activeElement
   const tag = active?.tagName?.toLowerCase()
+  // Mirror the desktop extension's readSelection(): a selection inside a
+  // password/hidden/payment/OTP/secret field never returns text, whatever the
+  // caller asked. Kept self-contained because this helper is serialized into
+  // the page.
+  const sensitive = (element) => {
+    if (!element) return false
+    const type = String(element.getAttribute('type') || '').toLowerCase()
+    const autocomplete = String(element.getAttribute('autocomplete') || '').toLowerCase()
+    const name = String(element.getAttribute('name') || '').toLowerCase()
+    if (type === 'password' || type === 'hidden') return true
+    if (autocomplete.includes('cc-') || autocomplete.includes('password')) return true
+    return /pass(word)?|card|otp|token|secret|cvv|payment/.test(name)
+  }
+  if ((tag === 'input' || tag === 'textarea') && sensitive(active)) {
+    return { found: false, reason: 'SENSITIVE_SELECTION', message: 'selection is inside a sensitive field' }
+  }
   if ((tag === 'input' || tag === 'textarea') && typeof active.selectionStart === 'number') {
     const text = String(active.value || '').slice(active.selectionStart, active.selectionEnd)
     if (text) return { found: true, text: text.slice(0, maxChars), source: 'input' }

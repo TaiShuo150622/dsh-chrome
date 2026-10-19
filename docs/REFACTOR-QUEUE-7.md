@@ -8,7 +8,7 @@
 - [x] Q31 `chrome_type` 不再把字段值返回给模型
   - `src/tools-input.js` 的 type 工具：result 去掉 `value`，render 不显示输入值，输出 schema 去掉 value；测试同步（p1/sandbox 等）；
   - driver/extension 仍可保留内部 value，但工具面不得返回；全量测试。
-- [ ] Q32 headless 选区 + viewer type 回包脱敏
+- [x] Q32 headless 选区 + viewer type 回包脱敏
   - `src/headless-page-actions.js` 的 `currentSelection` 对 password/hidden/支付/OTP 等敏感字段返回 `SENSITIVE_SELECTION`；
   - `src/viewer-input.js` / `viewer-html.js` 的 type 回包/状态栏不再显示 value，只显示 typed/submitted；
   - 更新 context-viewer/headless 相关测试；全量测试。

@@ -51,6 +51,8 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Sandbox Sm
 <h1 id="heading">Sandbox Smoke</h1>
 <p id="intro">Hello from the sandbox fixture.</p>
 <label>Name <input id="name" placeholder="name"></label>
+<label>Password <input id="pw" type="password" name="password" autocomplete="current-password"></label>
+<label>OTP <input id="otp" name="otp" inputmode="numeric"></label>
 <button id="go" type="button"
   onclick="document.getElementById('out').textContent = 'hello ' + document.getElementById('name').value">Go</button>
 <div id="out">(empty)</div>
@@ -826,6 +828,29 @@ try {
   } else {
     checks += 1
   }
+
+  await check('chrome_selection refuses password and OTP fields', async () => {
+    const sentinel = 'DSH_SENTINEL_SELECTION_DO_NOT_USE'
+    const selectAll = (id) =>
+      raw('tab.evaluate', {
+        expression: `(() => { const el = document.getElementById(${JSON.stringify(id)}); el.focus(); el.setSelectionRange(0, el.value.length); return el.value.length })()`,
+      })
+
+    await run('chrome_type', { selector: '#pw', text: sentinel, replace: true })
+    await selectAll('pw')
+    const password = await run('chrome_selection')
+    assert.equal(password.found, false)
+    assert.equal(password.reason, 'SENSITIVE_SELECTION')
+    assert.equal(Object.hasOwn(password, 'text'), false, 'a password selection must not return text')
+    assert.equal(JSON.stringify(password).includes(sentinel), false, 'the selection result leaked the password value')
+
+    await run('chrome_type', { selector: '#otp', text: '123456', replace: true })
+    await selectAll('otp')
+    const otp = await run('chrome_selection')
+    assert.equal(otp.found, false)
+    assert.equal(otp.reason, 'SENSITIVE_SELECTION')
+    assert.equal(JSON.stringify(otp).includes('123456'), false, 'the selection result leaked the OTP value')
+  })
 
   // ----------------------------------------------------------------- storage
   await check('chrome_storage sets, gets, lists and removes a value', async () => {

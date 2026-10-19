@@ -125,6 +125,12 @@ function viewerHtml({ contextId, token, access }) {
       const result = await post(payload)
       if ((payload.kind === 'navigate' || payload.kind === 'history') && result.url) urlInput.value = result.url
       if (payload.kind === 'navigate' || payload.kind === 'history') lastMetaAt = 0
+      if (payload.kind === 'type') {
+        // Never show the typed text: the field may be a password/OTP and this
+        // page can be seen (or captured) by a second person.
+        setStatus(label + ' ✓ ' + (result.submitted ? '已输入并提交' : '已输入'))
+        return result
+      }
       setStatus(label + ' ✓ ' + short(result))
       return result
     } catch (error) {

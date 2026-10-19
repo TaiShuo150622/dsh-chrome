@@ -69,7 +69,10 @@ async function performInput(payload, driver) {
     if (payload.replace != null) params.replace = Boolean(payload.replace)
     if (payload.submit != null) params.submit = Boolean(payload.submit)
     const result = await callDriver(driver, 'tab.type', params)
-    return { value: result?.value ?? null, submitted: result?.submitted === true }
+    // The viewer is a second surface onto the same page: never echo the field
+    // value back (it may be a password/OTP). The status bar only confirms the
+    // action happened and whether the form was submitted.
+    return { typed: result?.ok !== false, submitted: result?.submitted === true }
   }
   if (kind === 'key') {
     const key = typeof payload.key === 'string' ? payload.key : ''
