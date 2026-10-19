@@ -16,6 +16,12 @@
 - 后续普通改动从 `0.2.1` 开始递增 patch。
 - 需要升 minor 的例子：首次正式支持 Edge/Safari、sidecar 协议 breaking change、公开商店发布形态变化。
 
+## 批量节奏
+
+- 同一批拆分/重构/文档可以共用一个 patch 版本，**不要每提交一次就 bump**；
+- 每完成一小步先跑相关测试；一批结束再跑全量 `npm test`，然后统一 bump、写 release notes、push；
+- 0.2.6–0.2.9 是连续的工具拆分，后续同类拆分继续合并成一批，不再逐个升版本。
+
 ## 契约
 
 - `package.json` 与 `extension/manifest.json` 的 `version` 必须一致；
