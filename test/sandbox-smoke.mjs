@@ -753,7 +753,7 @@ try {
   })
 
   await check('chrome_pdf honors an explicit output path on headless', async () => {
-    const target = path.join(home, 'requested-pdfs', 'smoke.pdf')
+    const target = path.join(home, 'cache', 'dsh-chrome', 'pdfs', 'requested', 'smoke.pdf')
     const value = await run('chrome_pdf', { path: target })
     assert.equal(value.path, target)
     assert.equal(fs.readFileSync(target).subarray(0, 5).toString('latin1'), '%PDF-')

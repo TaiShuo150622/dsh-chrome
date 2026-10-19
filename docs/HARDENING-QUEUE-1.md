@@ -9,7 +9,7 @@
   - `extension/background.js` 的 capture 脱敏采用 headless 的规则：`pwd/otp/cvv/auth`、URL fragment、inline `password=...`；保留 headers 不采集。
   - `src/tools-capture.js`：`capture_start` 默认 `storeBodies:false`（显式 true 才存）；确认卡写明目标 origin/tab；文档同步。
   - 新增/扩展 `test/capture-redact.mjs` 或现有 capture 测试，用哨兵断言 desktop 路径不泄漏；全量测试。
-- [ ] H2 chrome_pdf 路径收敛
+- [x] H2 chrome_pdf 路径收敛
   - 默认写到 `$DSH_HOME/cache/dsh-chrome/pdfs/`；显式 path 限制在 cache 或会话 cwd，realpath 后拒绝 symlink/已存在文件；显式 path 走 hardConfirm 并显示完整路径；`chrome_pdf` 标记 mutating/lease。
   - 补路径逃逸/符号链接/策略文件覆盖测试；全量测试。
 - [ ] H3 viewer/live-view bearer 收口

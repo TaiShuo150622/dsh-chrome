@@ -345,7 +345,14 @@ const pdfBridge = {
     throw new Error(`pdf fake does not implement ${method}`)
   },
 }
-const pdfTools = chromeTools({ bridge: pdfBridge, attachments: () => null, assets: () => ({}), approval: () => null })
+const pdfTools = chromeTools({
+  bridge: pdfBridge,
+  attachments: () => null,
+  assets: () => ({}),
+  approval: () => null,
+  sessionContext: () => ({ sessions: { get: () => ({ header: { cwd: home } }) } }),
+  userQuestions: () => ({ ask: async () => ({ answers: [{ id: 'confirm', selected: ['允许一次'] }] }) }),
+})
 const pdfTool = pdfTools.find((definition) => definition.name === 'chrome_pdf')
 const requestedPdf = path.join(home, 'pdfs', 'requested.pdf')
 const pdfMoved = await pdfTool.execute({ path: requestedPdf }, exec())

@@ -34,6 +34,7 @@ const WRITE_TOOLS = [
   'chrome_evaluate',
   'chrome_pointer',
   'chrome_annotate',
+  'chrome_pdf',
 ]
 for (const name of WRITE_TOOLS) {
   const tool = byName.get(name)

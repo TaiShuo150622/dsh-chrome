@@ -136,13 +136,17 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
 
   // Media tools (screenshot/download/pdf/shots/frames) live in their own module
   // (Q23). The attachment service and the screenshot ownership ledger move with
-  // the tools; file paths, render blocks and error codes are unchanged.
+  // the tools; chrome_pdf additionally needs the hard-confirmation helper and
+  // the session cwd to contain explicit output paths.
   const mediaTools = createMediaTools({
     call,
     ownerOf,
     attachments,
     outputSchema,
     renderText,
+    hardConfirmAsk,
+    sessionCwd,
+    evaluateConfirmTimeoutMs,
   })
 
   // Misc tools (evaluate/pick/resume/storage/selection) live in their own module

@@ -7,11 +7,155 @@
  * The attachment service is injected explicitly. Tool names, schemas, render
  * blocks, error codes and the shot-owner ledger behavior are unchanged.
  */
+import { constants as fsConstants } from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 import { BridgeError } from './bridge.js'
 import { dshHome } from './policy.js'
+
+// ---------------------------------------------------------------- PDF paths
+// Default exports stay in the provider cache. Explicit paths are a write
+// primitive for the model, so they are contained: inside the PDF cache or the
+// session working directory, new files only, no symlink traversal. Every
+// explicit write is hard-confirmed with the full path.
+
+function pdfCacheDir() {
+  return path.join(dshHome(), 'cache', 'dsh-chrome', 'pdfs')
+}
+
+function isWithin(root, target) {
+  const relative = path.relative(root, target)
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+}
+
+// Resolve every existing path component (so a symlinked parent is checked at
+// its real location) and append the tail that does not exist yet. The returned
+// path names the real file; callers still write through the requested path.
+async function canonicalTarget(target) {
+  let current = path.resolve(target)
+  const missing = []
+  for (;;) {
+    try {
+      const real = await fsp.realpath(current)
+      return path.join(real, ...missing.reverse())
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+      const parent = path.dirname(current)
+      if (parent === current) return path.join(current, ...missing.reverse())
+      missing.push(path.basename(current))
+      current = parent
+    }
+  }
+}
+
+// Provider state that must never be replaced by a PDF export, even when the
+// session working directory happens to contain it.
+function providerStateFiles(cwd) {
+  const home = dshHome()
+  const cache = path.join(home, 'cache', 'dsh-chrome')
+  const files = [
+    path.join(home, 'config.json'),
+    path.join(cache, 'config.json'),
+    path.join(cache, 'policy.json'),
+    path.join(cache, 'audit.jsonl'),
+    path.join(cache, 'operations.jsonl'),
+    path.join(cache, 'shot-owners.json'),
+  ]
+  if (typeof cwd === 'string' && cwd.trim()) {
+    files.push(path.join(path.resolve(cwd), '.dsh-chrome', 'config.json'))
+  }
+  return files
+}
+
+async function resolveExplicitPdfPath(requested, exec, sessionCwd) {
+  const raw = String(requested)
+  if (!path.isAbsolute(raw)) {
+    throw new BridgeError('INVALID_ARGUMENT', 'chrome_pdf path must be an absolute path')
+  }
+  const resolved = path.resolve(raw)
+  const cwd = typeof sessionCwd === 'function' ? sessionCwd(exec) : null
+  const roots = [pdfCacheDir()]
+  if (typeof cwd === 'string' && cwd.trim()) roots.push(path.resolve(cwd))
+  const canonicalRoots = []
+  for (const root of roots) {
+    try {
+      await fsp.mkdir(root, { recursive: true })
+      canonicalRoots.push(await fsp.realpath(root))
+    } catch {
+      // An unusable root cannot authorize a write.
+    }
+  }
+  const canonical = await canonicalTarget(resolved)
+  if (!canonicalRoots.some((root) => isWithin(root, canonical))) {
+    throw new BridgeError(
+      'INVALID_ARGUMENT',
+      `chrome_pdf path must be inside the PDF cache (${roots[0]})${roots[1] ? ` or the session working directory (${roots[1]})` : ''}; refusing path escape`,
+    )
+  }
+  for (const stateFile of providerStateFiles(cwd)) {
+    let canonicalState = null
+    try {
+      canonicalState = await canonicalTarget(stateFile)
+    } catch {
+      canonicalState = null
+    }
+    if (canonicalState && canonicalState === canonical) {
+      throw new BridgeError('INVALID_ARGUMENT', 'chrome_pdf refuses to write a provider state file')
+    }
+  }
+  let exists = true
+  try {
+    await fsp.lstat(resolved)
+  } catch (error) {
+    if (error?.code === 'ENOENT') exists = false
+    else throw error
+  }
+  if (exists) {
+    throw new BridgeError('INVALID_ARGUMENT', 'chrome_pdf refuses to overwrite an existing file (including symlinks)')
+  }
+  return resolved
+}
+
+function defaultPdfPath() {
+  return path.join(pdfCacheDir(), `page-${Date.now()}-${randomUUID().slice(0, 8)}.pdf`)
+}
+
+async function writePdfData(target, data) {
+  await fsp.mkdir(path.dirname(target), { recursive: true })
+  try {
+    // O_EXCL: never follow a symlink and never replace an existing file.
+    await fsp.writeFile(target, data, { flag: 'wx', mode: 0o600 })
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      throw new BridgeError('INVALID_ARGUMENT', 'chrome_pdf refuses to overwrite an existing file')
+    }
+    throw error
+  }
+  await fsp.chmod(target, 0o600).catch(() => {})
+}
+
+// Headless Page.printToPDF already wrote a file in the driver cache. Move it
+// to the requested/default target so both backends answer with one contract.
+async function movePdfIntoPlace(source, target) {
+  if (path.resolve(source) === path.resolve(target)) {
+    return (await fsp.stat(target)).size
+  }
+  await fsp.mkdir(path.dirname(target), { recursive: true })
+  try {
+    await fsp.copyFile(source, target, fsConstants.COPYFILE_EXCL)
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      throw new BridgeError('INVALID_ARGUMENT', 'chrome_pdf refuses to overwrite an existing file')
+    }
+    throw error
+  }
+  await fsp.chmod(target, 0o600).catch(() => {})
+  const copied = await fsp.stat(target)
+  await fsp.rm(source, { force: true }).catch(() => {})
+  return copied.size
+}
 
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes)) return 'unknown size'
@@ -73,6 +217,9 @@ export function createMediaTools({
   attachments,
   outputSchema,
   renderText,
+  hardConfirmAsk,
+  sessionCwd,
+  evaluateConfirmTimeoutMs,
 }) {
   const screenshot = {
     name: 'chrome_screenshot',
@@ -159,12 +306,17 @@ export function createMediaTools({
 
   const pdf = {
     name: 'chrome_pdf',
+    mutating: true,
     description:
-      'Export the current DSH session page to a PDF file with CDP Page.printToPDF and return the saved path. Useful for archiving or sharing a page as it renders.',
+      'Export the current DSH session page to a PDF file with CDP Page.printToPDF and return the saved path. Useful for archiving or sharing a page as it renders. An explicit path must be absolute, stay inside the DSH PDF cache or this session working directory, name a file that does not exist yet, and requires an explicit confirmation showing the full path; the default goes to the PDF cache without prompting.',
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Optional absolute output path; defaults to the DSH cache pdfs directory.' },
+        path: {
+          type: 'string',
+          description:
+            'Optional absolute output path for a new file inside the DSH PDF cache or the session working directory; an explicit path requires hard confirmation. Defaults to a new file in the PDF cache.',
+        },
         tabId: { type: 'number', description: 'Optional tab id owned by this session.' },
       },
       additionalProperties: false,
@@ -177,14 +329,28 @@ export function createMediaTools({
       render: (_args, value) => renderText(`PDF ${(value.bytes / 1024).toFixed(1)} KiB saved to ${value.path}`),
     },
     async execute(args, exec) {
+      const explicit = typeof args?.path === 'string' && args.path.trim() !== ''
+      let target
+      if (explicit) {
+        target = await resolveExplicitPdfPath(args.path, exec, sessionCwd)
+        if (typeof hardConfirmAsk !== 'function') {
+          throw new BridgeError('APPROVAL_DENIED', 'hard confirmation is unavailable; refusing an explicit PDF path')
+        }
+        await hardConfirmAsk(exec, 'chrome_pdf', {
+          header: '导出 PDF 到显式路径（写入本机文件）',
+          question: `确认把当前页面导出为 PDF 并写入这个完整路径吗？\n${target}`,
+          detail: '只允许 PDF 缓存目录或会话工作目录内的新文件；已存在文件、符号链接与路径逃逸会被拒绝。',
+          timeoutMs: evaluateConfirmTimeoutMs,
+          site: null,
+        })
+      } else {
+        target = defaultPdfPath()
+      }
       const value = await call('tab.pdf', { tabId: args?.tabId, owner: ownerOf(exec) }, 60000)
-      const cacheDir = path.join(dshHome(), 'cache', 'dsh-chrome', 'pdfs')
-      const target = args?.path ? String(args.path) : path.join(cacheDir, `page-${Date.now()}.pdf`)
       // Desktop extension: the payload comes back inline and the tool writes it.
       if (value?.dataBase64) {
-        await fsp.mkdir(path.dirname(target), { recursive: true })
         const bytes = Buffer.from(value.dataBase64, 'base64')
-        await fsp.writeFile(target, bytes, { mode: 0o600 })
+        await writePdfData(target, bytes)
         return { path: target, bytes: bytes.length }
       }
       // Headless driver: Page.printToPDF already wrote the file and returns
@@ -200,13 +366,8 @@ export function createMediaTools({
           stat = null
         }
         if (stat?.isFile()) {
-          if (path.resolve(source) === path.resolve(target)) return { path: target, bytes: stat.size }
-          await fsp.mkdir(path.dirname(target), { recursive: true })
-          await fsp.copyFile(source, target)
-          await fsp.chmod(target, 0o600).catch(() => {})
-          const copied = await fsp.stat(target)
-          await fsp.rm(source, { force: true }).catch(() => {})
-          return { path: target, bytes: copied.size }
+          const bytes = await movePdfIntoPlace(source, target)
+          return { path: target, bytes }
         }
       }
       throw new BridgeError('INTERNAL', 'browser backend returned no pdf data')

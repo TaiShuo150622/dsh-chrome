@@ -101,11 +101,11 @@ Read or change the session page storage (localStorage / sessionStorage): get one
 
 ### `chrome_pdf`
 
-Export the current DSH session page to a PDF file with CDP Page.printToPDF and return the saved path. Useful for archiving or sharing a page as it renders.
+Export the current DSH session page to a PDF file with CDP Page.printToPDF and return the saved path. Useful for archiving or sharing a page as it renders. An explicit path must be absolute, stay inside the DSH PDF cache or this session working directory, name a file that does not exist yet, and requires an explicit confirmation showing the full path; the default goes to the PDF cache without prompting.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `path` | string | no | Optional absolute output path; defaults to the DSH cache pdfs directory. |
+| `path` | string | no | Optional absolute output path for a new file inside the DSH PDF cache or the session working directory; an explicit path requires hard confirmation. Defaults to a new file in the PDF cache. |
 | `tabId` | number | no | Optional tab id owned by this session. |
 
 ### `chrome_a11y`
