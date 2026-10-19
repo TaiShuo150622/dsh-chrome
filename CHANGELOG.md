@@ -11,6 +11,10 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.95] - 2026-10-19
+
+- `chrome_verify`：隔离上下文上的 navigate/waitFor/click/type/assert（URL/标题/文本/元素/console/network）+ JSON/截图 artifacts
+
 ## [0.1.94] - 2026-10-19
 
 - 隔离浏览器上下文 I1：per-session headless context、`chrome_context`、独立 profile、空闲回收、配置加载

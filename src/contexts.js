@@ -124,6 +124,11 @@ export class BrowserContextManager {
     return this.contexts.get(contextId)?.driver || null
   }
 
+  artifactDirFor(contextId) {
+    const ctx = this.contexts.get(contextId)
+    return ctx ? path.join(ctx.profileDir, 'artifacts') : null
+  }
+
   view(contextId) {
     const ctx = this.contexts.get(contextId)
     return ctx ? this.#view(ctx) : null

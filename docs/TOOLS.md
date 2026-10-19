@@ -1,7 +1,7 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：43
+> 工具数量：44
 
 ### `chrome_status`
 
@@ -242,6 +242,17 @@ Manage isolated browser contexts for sandbox verification: op="create" makes a p
 | `preset` | enum(sandbox | sandbox-persistent | debug | collab) | no |  |
 | `profile` | string | no | Named profile label for sandbox-persistent/debug. |
 | `contextId` | string | no | Context id for use/close. |
+
+### `chrome_verify`
+
+Run a repeatable browser verification on an isolated headless context: navigate, waitFor, click, type, then assert URL/title/text/element/console/network. Returns machine-readable checks plus artifacts (screenshot, console/network summary, JSON report). This is the sandbox-verification layer; it reuses the per-session context and does not open a visible window.
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `contextId` | string | no | Optional existing context id; defaults to this session active context. |
+| `url` | string | no | Optional first navigation URL. |
+| `steps` | array | yes | Ordered steps: navigate/waitFor/click/type/assert. |
+| `options` | object | no |  |
 
 ### `chrome_pointer`
 

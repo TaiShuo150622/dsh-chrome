@@ -70,3 +70,29 @@
 - 还没有 `chrome_verify` 断言编排；先用 snapshot/screenshot/console/network 让 agent 断言；
 - 还没有跨平台 Chrome 路径自动探测的完整矩阵（沿用现有 headless 探测）；
 - 还没有 artifacts 清单/失败保留策略（下一步 I1 收尾）。
+
+## 7. `chrome_verify`（I1.5）
+
+在隔离 context 上做可重复验证：
+
+```text
+chrome_verify {
+  contextId?, url?,
+  steps: [
+    { action: "navigate", url },
+    { action: "waitFor", selector|text|url, timeoutMs? },
+    { action: "click", selector|ref },
+    { action: "type", selector|ref, text, replace? },
+    { action: "assert", checks: [
+      { type: "url", contains|matches },
+      { type: "title", contains },
+      { type: "text", contains },
+      { type: "element", selector, state: "visible"|"absent"|"enabled", contains? },
+      { type: "console", maxErrors },
+      { type: "network", maxFailures, urlPattern? }
+    ] }
+  ]
+}
+```
+
+返回 `{ok, contextId, url, durationMs, checks[], artifacts[]}`；每次运行都会保存 JSON report + 截图到该 context 的 `artifacts/`。首期不支持任意 JS 断言（element 检查用固定 querySelector 表达式）。

@@ -1176,6 +1176,12 @@ try {
   })
 
   await run('chrome_goto', { url: `${BASE}/` })
+  await check('chrome_verify reports unavailable without a context manager', async () => {
+    const value = await run('chrome_verify', { steps: [{ action: 'assert', checks: [] }] })
+    assert.equal(value.ok, false)
+    assert.equal(value.error, 'CONTEXTS_UNAVAILABLE')
+  })
+
   await check('chrome_pointer shows, moves and hides the virtual pointer', async () => {
     const shown = await run('chrome_pointer', { op: 'show', selector: 'h1', label: 'DSH', pulse: true })
     assert.equal(shown.ok, true)
@@ -1206,10 +1212,10 @@ try {
   await check('all chrome_* tool definitions were exercised', () => {
     const missing = tools.map((tool) => tool.name).filter((name) => !covered.has(name))
     assert.deepEqual(missing, [], `tools never exercised: ${missing.join(', ')}`)
-    assert.equal(tools.length, 44, 'expected 43 default tools + conditional chrome_evaluate')
+    assert.equal(tools.length, 45, 'expected 44 default tools + conditional chrome_evaluate')
   })
 
-  await check('default registration is 43 tools (chrome_evaluate is opt-in)', () => {
+  await check('default registration is 44 tools (chrome_evaluate is opt-in)', () => {
     const defaultTools = chromeTools({
       bridge: router,
       attachments,
@@ -1219,7 +1225,7 @@ try {
       userQuestions,
       config: () => ({}),
     })
-    assert.equal(defaultTools.length, 43)
+    assert.equal(defaultTools.length, 44)
     assert.equal(defaultTools.some((tool) => tool.name === 'chrome_evaluate'), false)
   })
 
