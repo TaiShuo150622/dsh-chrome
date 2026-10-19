@@ -1,5 +1,5 @@
 /**
- * Runtime wiring for the loopback viewers.
+ * Runtime wiring for the loopback viewers and the update checker.
  *
  * Both viewers are registered on the Host web server and share one lifecycle:
  * the live screencast viewer first, then the per-context viewer. Teardown is
@@ -7,12 +7,15 @@
  * here so index.js keeps a thin `ctx.effect` instead of duplicating cleanup
  * order.
  *
- * This module intentionally does not own the bridge, contexts, tools or the
- * update checker; those still live in index.js until their runtime split is
- * queued.
+ * The update checker is created here too: index.js only registers its
+ * start/stop effect and injects the checker into chrome_status.
+ *
+ * This module intentionally does not own the bridge, contexts or tools; those
+ * still live in index.js until their runtime split is queued.
  */
 import { registerContextViewer } from './context-viewer.js'
 import { registerLiveView, unregisterLiveView } from './liveview.js'
+import { createUpdateChecker } from './update.js'
 
 /**
  * Register the loopback viewers and return their handles plus one disposer.
@@ -44,6 +47,38 @@ export function createViewerRuntime({ webServer, home, logger = null, getContext
         // unloading continues
       }
       unregisterLiveView()
+    },
+  }
+}
+
+/**
+ * Create the update checker and expose its start/stop lifecycle.
+ *
+ * index.js keeps the checker handle for chrome_status (`update`) but no longer
+ * constructs it or wires its timer; the effect order at unload is unchanged.
+ *
+ * @param {object} options
+ * @param {string} options.home DSH home (update state cache).
+ * @param {string} options.currentVersion Installed provider version.
+ * @param {object} [options.config] `config.update` block.
+ * @param {{info?: Function, warn?: Function}} [options.logger]
+ * @param {Function} [options.createChecker] Checker factory (tests inject a stub).
+ */
+export function createUpdateRuntime({
+  home,
+  currentVersion,
+  config,
+  logger = null,
+  createChecker = createUpdateChecker,
+}) {
+  const updateChecker = createChecker({ home, currentVersion, config: config || {}, logger })
+  return {
+    updateChecker,
+    start() {
+      updateChecker.start()
+    },
+    stop() {
+      updateChecker.stop()
     },
   }
 }

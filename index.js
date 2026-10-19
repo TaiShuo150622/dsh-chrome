@@ -16,8 +16,7 @@ import { BrowserContextManager } from './src/contexts.js'
 import { loadConfig } from './src/config.js'
 import { HeadlessContextRouter } from './src/headless-contexts.js'
 import { BrowserLeaseManager } from './src/lease.js'
-import { createUpdateChecker } from './src/update.js'
-import { createViewerRuntime } from './src/runtime.js'
+import { createUpdateRuntime, createViewerRuntime } from './src/runtime.js'
 import { BridgeServer } from './src/bridge.js'
 import { HeadlessDriver, headlessSupported } from './src/headless.js'
 import { ensureInstallAssets } from './src/install.js'
@@ -51,12 +50,13 @@ export function apply(ctx) {
   try {
     packageVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version || packageVersion
   } catch {}
-  const updateChecker = createUpdateChecker({
+  const updateRuntime = createUpdateRuntime({
     home,
     currentVersion: packageVersion,
     config: configInfo.config.update,
     logger,
   })
+  const updateChecker = updateRuntime.updateChecker
   if (configInfo.warnings.length > 0) {
     for (const warning of configInfo.warnings) logger?.warn?.('dsh-chrome config: %s', warning)
   }
@@ -180,8 +180,8 @@ export function apply(ctx) {
   })
 
   ctx.effect(() => {
-    updateChecker.start()
-    return () => updateChecker.stop()
+    updateRuntime.start()
+    return () => updateRuntime.stop()
   })
 
   ctx.effect(() => {

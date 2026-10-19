@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { createViewerRuntime } from '../src/runtime.js'
+import { createUpdateRuntime, createViewerRuntime } from '../src/runtime.js'
 import { getLiveViewUrl } from '../src/liveview.js'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-runtime-'))
@@ -37,6 +37,32 @@ try {
   assert.equal(getLiveViewUrl(), null)
   runtime.dispose()
   assert.equal(routes.size, 0)
+
+  // The update checker is created by the runtime; index.js only registers the
+  // start/stop effect and keeps the checker for chrome_status.
+  const lifecycle = []
+  let received = null
+  const updateRuntime = createUpdateRuntime({
+    home: root,
+    currentVersion: '1.2.3',
+    config: { enabled: true },
+    logger,
+    createChecker: (options) => {
+      received = options
+      return {
+        start() { lifecycle.push('start') },
+        stop() { lifecycle.push('stop') },
+      }
+    },
+  })
+  assert.equal(received.home, root)
+  assert.equal(received.currentVersion, '1.2.3')
+  assert.deepEqual(received.config, { enabled: true })
+  assert.equal(received.logger, logger)
+  assert.equal(typeof updateRuntime.updateChecker?.start, 'function')
+  updateRuntime.start()
+  updateRuntime.stop()
+  assert.deepEqual(lifecycle, ['start', 'stop'])
 
   console.log('RUNTIME TEST: PASS')
 } finally {

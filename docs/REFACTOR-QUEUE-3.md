@@ -15,7 +15,7 @@
 - [x] Q15 拆出只读页面工具
   - 新建 `src/tools-read.js`，优先迁移 `chrome_snapshot`、`chrome_get_text`、`chrome_find`、`chrome_wait`、`chrome_html`、`chrome_console`、`chrome_network`；
   - schema/render/文本预算不变；全量测试。
-- [ ] Q16 runtime 继续收拢
+- [x] Q16 runtime 继续收拢
   - `src/runtime.js` 接管 update checker 的创建/start/stop（viewer/liveview 已在）；
   - `index.js` 只保留 effect 与注入；清理顺序不变；全量测试。
 - [ ] Q17 headless 页面动作拆出
