@@ -9,7 +9,7 @@
   - 新建 `src/tools-navigation.js`，迁移 `chrome_goto`、`chrome_history`、`chrome_tabs`、`chrome_close_session`；
   - 工厂只注入实际依赖（bridge/call、guard、ownerOf、sessionLabel、URL 校验、renderText、outputSchema、leases）；
   - 保留 tab/owner/lease 语义；全量测试。
-- [ ] Q14 拆出 capture 工具
+- [x] Q14 拆出 capture 工具
   - 新建 `src/tools-capture.js`，迁移 `chrome_capture_start`、`chrome_capture_stop`、`chrome_capture_requests`；
   - 硬确认/approval/错误码语义不变；全量测试。
 - [ ] Q15 拆出只读页面工具
