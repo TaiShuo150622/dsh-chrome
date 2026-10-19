@@ -11,6 +11,10 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.11] - 2026-10-19
+
+- tools 域拆分：navigation/capture/read 工具移出 tools.js；runtime 接管 update checker；headless 页面脚本辅助拆到 headless-page-actions.js
+
 ## [0.2.10] - 2026-10-19
 
 - 结构重构批次：owner-aware context API、viewer per-context access、mutating 单一来源、runtime/artifact store/headless events 拆分
