@@ -48,6 +48,7 @@
     "status": "node scripts/status.mjs",
     "cpu:sample": "node scripts/cpu-sample.mjs",
     "watch:update": "node scripts/update-watch.mjs",
-    "bench:headless": "node scripts/headless-bench.mjs"
+    "bench:headless": "node scripts/headless-bench.mjs",
+    "usage": "node scripts/tool-usage.mjs"
   }
 }
