@@ -12,8 +12,10 @@
  * source tree where DSH's own dependencies are not resolvable (see
  * `cordis.patch.yml`), and CI runs `npm test` without an install step. The
  * emitted graph and `toJSON()` are the exact shapes the real schemastery
- * reconstructs; `test/settings.mjs` checks both against an installed DSH when
- * one is present. Do not add a second schema library here.
+ * reconstructs. `test/settings.mjs` asserts the reconstructable graph shape
+ * without importing DSH; when this module landed, `toJSON()` was also rebuilt
+ * offline with the installed DSH desktop runtime's bundled schemastery. Do not
+ * add a second schema library here.
  *
  * Fail-soft is deliberate: validation never throws and never returns
  * `issues`. Invalid or unknown input is dropped/replaced with the schema

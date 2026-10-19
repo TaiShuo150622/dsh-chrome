@@ -1,16 +1,20 @@
 # 插件设置设计（PLUGIN-SETTINGS）
 
-> 状态：**设计稿，未实现**。2026-10-19 · 基线 provider/扩展 `0.2.13`（`a126271`）
+> 状态：**MVP 已实现，未在真实 DSH 安装验证**。2026-10-19 · 分支 `feat/settings-mvp` · 基线 provider/扩展 `0.2.15`（`fd846bb`）。
 >
 > 范围：`dsh-desktop-chrome` provider 的用户可配置项，以及它与 DSH 插件设置页、扩展 popup、配置文件、环境变量的边界。
 >
-> 本文只做设计，**没有改任何代码**；下文的“设置页”都是建议，不代表现在已经存在。
+> 已落地（本地）：`src/settings.js` 字段表、`src/config-schema.js` 的 `Config`（4 个 volatile 字段）、`index.js` 导出 `Config` / 读取 `configEditor` override / 监听 `loader/volatile-update`、project 级危险键过滤、`contexts` 与 `ArtifactStore` 的实时读取；`test/settings.mjs` 覆盖 schema、合并与危险键。`npm test` 全绿。
+>
+> 另用本机安装的 DSH desktop runtime 0.2.1-rc.2 自带的 `@deepseek-ai/schemastery` 3.18.5 离线重建过 `Config.toJSON()` 并跑通 `volatileForm` / `resolveConfig`，但**没有**在运行中的 DSH 里安装过本分支。
+>
+> **未验证**：真实 DSH 安装中的 Plugins 自动页是否出现并可写、`Config.listConfigs` 的 JSON Schema 投影、profile patch 写入与 `loader/volatile-update` 的时序；`chrome_config` 仍未改。发布前按 §6.5 手工验收逐条走一遍。
 
 ## 0. 结论先行
 
-1. **当前没有插件设置 UI。** provider 没有 `Config` schema（`cordis_inspect_query` 的 `Config/listConfigs` 对 `dsh-desktop-chrome` 返回 `status: "absent"`），`index.js` 的 `apply(ctx)` 也不接收配置参数；provider 侧设置只能落在三份 JSON 配置（canonical / legacy / project）、`policy.json` 和一批环境变量里；扩展侧还有一个 `chrome.storage.local` 的侧边栏 URL。
+1. **MVP 已有代码，但还没有在真实 DSH 安装里验证。** 本分支导出 `Config`（4 个 volatile 字段）并让 `apply(ctx, config)` 接收配置；真实 DSH 的 `Config/listConfigs` 是否显示 `status: "schema"`、Plugins 自动页是否出现，仍需按 §6.5 验收。provider 侧其余设置仍落在三份 JSON 配置（canonical / legacy / project）、`policy.json` 和一批环境变量里；扩展侧还有一个 `chrome.storage.local` 的侧边栏 URL。
 2. **推荐路径：DSH 插件条目配置做唯一“用户设置”入口，DSH 自动设置页只放可实时生效的低风险项；危险项在 MVP 仍只走配置文件/DSH 条目 patch。** 不新建扩展设置页，不写大 UI，不复制一套设置存储。
-3. **MVP 的最小闭环**是：新增 `Config` schema + `apply(ctx, config)`，让 DSH 自动生成一个只含 6 个左右 volatile 字段的设置页；其余选项继续由配置文件承载，用 `chrome_config` 只读工具和文档解释。若实测 DSH 自动页对该 bundle 不出现，MVP 退回“配置文件 + 文档 + `chrome_config`”，不发布半成品 UI。
+3. **MVP 的最小闭环**是：新增 `Config` schema + `apply(ctx, config)`，让 DSH 自动生成一个只含低风险 volatile 字段的设置页（本分支先收 4 个：`browser.preset` / `browser.maxContexts` / `browser.idleTimeoutMs` / `verification.artifactRetentionRuns`）；其余选项继续由配置文件承载，用 `chrome_config` 只读工具和文档解释。若实测 DSH 自动页对该 bundle 不出现，MVP 退回“配置文件 + 文档 + `chrome_config`”，不发布半成品 UI。
 4. **安全不变量不设置化**：evaluate/capture/upload/login 的硬确认、抓包不采 headers、脱敏、loopback+token、受保护 scheme、10 分钟抓包上限，这些都不做“关闭开关”。
 5. **必须先修“假配置”**：`verification.screenshotFormat`、`verification.captureConsole`、`verification.captureNetwork`、`verification.maxArtifactBytes`、`browser.headless.chromeExecutable`、`browser.headless.viewport`、`browser.shared.requireLease`、`externalAgents.*`、`safety.allowedOrigins` 目前要么完全没接线，要么只在文档里存在。设置设计不能把这些包装成“已经可调”。
 
@@ -102,7 +106,7 @@ DEFAULT_CONFIG
 4. **项目配置能放松安全**：项目级 `.dsh-chrome/config.json` 目前可以设置 `browser.shared.enabled`，未来如果加 `allowEvaluate` 也会被项目级打开。克隆一个仓库就能改变本机浏览器的审批/共享行为，不可接受。
 5. **版本不匹配会整份回退**：`src/config.js:81-84` 只要任何一层 `version !== 1` 就 `return clone(DEFAULT_CONFIG)`，项目覆盖也一起丢；而 `version > 1` 没有向前兼容策略。
 6. **类型校验偏松**：`merge` 只接受原始类型，`sanitize` 只对部分数字做范围检查；`update.enabled = "yes"` 会被存成字符串，最后 `Boolean(...)` 变成 true。
-7. **没有变更通知**：`loadConfig` 只在 `apply` 时跑一次；`providerConfig` 也在 `index.js:144` 只读一次。改文件必须重载 provider；没有 `watch`，没有 `reloadRequired` 提示。
+7. **没有变更通知**：设计时 `loadConfig` 只在 `apply` 时跑一次；`providerConfig` 也在 `index.js` 只读一次。MVP 已补 `loader/volatile-update` 重读 volatile 字段，但非 volatile 项与手工改文件仍需重载 provider；仍没有文件 `watch`。
 8. **文档承诺了不存在的设置**：`docs/APPROVAL.md` 的 `approval.mode` / `balanced` / `strict` 尚未进 `config.js`；`chrome_config` 的 description 还写着 “capture confirmation mode”，但抓包确认从 0.1.76 起固定 hard。
 9. **`browser.shared.requireLease` 语义反了**：名字像“是否要求 lease”，但代码只认 `browser.shared.enabled`；`shared.enabled: true` 时隐式 lease 一定启用（`src/backend.js:202`、`src/tool-guards.js:24-47`），`requireLease: false` 不会关掉它。
 10. **`collab` 仍不可用**：`src/contexts.js:68-70` 对 `collab` 直接抛 `UNSUPPORTED_MODE`；`shared.enabled` 只影响 lease 门控，不要把两者混成一个“共享浏览器”开关。
@@ -127,7 +131,7 @@ DEFAULT_CONFIG
 > **GUI**：✅ 适合 MVP 自动页（必须能实时生效）/ ⚠️ 适合未来自定义页（需 reload 或需要风险文案）/ ❌ 只走文件或环境变量。
 > **目标生效**：实时 = 下一次调用即生效；provider reload = 重载插件条目（会关闭当前浏览器 context）；DSH restart = 重启应用。
 >
-> “GUI ✅”只说明这个字段适合自动页，不代表它已经在自动页里；MVP 自动页只放 §5.2 列出的 6 个 volatile 字段。
+> “GUI ✅”只说明这个字段适合自动页，不代表它已经在自动页里；MVP 自动页只放 §5.2 的 volatile 字段（本分支先 4 个）。
 
 生效动作对照：
 
@@ -240,7 +244,7 @@ DEFAULT_CONFIG
 
 ### 4.1 基础组（默认开启 / 保持现状，低风险）
 
-> 分组按“默认值 + 风险”划分，不等于 MVP 自动页会显示；自动页只显示 §5.2 的 6 个 volatile 字段。下面有些项（如 `viewer.enabled`）默认开但需要 reload，因此 MVP 仍走文件/条目 patch。
+> 分组按“默认值 + 风险”划分，不等于 MVP 自动页会显示；自动页只显示 §5.2 的 volatile 字段（本分支先 4 个）。下面有些项（如 `viewer.enabled`）默认开但需要 reload，因此 MVP 仍走文件/条目 patch。
 
 | 项 | 默认 | 说明 |
 |---|---|---|
@@ -329,6 +333,8 @@ DSH Web/Desktop
   └─ 其他设置：profile patch / 配置文件（文档 + chrome_config 指引）
 ```
 
+> 实现状态：本分支的 `Config` 只收前 4 个 volatile 字段（`browser.preset` / `browser.maxContexts` / `browser.idleTimeoutMs` / `verification.artifactRetentionRuns`）。`evaluateConfirmTimeoutMs` / `captureConfirmTimeoutMs` 仍走旧 provider 文件，未进 `Config`；`update.*` 全部非 volatile，不进自动页。
+
 - 不新增 `extension/` 页面。
 - 不新增客户端 bundle / 构建链。
 - 不改 native messaging 协议。
@@ -346,7 +352,7 @@ DSH 的插件配置契约（本机 DSH 0.2.x）：
 
 可参考的本机实现：`@deepseek-ai/dsh-client-hmr`（`Config` + `apply(ctx, config)`）、`@deepseek-ai/dsh-agent-default-model`（volatile 字段 + `settings.configure({ auto: false })`）、`@deepseek-ai/dsh-settings`（`SettingsForms` 的 volatile 投影/写入契约）。
 
-建议的 schema 形状（只示意，不实现）：
+建议的完整 schema 形状（只示意；本分支只实现 §5.2 的 4 个 volatile 字段，且由本地窄 schemastery 协议实现，见 `src/config-schema.js`）：
 
 ```js
 import z from '@deepseek-ai/schemastery'
@@ -556,6 +562,8 @@ DEFAULT_CONFIG
 
 ### 6.5 测试
 
+> 实现状态：本分支把原设计的 `test/config-settings.mjs` 与 `test/config-schema.mjs` 合并为 `test/settings.mjs`；`browser-contexts` / `artifact-store` 的实时读取断言也并入该文件。下表保留原设计的拆分。
+
 新增/修改：
 
 | 测试 | 覆盖 |
@@ -591,12 +599,14 @@ DEFAULT_CONFIG
 
 ### Phase 1：Config schema + DSH 自动页 MVP（1–2 天）
 
-- 新增 `src/config-schema.js`：导出 `Config`（schemastery，含 volatile 标记）。Phase 1 **只**把这 6 个字段标 `.volatile()`，其余字段先保持非 volatile，避免未接线项出现在自动页。
+> 实现状态（2026-10-19）：`Config` / `apply(ctx, config)` / entry override / volatile 更新已落地；真实 DSH 自动页与 `cordis_inspect` 尚未验收。本分支先收 4 个 volatile 字段（不含 evaluate/capture 的超时项）。
+
+- 新增 `src/config-schema.js`：导出 `Config`（schemastery，含 volatile 标记）。Phase 1 **只**把 §5.2 列出的低风险字段标 `.volatile()`，其余字段先保持非 volatile，避免未接线项出现在自动页。
 - `index.js`：`export { Config }`，`apply(ctx, config)`；从 `configEditor` 取 override 层；保留文件兼容层。
 - 新增 `src/settings.js`：`live()`、`LIVE_PATHS`、`PROJECT_FORBIDDEN`、`sources`、`reloadRequired`。
-- `tools.js` / `contexts.js` / `artifact-store.js`：把 6 个基础字段改成按调用读取（或接收 getter）。
-- `chrome_config`：输出 effective/sources/reloadRequired/files/warnings；保持只读。
-- 验收：DSH 自动页出现 6 个字段；改超时实时生效；`cordis_inspect` 的 `Config` 状态不再是 `absent`；`npm test` 绿。
+- `tools.js` / `contexts.js` / `artifact-store.js`：把 volatile 基础字段改成按调用读取（或接收 getter）。
+- `chrome_config`：输出 effective/sources/reloadRequired/files/warnings；保持只读。**本分支未做，仍是旧 provider 文件视图。**
+- 验收（本分支未做真实 DSH 验收）：DSH 自动页出现 4 个 volatile 字段；改超时实时生效；`cordis_inspect` 的 `Config` 状态不再是 `absent`；`npm test` 绿。
 
 ### Phase 2：接线假配置（1 天）
 
@@ -652,8 +662,8 @@ DEFAULT_CONFIG
 
 ## 9. 当前明确未实现（不要当成已有）
 
-- ❌ 没有 `Config` schema；`apply(ctx)` 不接收配置。
-- ❌ 没有 DSH 插件设置页；`cordis_inspect` 的 `Config` 条目是 `absent`。
+- ✅ `Config` schema 已实现（MVP；4 个 volatile 字段）；`apply(ctx, config)` 已接收配置。
+- ⏳ 真实 DSH 安装里的 Plugins 自动页与 `Config/listConfigs` 投影尚未验证；本地 `toJSON` / `volatileForm` 离线核对通过。
 - ❌ 扩展 popup 没有设置表单；只有状态和操作。
 - ❌ `chrome_config` 只读 provider 文件，不展示 canonical/entry/project 配置，也不写配置。
 - ❌ `verification.screenshotFormat`、`captureConsole`、`captureNetwork`、`maxArtifactBytes` 没有生效。
@@ -670,4 +680,4 @@ DEFAULT_CONFIG
 
 ## 10. 一句话版本
 
-**把“现在只能改文件”的选项分成三层：DSH 自动设置页只放实时、低风险的 6 个字段；高级项继续走条目 patch / 配置文件；危险项默认关闭、只允许用户级文件显式开启，且必须重载。先接线假配置，再谈 UI；MVP 不写扩展设置页，也不做大的客户端。**
+**把“现在只能改文件”的选项分成三层：DSH 自动设置页只放实时、低风险的 volatile 字段（MVP 先 4 个）；高级项继续走条目 patch / 配置文件；危险项默认关闭、只允许用户级文件显式开启，且必须重载。先接线假配置，再谈 UI；MVP 不写扩展设置页，也不做大的客户端。**
