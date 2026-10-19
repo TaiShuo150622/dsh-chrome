@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 
+import { BROWSER_CLOSE_TIMEOUT_MS, CHILD_TERM_TIMEOUT_MS, settleWithin, waitForExit } from './bounded.js'
 import { buildLaunchArgs, parseDevToolsActivePort } from './headless-launch.js'
 import { resolveHeadlessExecutable } from './headless-browsers.js'
 import {
@@ -1986,23 +1987,42 @@ export class HeadlessDriver {
       // uses the client object after it left `this`.
       const cdp = this.cdp
       this.cdp = null
-      try {
-        await cdp?.send('Browser.close')
-      } catch {
-        // browser already gone or does not support close
-      }
       // Keep the child handle before teardown nulls it.
       const child = this.chrome
+      // H7: a wedged CDP socket must not hold close open. Browser.close gets a
+      // fixed 2s budget; the client is closed (which rejects pending CDP
+      // calls) and teardown continues whether or not Chrome answered.
+      const asked = await settleWithin(
+        Promise.resolve().then(() => cdp?.send?.('Browser.close')),
+        BROWSER_CLOSE_TIMEOUT_MS,
+      )
+      if (asked.status === 'timeout') {
+        this.logger?.warn?.('headless Browser.close did not answer within %sms; signalling the child', BROWSER_CLOSE_TIMEOUT_MS)
+      }
       try {
         cdp?.close()
       } catch {
         // ignore
       }
       this.handleBrowserExit('closed', { dead: false })
-      try {
-        child?.kill('SIGTERM')
-      } catch {
-        // ignore
+      // H7 escalation: SIGTERM, wait up to 1s for `exit`, then SIGKILL. The
+      // whole close is therefore bounded by BROWSER_CLOSE_TIMEOUT_MS +
+      // CHILD_TERM_TIMEOUT_MS even if the child ignores both messages.
+      if (child) {
+        try {
+          child.kill?.('SIGTERM')
+        } catch {
+          // already gone
+        }
+        const exited = await waitForExit(child, CHILD_TERM_TIMEOUT_MS)
+        if (!exited) {
+          this.logger?.warn?.('headless Chrome ignored SIGTERM for %sms; sending SIGKILL', CHILD_TERM_TIMEOUT_MS)
+          try {
+            child.kill?.('SIGKILL')
+          } catch {
+            // already gone
+          }
+        }
       }
     } finally {
       this.closing = false

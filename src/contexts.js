@@ -11,6 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 
+import { CONTEXT_CLOSE_TIMEOUT_MS, settleWithin } from './bounded.js'
 import { presetToMode } from './config.js'
 import { DRIVER_COUNT_FIELDS, emptyContextStats } from './memory-stats.js'
 
@@ -25,7 +26,7 @@ export class ContextError extends Error {
 const safeName = (value) => String(value || '').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 64) || 'default'
 
 export class BrowserContextManager {
-  constructor({ config, createDriver, logger = null, now = () => Date.now(), home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh') }) {
+  constructor({ config, createDriver, logger = null, now = () => Date.now(), home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), closeTimeoutMs = CONTEXT_CLOSE_TIMEOUT_MS }) {
     if (!config) throw new ContextError('INVALID_CONFIG', 'config is required')
     if (typeof createDriver !== 'function') throw new ContextError('INVALID_FACTORY', 'createDriver is required')
     this.config = config
@@ -33,6 +34,11 @@ export class BrowserContextManager {
     this.logger = logger
     this.now = now
     this.home = home
+    // H7: one driver.close() may not hold context close / provider unload
+    // open. HeadlessDriver has its own 3s budget; this is the manager's outer
+    // deadline for a driver that hangs anyway (fake drivers in tests).
+    this.closeTimeoutMs =
+      Number.isFinite(closeTimeoutMs) && closeTimeoutMs >= 0 ? Number(closeTimeoutMs) : CONTEXT_CLOSE_TIMEOUT_MS
     this.contexts = new Map()
     this.activeByOwner = new Map()
     // Slot reservations for creates that are still awaiting createDriver().
@@ -151,10 +157,14 @@ export class BrowserContextManager {
       return this.#view(ctx)
     } catch (error) {
       // A failed launch must not leak the reserved slot, a half-started driver
-      // or an ephemeral profile directory (C7).
-      try {
-        await driver?.close?.()
-      } catch {}
+      // or an ephemeral profile directory (C7). H7: the rollback close is
+      // bounded too, so a half-started browser cannot stall the create error.
+      const closed = await settleWithin(Promise.resolve().then(() => driver?.close?.()), this.closeTimeoutMs)
+      if (closed.status === 'timeout') {
+        this.logger?.warn?.('browser context startup cleanup close timed out after %sms', this.closeTimeoutMs)
+      } else if (closed.status === 'rejected') {
+        this.logger?.warn?.('browser context startup cleanup close failed: %s', closed.error?.message || String(closed.error))
+      }
       if (!named) {
         try {
           fs.rmSync(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
@@ -180,10 +190,13 @@ export class BrowserContextManager {
     const holdProfile = !ctx.ephemeral
     if (holdProfile) this.reservedProfiles.add(ctx.profileId)
     try {
-      try {
-        await ctx.driver?.close?.()
-      } catch (error) {
-        this.logger?.warn?.('browser context close failed: %s', error?.message || String(error))
+      // H7: bounded driver close. A driver that never answers must not hold
+      // provider unload open; the profile cleanup below still runs.
+      const closed = await settleWithin(Promise.resolve().then(() => ctx.driver?.close?.()), this.closeTimeoutMs)
+      if (closed.status === 'timeout') {
+        this.logger?.warn?.('browser context close timed out after %sms', this.closeTimeoutMs)
+      } else if (closed.status === 'rejected') {
+        this.logger?.warn?.('browser context close failed: %s', closed.error?.message || String(closed.error))
       }
       if (ctx.ephemeral && !keepProfile) {
         try {
@@ -206,7 +219,17 @@ export class BrowserContextManager {
   }
 
   async closeAll() {
-    for (const id of [...this.contexts.keys()]) await this.close(id)
+    // Close every context concurrently so the manager's total teardown budget
+    // is one closeTimeoutMs, not one per context (maxContexts is small and the
+    // contexts are independent). close() itself never throws.
+    await Promise.all(
+      [...this.contexts.keys()].map((id) =>
+        this.close(id).catch((error) => {
+          this.logger?.warn?.('browser context close failed: %s', error?.message || String(error))
+          return false
+        }),
+      ),
+    )
   }
 
   activeFor(owner) {

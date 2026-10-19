@@ -16,7 +16,7 @@
 - [x] H6 chrome_verify 安全收口
   - steps 的 navigate/click/type 走 guard/audit；默认拒绝 loopback/link-local/私网（测试 allowlist 可放行）。
   - console/network artifact 脱敏；navigate 目标 URL 审批；补测试。
-- [ ] H7 close 有界 + 取消
+- [x] H7 close 有界 + 取消
   - `HeadlessDriver.close` 用 bounded closePromise：Browser.close(2s) → SIGTERM(1s) → SIGKILL；CDP 永不回包也必须在预算内返回。
   - `BrowserContextManager.close/closeAll` 有界；provider unload 不无限挂起；启动失败清理有界。
   - 补假 CDP/假 child 的超时测试。
