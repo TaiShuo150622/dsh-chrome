@@ -325,16 +325,25 @@ try {
   assert.equal(memoryTool.mutating, undefined, 'the snapshot does not mutate the browser')
   assert.equal(tools.filter((tool) => tool.name === 'chrome_memory_stats').length, 1)
   const result = await memoryTool.execute({})
-  assert.deepEqual(result, snapshot)
+  assert.equal(result.ok, true)
+  assert.equal(result.op, 'status')
+  assert.equal(result.at, snapshot.at)
+  assert.equal(result.pid, snapshot.pid)
+  assert.deepEqual(result.node, snapshot.node)
+  assert.deepEqual(result.objects, snapshot.objects)
+  assert.deepEqual(result.monitor, { available: false, running: false })
   const rendered = memoryTool.output.render({}, result)[0].text
   assert.match(rendered, /Memory snapshot/)
   assert.match(rendered, /tabs 2/)
   assert.match(rendered, /bridge: CONNECTED/)
+  assert.match(rendered, /monitor: unavailable/)
 
   // Without an injected reader the tool still reports this process and zero
   // object counts (no context manager / bridge wired in the test).
   const bareTool = chromeTools({ bridge: {} }).find((tool) => tool.name === 'chrome_memory_stats')
   const bare = await bareTool.execute({})
+  assert.equal(bare.ok, true)
+  assert.equal(bare.op, 'status')
   assert.ok(bare.node.rss > 0)
   assert.deepEqual(bare.objects.contexts, emptyContextStats())
   assert.deepEqual(bare.objects.bridge, emptyBridgeStats())
@@ -347,6 +356,8 @@ try {
     },
   }).find((tool) => tool.name === 'chrome_memory_stats')
   const failed = await failingTool.execute({})
+  assert.equal(failed.ok, false)
+  assert.equal(failed.op, 'status')
   assert.equal(failed.error, 'collector exploded')
   assert.ok(failed.node.rss > 0)
   assert.deepEqual(failed.objects.contexts, emptyContextStats())

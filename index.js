@@ -18,6 +18,7 @@ import { Config, pluginConfigWarnings } from './src/config-schema.js'
 import { HeadlessContextRouter } from './src/headless-contexts.js'
 import { BrowserLeaseManager } from './src/lease.js'
 import { collectMemoryStats } from './src/memory-stats.js'
+import { MemoryMonitor } from './src/memory-monitor.js'
 import { createBridgeRuntime, createUpdateRuntime, createViewerRuntime } from './src/runtime.js'
 import { HeadlessDriver, headlessSupported } from './src/headless.js'
 import { wrapToolsForOperationLog } from './src/operation-log.js'
@@ -151,6 +152,12 @@ export function apply(ctx, config) {
   // start/stop effect below; teardown still closes the bridge before contexts.
   const bridgeRuntime = createBridgeRuntime({ home, root, assets, contexts, logger })
   const bridge = bridgeRuntime.bridge
+
+  // M7: explicit-start continuous sampling over the same numbers-only reader.
+  // Constructed here but never started automatically; chrome_memory_stats
+  // {op:"start"} owns the lifetime and provider teardown stops the timer.
+  const readMemoryStats = () => collectMemoryStats({ contexts, bridge })
+  const memoryMonitor = new MemoryMonitor({ sample: readMemoryStats, home, logger })
 
   const headless = headlessSupportedNow ? new HeadlessContextRouter({ manager: contexts, logger }) : null
   const router = new BackendRouter({
@@ -298,9 +305,11 @@ export function apply(ctx, config) {
         artifactStore,
         contextViewer: () => contextViewer.current,
         update: updateChecker,
-        // M6: one reader for chrome_memory_stats. The closure is evaluated per
-        // call, so it always sees the live context manager and bridge.
-        memoryStats: () => collectMemoryStats({ contexts, bridge }),
+        // M6/M7: one reader for chrome_memory_stats and the monitor. The closure
+        // is evaluated per call, so it always sees the live context manager and
+        // bridge.
+        memoryStats: readMemoryStats,
+        memoryMonitor,
       }),
       router,
       {
@@ -331,6 +340,11 @@ export function apply(ctx, config) {
         } catch {
           // unloading continues even if one disposer throws
         }
+      }
+      try {
+        memoryMonitor.stop()
+      } catch {
+        // the timer is already gone
       }
       try {
         await router.close()

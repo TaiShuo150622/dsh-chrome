@@ -11,9 +11,12 @@ Report the Chrome bridge state: whether the extension is connected, extension/ho
 
 ### `chrome_memory_stats`
 
-Report a provider memory snapshot: Node rss/heapUsed/heapTotal/external/arrayBuffers in bytes, plus retained-object counts for browser contexts, drivers, captures, console buffers, downloads, screenshot streams and the bridge. Numbers only — never page content, URLs, console text or credentials — so repeated calls can be compared to locate a leak.
+Report a provider memory snapshot: Node rss/heapUsed/heapTotal/external/arrayBuffers in bytes, plus retained-object counts for browser contexts, drivers, captures, console buffers, downloads, screenshot streams and the bridge. op:"start" begins explicit continuous sampling every intervalMs (default 5000ms, in-memory ring of 600, numeric JSONL at ~/.dsh/cache/dsh-chrome/memory.jsonl); op:"stop" ends sampling; op:"dump" returns the recent ring, retained-memory deltas and alerts; the default op:"status" returns a fresh snapshot plus monitor state. Numbers only — never page content, URLs, console text or credentials — so repeated calls can be compared to locate a leak.
 
-无参数。
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `op` | enum(start | stop | status | dump) | no | start/stop continuous sampling, dump the recent ring, or take a status snapshot (default). |
+| `intervalMs` | number | no | start: sampling interval in milliseconds (250–600000; default 5000). |
 
 ### `chrome_goto`
 

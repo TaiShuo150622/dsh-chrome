@@ -12,7 +12,7 @@
   - 新增工具 `chrome_memory_stats`（name 保持）；`chromeTools` 注入 `memoryStats`；index 传入。
   - 工具计数 45→46（+evaluate 47）；更新 p0/p1/p2/tool-schemas/sandbox 计数和覆盖。
   - 测试 `test/memory-stats.mjs`：fake contexts/bridge；无 context/bridge 时字段存在；计数正确。
-- [ ] M7 持续采样 ring/JSONL + alerts
+- [x] M7 持续采样 ring/JSONL + alerts
   - 新增 `src/memory-monitor.js`：`MemoryMonitor` 每 N ms 采样；内存中最多 600 条；可选 JSONL 写 `~/.dsh/cache/dsh-chrome/memory.jsonl`（0600，轮转/最多 2 天；只写数值/计数，不含页面内容）；`start/stop/status/dump`。
   - `chrome_memory_stats {op:"start|stop|status|dump", intervalMs}`：start 需要显式调用；status 默认快照；dump 返回最近 ring 和 retained 计算。
   - alerts：单次 rss > baseline*1.2、captureBodyBytes>8MB、pending>64、tabs!=bySession、context 关闭后 chromePid 仍存在。

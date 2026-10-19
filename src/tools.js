@@ -38,7 +38,7 @@ import {
 // callers that need the rest: maxChars (up to 200000) and chrome_get_text.
 const SNAPSHOT_TEXT_DEFAULT_CHARS = 20000
 
-export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null, contextViewer = null, update = null, artifactStore = null, memoryStats = null }) {
+export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null, contextViewer = null, update = null, artifactStore = null, memoryStats = null, memoryMonitor = null }) {
   const list = []
   const {
     ownerOf,
@@ -123,7 +123,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
 
   // Memory diagnostics (M6): a read-only snapshot assembled by the provider
   // (Node counters + context/bridge object counts). No page content is read.
-  const memoryTools = createMemoryTools({ memoryStats, outputSchema, renderText })
+  const memoryTools = createMemoryTools({ memoryStats, memoryMonitor, outputSchema, renderText })
 
   // Screencast/overlay tools (screencast/pointer/annotate/emulate) live in their
   // own module (Q20). The per-session stream guards and ownership ledger move
