@@ -14,6 +14,7 @@
  * Browser/platform paths live in src/platform.js. macOS Chrome keeps writing
  * exactly the paths it wrote before this module was table-driven.
  */
+import { execFileSync } from 'node:child_process'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -202,8 +203,9 @@ function windowsLauncherScript({ nodePath }) {
 /**
  * Windows has no NativeMessagingHosts directory convention: the browser reads
  * `HKCU\Software\<vendor>\<browser>\NativeMessagingHosts\<host name>` and uses
- * its default value as the arbitrary path to the manifest. We report the
- * registration instead of writing it (never mutates the registry).
+ * its default value as the arbitrary path to the manifest. The provider writes
+ * the HKCU value on Windows so a fresh install can connect without a manual
+ * `reg add`; failures are reported and the manual command is still emitted.
  */
 function windowsRegistration(platform, paths, manifestPath) {
   if (platform !== 'win') return null
@@ -240,7 +242,7 @@ function installInstructions({
     `- 桥接 discovery: ${path.join(cacheDir, 'bridge.json')}`,
     `- host 日志: ${path.join(cacheDir, 'host.log')}`,
   ]
-  if (registration) detailLines.push(`- Windows 注册表键（未自动写入）: ${registration.key}`)
+  if (registration) detailLines.push(`- Windows 注册表键（${registration.applied ? '已自动写入' : '未自动写入'}）: ${registration.key}`)
 
   const steps = [
     `1. 打开 ${extensionsUrl}`,
@@ -250,7 +252,9 @@ function installInstructions({
   ]
   if (platform === 'win') {
     steps.push(
-      '4. 注册 native host（仅当前用户，无需管理员；provider 不会自动执行这一步）：',
+      registration.applied
+        ? '4. native host 已自动注册（仅当前用户，无需管理员）。如果仍失败，手动执行：'
+        : '4. 注册 native host（仅当前用户，无需管理员）：',
       `   ${registration.command}`,
       `   校验：${registration.query}`,
       `5. **完全退出 ${browserLabel} 再打开**（Windows 上浏览器只在启动时解析注册表与 manifest）`,
@@ -393,10 +397,30 @@ export async function ensureInstallAssets({
 
   const registration = windowsRegistration(platformId, paths, nativeManifestPath)
   if (registration) {
-    logger?.warn?.(
-      'dsh-chrome: Windows native host registration is manual (not applied): %s',
-      registration.command,
-    )
+    // Easy deployment: register HKCU automatically on a real Windows host.
+    // The fake-Windows tests run on darwin/linux, so they still exercise the
+    // manual command/report path and never touch a real registry.
+    if (process.platform === 'win32' && platformId === 'win') {
+      try {
+        execFileSync('reg', ['add', registration.key, '/ve', '/d', registration.value, '/f'], {
+          stdio: 'ignore',
+          windowsHide: true,
+        })
+        registration.applied = true
+        logger?.info?.('dsh-chrome: Windows native host registered at %s', registration.key)
+      } catch (error) {
+        logger?.warn?.(
+          'dsh-chrome: Windows native host registration failed (%s); run manually: %s',
+          error?.message || String(error),
+          registration.command,
+        )
+      }
+    } else {
+      logger?.warn?.(
+        'dsh-chrome: Windows native host registration is manual (not applied): %s',
+        registration.command,
+      )
+    }
   } else {
     logger?.info?.(
       'dsh-chrome: native messaging manifest for %s written at %s',

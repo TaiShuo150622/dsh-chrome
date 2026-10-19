@@ -11,6 +11,11 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.1.99] - 2026-10-19
+
+- Windows native host 自动写 HKCU 注册表（0.1.99），修复 native messaging host not found
+- shared-visible 写租约门控：browser.shared.enabled=true 时写工具自动 acquire/release active tab lease，跨会话冲突 LEASE_HELD；新增 test/lease-gate
+
 ## [0.1.98] - 2026-10-19
 
 - I3 shared lease 基础：`src/lease.js` 的 `BrowserLeaseManager`（write 独占/read 共享、TTL、renew、heartbeat、release、`releaseTab`、显式 `takeover(by:"user")`，仅内存）

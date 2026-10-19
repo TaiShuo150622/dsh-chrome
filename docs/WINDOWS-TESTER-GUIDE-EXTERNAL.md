@@ -66,7 +66,7 @@ DSH 的「插件 → 添加插件」支持 **GitHub 仓库地址** 或 **本地�
 
 ### 3.3 让 Chrome 认识 native host
 
-正常情况下，DSH 启动时会自动写 native messaging manifest 和注册表。需要确认：
+正常情况下，DSH 启动时会自动写 native messaging manifest；**0.1.99 起 Windows 还会自动写 HKCU 注册表**。需要确认：
 
 1. DSH 启动后，**完全退出 Chrome（所有窗口）**，再重新打开；
 2. 点击扩展图标，popup 显示 **Connected**；
@@ -76,6 +76,32 @@ DSH 的「插件 → 添加插件」支持 **GitHub 仓库地址** 或 **本地�
    - 把 DSH 启动日志和 popup 截图发给管理员，不要自行改注册表。
 
 > Windows 只在浏览器启动时读取 native messaging 注册表，所以“先启动 DSH，再完全重启 Chrome”很关键。
+
+### 3.4 Windows 报 "Specified native messaging host not found"
+
+这是 **注册表没指向 manifest** 或 **manifest 指向的 host.exe 不存在**，不是扩展坏了。按下面顺序查：
+
+1. 确认 manifest 存在：
+   ```powershell
+   Test-Path "$env:USERPROFILE\.dsh\cache\dsh-chrome\native-messaging-hosts\com.deepseek.dsh.chrome.json"
+   ```
+2. 查注册表：
+   ```powershell
+   reg query "HKCU\Software\Google\Chrome\NativeMessagingHosts\com.deepseek.dsh.chrome" /ve
+   ```
+   如果是 Edge，把 `Google\Chrome` 换成 `Microsoft\Edge`。
+3. 没有就手动注册（Chrome）：
+   ```powershell
+   reg add "HKCU\Software\Google\Chrome\NativeMessagingHosts\com.deepseek.dsh.chrome" /ve /d "%USERPROFILE%\.dsh\cache\dsh-chrome\native-messaging-hosts\com.deepseek.dsh.chrome.json" /f
+   ```
+4. 打开 manifest，确认 `"path"` 指向的文件存在：
+   - 应该是 `%USERPROFILE%\.dsh\cache\dsh-chrome\host\dsh-chrome-host.exe`
+   - 如果指向 `.cmd` 或文件不存在：把 release 的 `dsh-chrome-host-win32-x64.exe` 复制成
+     `%USERPROFILE%\.dsh\cache\dsh-chrome\host\dsh-chrome-host.exe`，然后重启 DSH 让它重写 manifest。
+5. **完全退出 Chrome 再打开**，点扩展图标。
+6. 仍失败请发：`INSTALL.md`、manifest 内容、`reg query` 输出、`host.log`、扩展 ID。
+
+> 0.1.93 的包需要手动执行第 3 步；0.1.99 起 provider 会自动注册。
 
 ## 4. 需要测试什么（请逐项打勾）
 
