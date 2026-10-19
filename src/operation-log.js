@@ -489,6 +489,21 @@ function summarizeObject(object, depth, seen) {
 }
 
 const TYPE_TOOLS = new Set(['chrome_type'])
+const VERIFY_TOOLS = new Set(['chrome_verify'])
+
+// chrome_verify carries the same class of free text as chrome_type, one level
+// down inside steps[]. Keep the step shape (action/selector/ref) auditable but
+// never persist the typed string.
+function redactVerifySteps(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args) || !Array.isArray(args.steps)) return args
+  return {
+    ...args,
+    steps: args.steps.slice(0, 50).map((step) => {
+      if (!step || typeof step !== 'object' || Array.isArray(step) || !('text' in step)) return step
+      return { ...step, text: REDACTED }
+    }),
+  }
+}
 
 function summarizeArgs(args, tool = '') {
   if (args == null) return {}
@@ -496,6 +511,9 @@ function summarizeArgs(args, tool = '') {
     // Keyboard input is the one argument class that can be a password/OTP.
     // Keep the record auditable without persisting the typed string.
     return boundObject({ ...summarizeObject({ ...args, text: REDACTED }, 0, new WeakSet()) }, MAX_ARGS_BYTES)
+  }
+  if (VERIFY_TOOLS.has(tool) && args && typeof args === 'object' && !Array.isArray(args)) {
+    return boundObject(summarizeObject(redactVerifySteps(args), 0, new WeakSet()), MAX_ARGS_BYTES)
   }
   if (typeof args !== 'object') {
     const value = summarizeValue(args, 1, 'value', new WeakSet())

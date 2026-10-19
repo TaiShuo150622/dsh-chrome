@@ -195,6 +195,36 @@ await check('redacts URL userinfo/secret queries, password fields and inline sec
   }
 })
 
+await check('chrome_verify step text never reaches the log', () => {
+  useFreshHome('verify-redact')
+  const sentinel = 'DSH_SENTINEL_VERIFY_TEXT_DO_NOT_USE'
+  assert.equal(
+    appendOperation({
+      tool: 'chrome_verify',
+      backend: 'headless',
+      startedAt: '2026-10-17T21:31:30.000Z',
+      durationMs: 5,
+      ok: true,
+      args: {
+        contextId: 'ctx-1',
+        steps: [
+          { action: 'navigate', url: 'https://example.com/login' },
+          { action: 'type', selector: '#pw', text: sentinel, replace: true },
+          { action: 'assert', checks: [{ type: 'text', contains: 'Welcome' }] },
+        ],
+      },
+      result: { ok: true, checks: [{ id: 'check-1', ok: true }] },
+    }),
+    true,
+  )
+  const entry = readEntries()[0]
+  assertRecordShape(entry)
+  assert.equal(entry.args.steps[1].text, '«redacted»')
+  assert.equal(entry.args.steps[1].selector, '#pw', 'the step shape stays auditable')
+  assert.equal(entry.args.steps[0].action, 'navigate')
+  assert.equal(JSON.stringify(entry).includes(sentinel), false, 'chrome_verify step text must never be logged')
+})
+
 await check('keeps a single record with huge args/results under 2 KiB and drops binary content', () => {
   useFreshHome('size')
   const huge = 'A1b2C3d4'.repeat(30000)

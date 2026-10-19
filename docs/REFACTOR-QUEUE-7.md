@@ -12,7 +12,7 @@
   - `src/headless-page-actions.js` 的 `currentSelection` 对 password/hidden/支付/OTP 等敏感字段返回 `SENSITIVE_SELECTION`；
   - `src/viewer-input.js` / `viewer-html.js` 的 type 回包/状态栏不再显示 value，只显示 typed/submitted；
   - 更新 context-viewer/headless 相关测试；全量测试。
-- [ ] Q33 capture / verify 脱敏补齐
+- [x] Q33 capture / verify 脱敏补齐
   - `src/headless-redact.js` 的 secret key/URL fragment/inline `password=...` 补齐 `pwd`/`otp`/`cvv` 等；
   - `chrome_verify` 的 `steps[].text` 不再明文进入 operation log（工具级 nested redaction）；
   - 新增/更新测试（含哨兵值不落盘）；全量测试。

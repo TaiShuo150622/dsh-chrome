@@ -3,17 +3,27 @@
  *
  * Captured request/response metadata is model-facing, so URLs, JSON keys and
  * text bodies are masked before they leave the driver and the amount of body
- * text kept per capture is bounded. Rules and budgets are a contract with the
- * desktop extension's capture implementation (test/capture-parity.mjs checks
- * both): keep them byte-for-byte identical when editing.
+ * text kept per capture is bounded. The shared cases are still a contract with
+ * the desktop extension's capture implementation (test/capture-parity.mjs
+ * checks both). Q33 intentionally widened only the headless key-name, fragment
+ * and inline `key=value` rules ahead of the extension, so those three rule sets
+ * are no longer byte-for-byte identical; keep the shared cases in sync.
  */
 
 const CAPTURE_BODY_TOTAL_LIMIT = 8 * 1024 * 1024
 export const CAPTURE_RESPONSE_BODY_CHARS = 4096
 export const CAPTURE_REQUEST_BODY_CHARS = 2048
 const CAPTURE_TEXT_MIME = /^text\/|json|xml|javascript|x-www-form-urlencoded|graphql/i
+// Query/form/JSON key names that must never carry a value into a capture.
+// `pwd`/`otp`/`cvv` match as whole key segments (delimited, exact or trailing)
+// so ordinary words such as `author` stay readable. The desktop extension keeps
+// the older list; this headless-only widening is the Q33 hardening.
 const CAPTURE_SECRET_PARAM =
-  /(pass(word|wd)?|secret|token|api[-_]?key|access[-_]?token|refresh[-_]?token|authorization|cookie|session[-_]?id|csrf|xsrf|signature|sig|credential|private[-_]?key)/i
+  /(pass(word|wd|phrase)?|secret|token|api[-_]?key|access[-_]?token|refresh[-_]?token|authorization|cookie|session[-_]?id|csrf|xsrf|signature|sig|credential|private[-_]?key|(?:^|[-_.])auth(?:[-_.]|$)|(?:^|[-_.])(?:pwd|otp|cvv2?)(?:[-_.]|$)|(?:pwd|otp|cvv2?)$)/i
+// `key=value` / `key: value` inside free text (a plain text body, a JSON string
+// value, a URL fragment). The value ends at the usual body delimiters.
+const CAPTURE_INLINE_SECRET =
+  /(pass(?:word|wd|phrase)?|pwd|otp|cvv2?|secret|token|api[-_]?key|access[-_]?token|refresh[-_]?token|authorization|cookie|session[-_]?id|csrf|xsrf|signature|sig|credential|private[-_]?key|\bauth\b)(["']?\s*[:=]\s*["']?)([^\s,;"'&}]{1,256})/gi
 
 function maskSecretsInText(text) {
   return String(text)
@@ -21,6 +31,23 @@ function maskSecretsInText(text) {
     .replace(/\bsk-[A-Za-z0-9]{10,}\b/g, '«redacted»')
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b/g, '«redacted»')
     .replace(/\bAKIA[0-9A-Z]{16}\b/g, '«redacted»')
+    .replace(CAPTURE_INLINE_SECRET, '$1$2«redacted»')
+}
+
+// Fragments can carry OAuth tokens (`#access_token=…`) or a bare secret. Apply
+// the query-parameter rule to key/value pairs and the inline token masks to the
+// rest, so `#section` and other harmless anchors survive unchanged.
+function redactFragment(fragment) {
+  const body = String(fragment || '').replace(/^#/, '')
+  if (!body) return fragment
+  const parts = body.split('&').map((part) => {
+    const index = part.indexOf('=')
+    if (index < 0) return maskSecretsInText(part)
+    const name = part.slice(0, index)
+    const value = part.slice(index + 1)
+    return CAPTURE_SECRET_PARAM.test(name) ? `${name}=«redacted»` : `${name}=${maskSecretsInText(value)}`
+  })
+  return `#${parts.join('&')}`
 }
 
 export function redactUrl(rawUrl) {
@@ -32,6 +59,7 @@ export function redactUrl(rawUrl) {
     for (const name of [...parsed.searchParams.keys()]) {
       if (CAPTURE_SECRET_PARAM.test(name)) parsed.searchParams.set(name, '«redacted»')
     }
+    if (parsed.hash) parsed.hash = redactFragment(parsed.hash)
     url = parsed.toString().replace(/%C2%ABredacted%C2%BB/gi, '«redacted»')
   } catch {
     // keep non-URL strings
