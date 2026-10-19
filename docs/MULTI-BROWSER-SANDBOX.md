@@ -197,7 +197,8 @@ visible 模式：`presetToMode('debug').visible === true`，`index.js` 把 `visi
 | `browser.maxContexts` | 4（clamp 1–16） | ✅ | 全局上限，非每 owner |
 | `browser.idleTimeoutMs` | 300000（clamp 10s–1h） | ✅ | 非 visible context 的回收阈值 |
 | `browser.profilesDir` | `$DSH_HOME/cache/dsh-chrome/profiles` | ✅ | 所有 context profile 的根 |
-| `browser.headless.chromeExecutable` | null | ❌ | 代码只读 `DSH_HEADLESS_CHROME`，这个字段没有接进 driver |
+| `browser.headless.chromeExecutable` | null | ✅ | 传给每个 `HeadlessDriver`；`DSH_HEADLESS_CHROME` 覆盖它（`src/headless-browsers.js` 解析，`test/headless-browsers.mjs` 覆盖） |
+| `browser.engine` | null | ✅ | `chrome/chromium/edge/brave`；`DSH_HEADLESS_ENGINE` 覆盖它；显式 engine 不存在时报 `HEADLESS_EXECUTABLE_NOT_FOUND`，不回退 |
 | `browser.headless.viewport` | 1440×900 | ❌ | `index.js` 没有把 viewport 传给 driver；实际用 `HeadlessDriver` 默认值 |
 | `browser.shared.enabled` | false | ⚠️ | 只控制写工具是否走隐式 lease 门控；不启用 `collab` |
 | `verification.artifactDir` | `$DSH_HOME/cache/dsh-chrome/artifacts` | ✅ | `ArtifactStore` 根 |

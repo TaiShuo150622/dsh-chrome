@@ -10,8 +10,9 @@ provider 启动时调用 `ensureInstallAssets()`，按 [`src/platform.js`](../sr
 launcher 和 native messaging manifest：
 
 - **macOS / Linux**：manifest 直接写进对应浏览器的 `NativeMessagingHosts/` 目录，浏览器启动时读取；
-- **Windows**：写进 DSH 自己的 manifest 目录，并**打印**注册表命令——本仓库**不会自动改注册表**，
-  这一步需要人执行（见 [§3.3](#33-windows)）。
+- **Windows**：写进 DSH 自己的 manifest 目录；在**真实 Windows** 上自动写 HKCU 注册表
+  （当前用户，无需管理员）。自动写入失败或运行在非 Windows 的测试环境时**打印**注册表命令，
+  由人执行（见 [§3.3](#33-windows)）。
 
 浏览器/平台差异只允许出现在路径表里；`src/install.js` 只负责写文件，`src/tools.js` 不知道平台细节。
 
@@ -119,8 +120,9 @@ native host manifest 的 `allowed_origins` 是 `chrome-extension://<id>/`——E
 
 1. 启用 provider bundle，自动写入 manifest 到
    `%USERPROFILE%\.dsh\cache\dsh-chrome\native-messaging-hosts\com.deepseek.dsh.chrome.json`
-   （`DSH_HOME` 可覆盖目录），**不自动写注册表**；
-2. 注册 native host（当前用户，无需管理员），manifest 路径按实际输出替换：
+   （`DSH_HOME` 可覆盖目录）；**真实 Windows 上同时自动写 HKCU 注册表**（当前用户，无需管理员）。
+   自动写入失败时日志/`INSTALL.md` 会打印手动命令，继续第 2 步；
+2. （仅当自动注册失败或需要手工修复）注册 native host，manifest 路径按实际输出替换：
 
    ```bat
    reg add "HKCU\Software\Google\Chrome\NativeMessagingHosts\com.deepseek.dsh.chrome" /ve /d "%USERPROFILE%\.dsh\cache\dsh-chrome\native-messaging-hosts\com.deepseek.dsh.chrome.json" /f

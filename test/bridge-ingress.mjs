@@ -41,7 +41,7 @@ try {
     }
   })
   await new Promise((resolve) => socket.once('connect', resolve))
-  socket.write(`${JSON.stringify({ type: 'hello', token: discovery.token })}\n`)
+  socket.write(`${JSON.stringify({ type: 'hello', token: discovery.token, protocol: 1 })}\n`)
   await waitFor(() => lines.some((line) => line.type === 'hello-ok'))
 
   const dispose = bridge.registerHandler('sidecar.ping', async (params) => ({ ok: true, echo: params?.value ?? null }))
