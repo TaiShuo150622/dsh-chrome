@@ -114,6 +114,10 @@ try {
   fs.writeFileSync(path.join(runA, 'report.json'), '{}')
   fs.writeFileSync(path.join(runB, 'report.json'), '{}')
   fs.writeFileSync(path.join(runC, 'report.json'), '{}')
+  const epoch = Date.now() / 1000
+  fs.utimesSync(runA, epoch - 30, epoch - 30)
+  fs.utimesSync(runB, epoch - 20, epoch - 20)
+  fs.utimesSync(runC, epoch - 10, epoch - 10)
   const pruned = manager.pruneArtifacts(2)
   assert.equal(pruned.length, 1)
   assert.equal(fs.existsSync(runA), false, 'oldest artifact run should be pruned')
