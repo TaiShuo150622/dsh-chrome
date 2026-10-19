@@ -943,3 +943,14 @@ node test/install-platform.mjs
 ---
 
 **最后一句**：本文的目标不是把现状说得悲观，而是把“已落地的基础”和“还不能承诺的能力”分开。阶段 A 的收益最大：它不需要新引擎，只修并发/生命周期/登录/产物隔离，就能让“多沙盒实例”从 demo 变成可依赖的能力；多引擎和 Safari 应该在其后按阶段推进。
+
+
+## 附：0.2.15 已修（Q34）
+
+- `BrowserContextManager.create` 增加 pending 预留，`maxContexts` 并发不超限；
+- 同一 owner 并发 create 复用进行中 context；
+- named profile 并发创建原子拒绝 `PROFILE_IN_USE`；失败回滚 profile/槽位/预留；
+- `chrome_headless_login` 接到 active context 的 driver（无 active → `NO_ACTIVE_CONTEXT`）；
+- 新增 16 并发/同 owner 去重/profile 互斥/失败回滚测试。
+
+多引擎（Edge/Brave/Windows 桌面）与 Safari 仍未实现，仍按本文 B/C/D 阶段。

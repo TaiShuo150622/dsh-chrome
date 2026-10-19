@@ -667,3 +667,14 @@ npm test
 ## 9. 一句话总结
 
 **当前能做的是“人工登录 + 显示打码 + 抓包脱敏”，不是密码管理。** 下一步先把 `chrome_type`/selection/viewer/capture 的明文出口堵住（P0；`0.2.14` 已修 operation log 的 `chrome_type.text`，其余仍在），再引入 OS 凭据库 + 独立 helper，让模型只说“填哪个站点的凭据”，由 helper 在内部取密并填充；桌面程序化填充、passkey/2FA 都不做过度承诺。
+
+
+## 附：0.2.15 已修（Q31–Q33）
+
+- `chrome_type` 结果不再返回字段值，render 不显示输入；
+- headless selection 对敏感字段返回 `SENSITIVE_SELECTION`；
+- viewer type 回包/状态栏不回显 value；
+- capture 补 `pwd/otp/cvv/auth`、URL fragment、inline `password=...`；
+- `chrome_verify` steps[].text 不再明文进 operation log。
+
+仍没有 OS 凭据库/helper/autofill；P1+ 仍未实现。
