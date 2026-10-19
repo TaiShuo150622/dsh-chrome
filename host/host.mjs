@@ -17,8 +17,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 
-const HOST_VERSION = '0.0.1'
-const PROTOCOL = 1
+/**
+ * Host protocol version. Must stay equal to `PROTOCOL_VERSION` in
+ * src/bridge.js; tests/platform/protocol.mjs parses both constants and fails
+ * when they drift. There is no silent downgrade: an unsupported value is
+ * logged and the host stops reconnecting to that provider generation.
+ */
+const HOST_PROTOCOL = 1
 const MAX_FRAME_BYTES = 32 * 1024 * 1024
 const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
 const cacheDir = path.join(home, 'cache', 'dsh-chrome')
@@ -28,12 +33,49 @@ const updateStatePath = path.join(cacheDir, 'update-state.json')
 const screencastDir = path.join(cacheDir, 'screencast')
 const updateLogPath = path.join(cacheDir, 'update.log')
 
+function positiveIntEnv(name, fallback) {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
+}
+
+/**
+ * `HOST_VERSION` is injected by the build (docs/CONTRACTS.md §6): the SEA
+ * bootstrap sets `DSH_CHROME_HOST_VERSION` from package.json, and a source
+ * checkout reads package.json directly. 0.0.1 used to be hardcoded here and
+ * made chrome_status report a version that did not exist.
+ */
+function resolveHostVersion() {
+  const injected = String(process.env.DSH_CHROME_HOST_VERSION || '').trim()
+  if (injected) return injected
+  try {
+    const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+    if (typeof pkg?.version === 'string' && pkg.version.trim()) return pkg.version.trim()
+  } catch {
+    // SEA / data: URL or a stripped checkout: no package.json to read.
+  }
+  return '0.0.0-unknown'
+}
+
+const HOST_VERSION = resolveHostVersion()
+const MAX_PROTOCOL_MISMATCH_ATTEMPTS = positiveIntEnv('DSH_HOST_MAX_PROTOCOL_MISMATCHES', 3)
+const RETRY_BASE_MS = positiveIntEnv('DSH_HOST_RETRY_BASE_MS', 500)
+const RETRY_MAX_MS = positiveIntEnv('DSH_HOST_RETRY_MAX_MS', 5000)
+const MISMATCH_POLL_MS = positiveIntEnv('DSH_HOST_MISMATCH_POLL_MS', RETRY_MAX_MS)
+
 let socket = null
 let authed = false
 let socketBuffer = ''
 let stdinEnded = false
 let retryTimer = null
-let retryDelay = 500
+let retryDelay = RETRY_BASE_MS
+// Protocol-mismatch retry policy: ordinary provider-not-running reconnects
+// keep backing off forever (the host must outlive DSH restarts), but a
+// *version* disagreement is different — retrying cannot fix it, so after
+// MAX_PROTOCOL_MISMATCH_ATTEMPTS the host pauses until bridge.json changes
+// (a new provider generation / DSH upgrade) instead of reconnecting forever.
+let protocolMismatchCount = 0
+let blockedDiscoveryToken = null
+let mismatchPollTimer = null
 // M5: the host is a relay, not a request store. Bound the in-flight request
 // table so a peer that stops answering cannot grow the host without limit, and
 // expire a single entry so an unanswered request does not stay forever. The
@@ -422,16 +464,70 @@ function rejectOverLimit(id, method, origin) {
   sendPendingError(origin, id, 'RESOURCE_LIMIT', message)
 }
 
+function clearMismatchPoll() {
+  if (mismatchPollTimer) {
+    clearTimeout(mismatchPollTimer)
+    mismatchPollTimer = null
+  }
+}
+
+/** Watch bridge.json only; a token change means a new provider generation. */
+function scheduleMismatchPoll() {
+  if (stdinEnded || blockedDiscoveryToken === null || mismatchPollTimer) return
+  mismatchPollTimer = setTimeout(() => {
+    mismatchPollTimer = null
+    const discovery = readDiscovery()
+    if (!discovery?.token || String(discovery.token) === blockedDiscoveryToken) {
+      scheduleMismatchPoll()
+      return
+    }
+    log('bridge.json changed after protocol mismatch; allowing a fresh negotiation')
+    blockedDiscoveryToken = null
+    protocolMismatchCount = 0
+    retryDelay = RETRY_BASE_MS
+    connectBridge()
+  }, MISMATCH_POLL_MS)
+  mismatchPollTimer.unref?.()
+}
+
 function scheduleReconnect(reason) {
   if (stdinEnded) return
+  if (blockedDiscoveryToken !== null) {
+    scheduleMismatchPoll()
+    return
+  }
   if (retryTimer) return
   const delay = retryDelay
   retryTimer = setTimeout(() => {
     retryTimer = null
     connectBridge()
   }, delay)
-  retryDelay = Math.min(retryDelay * 2, 5000)
+  retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS)
   log(`will reconnect in ${delay}ms (${reason})`)
+}
+
+function supportedProtocol(value) {
+  return Number.isInteger(value) && value === HOST_PROTOCOL
+}
+
+function handleProtocolMismatch({ source, received, code = 'PROTOCOL_VERSION_MISMATCH', detail = '', discovery }) {
+  protocolMismatchCount += 1
+  const shown = received === undefined ? null : received
+  log(
+    `protocol mismatch (${source}): host=${HOST_PROTOCOL} provider=${JSON.stringify(shown)} ` +
+      `${detail ? `${detail} ` : ''}[${code}] attempt ${protocolMismatchCount}/${MAX_PROTOCOL_MISMATCH_ATTEMPTS}`,
+  )
+  if (protocolMismatchCount >= MAX_PROTOCOL_MISMATCH_ATTEMPTS) {
+    blockedDiscoveryToken = discovery?.token == null ? '' : String(discovery.token)
+    clearMismatchPoll()
+    log(
+      'protocol negotiation failed repeatedly; reconnect paused until bridge.json changes. ' +
+        'This path never spawns another host or Chrome process.',
+    )
+    scheduleMismatchPoll()
+    return
+  }
+  scheduleReconnect('protocol mismatch')
 }
 
 function onSocketData(chunk, source) {
@@ -452,10 +548,31 @@ function onSocketData(chunk, source) {
     }
     if (!authed) {
       if (message?.type === 'hello-ok') {
+        if (!supportedProtocol(message.protocol)) {
+          handleProtocolMismatch({
+            source: 'hello-ok',
+            received: message.protocol,
+            discovery: readDiscovery(),
+          })
+          source.destroy()
+          continue
+        }
         authed = true
-        retryDelay = 500
+        retryDelay = RETRY_BASE_MS
+        protocolMismatchCount = 0
+        blockedDiscoveryToken = null
+        clearMismatchPoll()
         log(`bridge authenticated (protocol ${message.protocol})`)
         sendExtensionState()
+      } else if (message?.type === 'hello-error') {
+        handleProtocolMismatch({
+          source: 'hello-error',
+          received: message.received,
+          code: typeof message.code === 'string' ? message.code : 'PROTOCOL_VERSION_MISMATCH',
+          detail: typeof message.message === 'string' ? message.message : '',
+          discovery: readDiscovery(),
+        })
+        source.destroy()
       } else {
         log('unexpected bridge greeting; reconnecting')
         source.destroy()
@@ -489,6 +606,29 @@ function connectBridge() {
     scheduleReconnect('discovery file missing (is DSH running?)')
     return
   }
+  if (blockedDiscoveryToken !== null && String(discovery.token) === blockedDiscoveryToken) {
+    scheduleMismatchPoll()
+    return
+  }
+  if (blockedDiscoveryToken !== null) {
+    // A new provider generation wrote a new token: retry negotiation once,
+    // even if the previous generation's protocol was incompatible.
+    log('bridge token changed after protocol mismatch; retrying negotiation')
+    blockedDiscoveryToken = null
+    protocolMismatchCount = 0
+  }
+  if (discovery.protocol != null && !supportedProtocol(discovery.protocol)) {
+    // Fail before connecting: the discovery file already declares the
+    // provider's protocol, so there is nothing to negotiate.
+    handleProtocolMismatch({
+      source: 'discovery',
+      received: discovery.protocol,
+      detail: 'discovery file',
+      discovery,
+    })
+    scheduleMismatchPoll()
+    return
+  }
   authed = false
   socketBuffer = ''
   forgetPending()
@@ -502,7 +642,7 @@ function connectBridge() {
         type: 'hello',
         token: discovery.token,
         hostVersion: HOST_VERSION,
-        protocol: PROTOCOL,
+        protocol: HOST_PROTOCOL,
       })}\n`,
     )
   })
@@ -520,7 +660,7 @@ function connectBridge() {
   })
 }
 
-log(`host started pid=${process.pid}`)
+log(`host started pid=${process.pid} version=${HOST_VERSION} protocol=${HOST_PROTOCOL}`)
 connectBridge()
 startExtensionWatcher()
 startManifestPolling()
@@ -552,6 +692,7 @@ function shutdown(code, reason = 'shutdown') {
     clearTimeout(retryTimer)
     retryTimer = null
   }
+  clearMismatchPoll()
   if (watchTimer) {
     clearTimeout(watchTimer)
     watchTimer = null

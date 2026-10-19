@@ -156,6 +156,10 @@ Chrome native messaging**（后者见 §8）。
    manifest 的 `path` 指向它，不再写 `.cmd`，也不再复制 `host.mjs`（已内嵌）；
 3. 没找到：沿用旧的 `.cmd` 脚手架 + `host.mjs`，并打 warn（Chrome 通常起不来，
    仅供源码检出）。
+4. host 版本由构建注入：`makeSeaEntry()` 在 CJS bootstrap 里写
+   `process.env.DSH_CHROME_HOST_VERSION = "<package.json version>"`，再导入内嵌
+   `host.mjs`；host 用它填写 hello 的 `hostVersion`，不再硬编码 `0.0.1`
+   （CONTRACTS §6）。`.cmd` 回退路径同样在脚本里 `set` 这个变量。
 
 **运行中的 exe 不能被覆盖**：Windows 会在 native host 进程存活期间锁住 exe 映像。
 install 每次启动会尝试把包里的 exe 复制到缓存目录；如果目标正被运行中的 host 占用
@@ -287,7 +291,10 @@ rmdir /s /q "%USERPROFILE%\.dsh\cache\dsh-chrome"
   HKCU，不需要管理员。exe 位于用户 profile，用户可写——和用户账户同信任级。
   对外分发请签名并考虑安装到受控目录。
 - **host 协议不变**：native messaging 的 4-byte 长度前缀、32 MiB 帧上限、bridge
-  socket/token 逻辑都沿用 `host/host.mjs`，Windows 没有单独实现。
+  socket/token 逻辑都沿用 `host/host.mjs`，Windows 没有单独实现。bridge 在 Windows 上用
+  命名管道（`\\.\pipe\dsh-chrome-<hash>-<pid>`），host 只读 `bridge.json` 的 `socketPath`；
+  hello/hello-ok 新增 `protocol` 版本协商与 `PROTOCOL_VERSION_MISMATCH`，协议不匹配
+  重试有界（见 [PLATFORM-AUDIT.md](PLATFORM-AUDIT.md) §1/§4）。
 
 ## 8. Windows 真机验证清单
 

@@ -3,7 +3,9 @@
  * connects to. The native host relays JSON frames from the extension.
  *
  * Wire format: one JSON object per line. The first line from the host is
- * {"type":"hello","token":...}; the provider answers {"type":"hello-ok"}.
+ * {"type":"hello","token":...,"protocol":1}; the provider either answers
+ * {"type":"hello-ok","protocol":1} or closes with a stable
+ * `PROTOCOL_VERSION_MISMATCH` hello-error frame (never a silent downgrade).
  */
 import net from 'node:net'
 import fs from 'node:fs'
@@ -11,8 +13,21 @@ import path from 'node:path'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
 export const PROTOCOL_VERSION = 1
+/**
+ * Protocol versions this provider can speak. Negotiation is exact-match: the
+ * provider never falls back to an older protocol because a newer host might
+ * send frames this provider would misinterpret. Bump both the constant and
+ * this list only together with `HOST_PROTOCOL` in host/host.mjs.
+ */
+export const SUPPORTED_PROTOCOL_VERSIONS = Object.freeze([1])
+/** Stable error code required by docs/CONTRACTS.md §1/§6. Never rename it. */
+export const PROTOCOL_VERSION_MISMATCH = 'PROTOCOL_VERSION_MISMATCH'
 const HELLO_TIMEOUT_MS = 5000
 const DEFAULT_TIMEOUT_MS = 30000
+
+function isSupportedProtocol(value) {
+  return Number.isInteger(value) && SUPPORTED_PROTOCOL_VERSIONS.includes(value)
+}
 
 export class BridgeError extends Error {
   constructor(code, message) {
@@ -48,10 +63,15 @@ export class BridgeServer {
     this.home = home
     this.platform = platform
     this.pid = pid
-    this.dir = path.join(home, 'cache', 'dsh-chrome')
+    // Use the target platform's separator rules even when a test fakes
+    // `platform: 'win32'` on macOS/Linux (the real process still uses the
+    // host `path`, but discovery/dir strings must look Windows-native).
+    const pathImpl = platform === 'win32' ? path.win32 : path.posix
+    this.dir = pathImpl.join(String(home), 'cache', 'dsh-chrome')
     this.socketPath = bridgeSocketPath({ home, platform, pid })
     this.lastError = null
-    this.discoveryPath = path.join(this.dir, 'bridge.json')
+    this.lastProtocolError = null
+    this.discoveryPath = pathImpl.join(this.dir, 'bridge.json')
     this.token = randomBytes(32).toString('hex')
     this.server = null
     this.socket = null
@@ -61,6 +81,7 @@ export class BridgeServer {
     this.handlers = new Map()
     this.nextId = 0
     this.hostVersion = null
+    this.hostProtocol = null
     this.extensionVersion = null
     this.startedAt = Date.now()
     this.pingTimer = null
@@ -101,30 +122,56 @@ export class BridgeServer {
     }
     const server = net.createServer((socket) => this.#accept(socket))
     this.server = server
-    await new Promise((resolve, reject) => {
-      server.once('error', reject)
-      server.listen(this.socketPath, () => {
-        server.off('error', reject)
-        resolve()
+    try {
+      await new Promise((resolve, reject) => {
+        server.once('error', reject)
+        server.listen(this.socketPath, () => {
+          server.off('error', reject)
+          resolve()
+        })
       })
-    })
-    if (this.platform !== 'win32') fs.chmodSync(this.socketPath, 0o600)
-    this.lastError = null
-    fs.writeFileSync(
-      this.discoveryPath,
-      JSON.stringify(
-        {
-          protocol: PROTOCOL_VERSION,
-          socketPath: this.socketPath,
-          token: this.token,
-          pid: process.pid,
-          startedAt: this.startedAt,
-        },
-        null,
-        2,
-      ),
-      { mode: 0o600 },
-    )
+      if (this.platform !== 'win32') fs.chmodSync(this.socketPath, 0o600)
+      // `mode` only applies when the file is created, so an existing stale
+      // bridge.json (e.g. 0644 from an older build) must be chmod'ed
+      // explicitly: it carries the connection token.
+      fs.writeFileSync(
+        this.discoveryPath,
+        JSON.stringify(
+          {
+            protocol: PROTOCOL_VERSION,
+            socketPath: this.socketPath,
+            token: this.token,
+            pid: process.pid,
+            startedAt: this.startedAt,
+          },
+          null,
+          2,
+        ),
+        { mode: 0o600 },
+      )
+      if (this.platform !== 'win32') fs.chmodSync(this.discoveryPath, 0o600)
+      this.lastError = null
+    } catch (error) {
+      // Roll back a half-started listener: a failed discovery write must not
+      // leave a bound socket (or a stale socket file) behind.
+      this.lastError = error
+      await new Promise((resolve) => {
+        try {
+          server.close(() => resolve())
+        } catch {
+          resolve()
+        }
+      })
+      if (this.server === server) this.server = null
+      if (this.platform !== 'win32') {
+        try {
+          fs.unlinkSync(this.socketPath)
+        } catch {
+          // never created, or already gone
+        }
+      }
+      throw error
+    }
   }
 
   #accept(socket) {
@@ -180,10 +227,50 @@ export class BridgeServer {
           socket.destroy()
           return
         }
+        if (!isSupportedProtocol(message.protocol)) {
+          // Fail closed with a stable, machine-readable code: an old/new host
+          // must not silently speak a protocol the provider does not
+          // implement. `socket.end` flushes the frame before FIN so the host
+          // can log the real reason instead of a generic close.
+          const received = message.protocol === undefined ? null : message.protocol
+          const error = new BridgeError(
+            PROTOCOL_VERSION_MISMATCH,
+            `unsupported bridge protocol ${JSON.stringify(received)}; provider speaks ${PROTOCOL_VERSION}`,
+          )
+          this.lastProtocolError = {
+            code: error.code,
+            message: error.message,
+            received,
+            expected: PROTOCOL_VERSION,
+          }
+          clearTimeout(helloTimer)
+          try {
+            socket.end(
+              `${JSON.stringify({
+                type: 'hello-error',
+                code: PROTOCOL_VERSION_MISMATCH,
+                message: error.message,
+                expected: PROTOCOL_VERSION,
+                received,
+              })}\n`,
+            )
+          } catch {
+            socket.destroy()
+          }
+          return
+        }
         this.authed = true
         clearTimeout(helloTimer)
+        this.lastProtocolError = null
         if (typeof message.hostVersion === 'string') this.hostVersion = message.hostVersion
-        socket.write(`${JSON.stringify({ type: 'hello-ok', protocol: PROTOCOL_VERSION })}\n`)
+        this.hostProtocol = message.protocol
+        socket.write(
+          `${JSON.stringify({
+            type: 'hello-ok',
+            protocol: PROTOCOL_VERSION,
+            hostProtocol: message.protocol,
+          })}\n`,
+        )
         // Heartbeat: lets the extension notice a silently dead native port
         // (Chrome does not always deliver onDisconnect immediately).
         this.pingTimer = setInterval(() => {

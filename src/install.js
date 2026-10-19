@@ -6,8 +6,8 @@
  *   Chrome cannot CreateProcess a `.cmd` native host (see docs/WINDOWS-HOST.md);
  * - write the native messaging host manifest for the selected browser/platform
  *   (macOS / Linux: a well-known per-browser directory; Windows: a DSH-owned
- *   file plus a manual registry registration, which is only printed here and
- *   never applied — see docs/INSTALL-PLATFORM.md);
+ *   file plus an HKCU registration that is applied on a real Windows host and
+ *   only printed on non-Windows test/fake runs — see docs/INSTALL-PLATFORM.md);
  * - derive the pinned extension id from the extension manifest key;
  * - write INSTALL.md next to the discovery file.
  *
@@ -131,23 +131,28 @@ export function extensionIdFromKey(keyBase64) {
   return [...hash].map((char) => String.fromCharCode(97 + Number.parseInt(char, 16))).join('')
 }
 
-function posixLauncherScript({ nodePath }) {
+function posixLauncherScript({ nodePath, hostVersion }) {
+  // DSH_CHROME_HOST_VERSION is captured at install time: the installed host.mjs
+  // lives in the cache and has no package.json next to it, and the SEA path
+  // cannot be used on macOS/Linux. Without this the host would fall back to
+  // 0.0.0-unknown in chrome_status (docs/CONTRACTS.md §6).
+  const versionEnv = `DSH_CHROME_HOST_VERSION=${JSON.stringify(String(hostVersion || 'unknown'))}`
   return `#!/bin/sh
 set -e
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 host="$dir/host.mjs"
 # 1) Chrome launched from a DSH-managed shell
 if [ -n "\${DSH_DESKTOP_NODE_EXECUTABLE:-}" ]; then
-  exec env ELECTRON_RUN_AS_NODE=1 "$DSH_DESKTOP_NODE_EXECUTABLE" --expose-internals "$host"
+  exec env ELECTRON_RUN_AS_NODE=1 ${versionEnv} "$DSH_DESKTOP_NODE_EXECUTABLE" --expose-internals "$host"
 fi
 # 2) The DSH app binary captured at installation time (Electron runs as Node)
 if [ -x ${JSON.stringify(nodePath)} ]; then
-  exec env ELECTRON_RUN_AS_NODE=1 ${JSON.stringify(nodePath)} --expose-internals "$host"
+  exec env ELECTRON_RUN_AS_NODE=1 ${versionEnv} ${JSON.stringify(nodePath)} --expose-internals "$host"
 fi
 # 3) A developer node on PATH
 node_path=$(command -v node || true)
 if [ -n "$node_path" ]; then
-  exec "$node_path" "$host"
+  exec env ${versionEnv} "$node_path" "$host"
 fi
 echo "dsh-chrome-host: no Node/Electron executable found" >&2
 exit 1
@@ -170,11 +175,12 @@ function commandQuote(value) {
  * build step. Release installs must ship `dsh-chrome-host.exe` (Node SEA) and
  * `ensureInstallAssets()` points the manifest at it — see docs/WINDOWS-HOST.md.
  */
-function windowsLauncherScript({ nodePath }) {
+function windowsLauncherScript({ nodePath, hostVersion }) {
   const lines = [
     '@echo off',
     'rem DSH Desktop Chrome native host launcher (Windows scaffold).',
     'setlocal',
+    `set "DSH_CHROME_HOST_VERSION=${String(hostVersion || 'unknown').replace(/%/g, '%%')}"`,
     'set "DIR=%~dp0"',
     'if defined DSH_DESKTOP_NODE_EXECUTABLE goto use_dsh_node',
     `if exist ${batchQuote(nodePath)} goto use_captured_node`,
@@ -203,9 +209,11 @@ function windowsLauncherScript({ nodePath }) {
 /**
  * Windows has no NativeMessagingHosts directory convention: the browser reads
  * `HKCU\Software\<vendor>\<browser>\NativeMessagingHosts\<host name>` and uses
- * its default value as the arbitrary path to the manifest. The provider writes
- * the HKCU value on Windows so a fresh install can connect without a manual
- * `reg add`; failures are reported and the manual command is still emitted.
+ * its default value as the arbitrary path to the manifest. On a real win32
+ * host the provider writes the HKCU value so a fresh install can connect
+ * without a manual `reg add`; failures are reported and the manual command is
+ * still emitted. Faked Windows runs (tests on macOS/Linux) never touch a real
+ * registry and only report the command.
  */
 function windowsRegistration(platform, paths, manifestPath) {
   if (platform !== 'win') return null
@@ -364,8 +372,8 @@ export async function ensureInstallAssets({
     launcherPath = path.join(hostDir, isWindows ? 'dsh-chrome-host.cmd' : 'dsh-chrome-host')
     launcherKind = isWindows ? 'cmd' : 'script'
     const launcher = isWindows
-      ? windowsLauncherScript({ nodePath: process.execPath })
-      : posixLauncherScript({ nodePath: process.execPath })
+      ? windowsLauncherScript({ nodePath: process.execPath, hostVersion: manifest.version })
+      : posixLauncherScript({ nodePath: process.execPath, hostVersion: manifest.version })
     await fsImpl.writeFile(launcherPath, launcher, { mode: isWindows ? 0o644 : 0o755 })
     if (!isWindows) await fsImpl.chmod(launcherPath, 0o755)
     if (isWindows) {
@@ -378,7 +386,14 @@ export async function ensureInstallAssets({
   }
 
   const nativeManifestPath = path.join(paths.nativeMessagingHostsDir, `${HOST_NAME}.json`)
-  await fsImpl.mkdir(paths.nativeMessagingHostsDir, { recursive: true })
+  // On Windows the manifest lives in a DSH-owned directory (the browser finds
+  // it through the registry), so keep that directory private to the user.
+  // On macOS/Linux the directory belongs to the browser profile and must keep
+  // its existing permissions.
+  await fsImpl.mkdir(
+    paths.nativeMessagingHostsDir,
+    paths.nativeMessagingMode === 'registry' ? { recursive: true, mode: 0o700 } : { recursive: true },
+  )
   await fsImpl.writeFile(
     nativeManifestPath,
     `${JSON.stringify(
@@ -458,6 +473,7 @@ export async function ensureInstallAssets({
   return {
     extensionId,
     extensionDir,
+    hostVersion: manifest.version,
     nativeManifestPath,
     launcherPath,
     launcherKind,
