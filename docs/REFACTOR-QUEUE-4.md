@@ -8,7 +8,7 @@
 - [x] Q18 拆出 input 工具
   - 新建 `src/tools-input.js`，迁移 `chrome_click`、`chrome_click_at`、`chrome_type`、`chrome_press`、`chrome_hover`、`chrome_scroll`、`chrome_select`、`chrome_drag`、`chrome_upload`；
   - 注入实际依赖；`mutating` 元数据/审批/lease 语义不变；全量测试。
-- [ ] Q19 拆出 status/config/policy/audit 工具
+- [x] Q19 拆出 status/config/policy/audit 工具
   - 新建 `src/tools-status.js`（或按域拆两个文件），迁移 `chrome_status`、`chrome_config`、`chrome_policy`、`chrome_audit`；
   - 保留 `update`/`assets`/`bridge` 注入；全量测试。
 - [ ] Q20 拆出 screencast/overlay 工具
