@@ -66,6 +66,7 @@ Windows 预览包：[v0.1.93-win-preview.1](https://github.com/TaiShuo150622/dsh
 
 ## 文档
 
+- [浏览器支持路线（Chrome/Edge/Safari）](docs/BROWSER-ROADMAP.md)
 - [设计文档：架构、协议、工具契约、安全模型、里程碑](docs/DESIGN.md)
 - [分阶段实施计划：个人用 → 开源 → 官方，核心工具 → 全工具](docs/ROADMAP.md)
 - [审批说明：什么动作会问人、你会看到什么、拒绝后怎样](docs/APPROVAL.md)
