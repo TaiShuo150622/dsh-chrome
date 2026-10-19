@@ -10,6 +10,7 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 
 import { buildLaunchArgs, parseDevToolsActivePort } from './headless-launch.js'
+import { resolveHeadlessExecutable } from './headless-browsers.js'
 import { HeadlessScreenshot, SHOT_STREAM_FRAME_TIMEOUT_MS, SHOT_STREAM_METHODS } from './headless-screenshot.js'
 import { HeadlessVisualProbe, VISUAL_PROBE_ENABLED } from './headless-visual-probe.js'
 import { handleConsoleEvent, handleNetworkEvent } from './headless-events.js'
@@ -27,16 +28,6 @@ function overlaySource() {
   }
   return overlaySourceCache
 }
-
-const CHROME_CANDIDATES = [
-  process.env.DSH_HEADLESS_CHROME,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  '/usr/bin/google-chrome',
-  '/usr/bin/google-chrome-stable',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-].filter(Boolean)
 
 const SUPPORTED = new Set([
   'browser.status',
@@ -156,21 +147,29 @@ const HEADLESS_ACTIONS = createHeadlessActions({
   visualProbeEnabled: VISUAL_PROBE_ENABLED,
 })
 
-function chromeExecutable() {
-  for (const candidate of CHROME_CANDIDATES) {
-    try {
-      if (fs.existsSync(candidate)) return candidate
-    } catch {
-      // try next
-    }
-  }
-  return null
+/**
+ * Resolve the executable for a headless launch (multi-engine MVP).
+ *
+ * Explicit selection (`engine` / `executable`, or the environment selectors
+ * `DSH_CHROME_BROWSER` / `DSH_HEADLESS_CHROME`) never falls back to another
+ * engine: a missing explicitly selected Edge install throws
+ * `HEADLESS_EXECUTABLE_NOT_FOUND` instead of silently launching Chrome.
+ * Without a selection the legacy Chrome -> Chromium probe order is unchanged.
+ * Returns null only when nothing was selected and no browser is installed.
+ */
+export function chromeExecutable(options = {}) {
+  const selection = resolveHeadlessExecutable(options)
+  return selection?.executable ?? null
 }
 
 // Interactive login window lifecycle (Q21). The driver keeps same-named
 // facades; the launcher lookup and the shared error factory are injected so the
 // module stays independent of this file's private helpers.
-const headlessLogin = createHeadlessLogin({ chromeExecutable, error })
+const headlessLogin = createHeadlessLogin({
+  chromeExecutable: (driver) =>
+    chromeExecutable({ engine: driver?.engine, executable: driver?.executable }),
+  error,
+})
 
 // ---------------------------------------------------------------- CDP client
 class Cdp {
@@ -247,10 +246,12 @@ class Cdp {
 
 // ------------------------------------------------------------------ driver
 export class HeadlessDriver {
-  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null, visible = false, windowSize = null } = {}) {
+  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null, visible = false, windowSize = null, engine = null, executable = null } = {}) {
     this.home = home
     this.visible = Boolean(visible)
     this.windowSize = windowSize || (this.visible ? { width: 1440, height: 900 } : null)
+    this.engine = engine || null
+    this.executable = executable || null
     this.logger = logger
     this.spawnImpl = spawnImpl
     this.profileDir = profileDir || path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'profile')
@@ -295,9 +296,9 @@ export class HeadlessDriver {
     if (this.cdp) return this
     if (this.startPromise) return this.startPromise
     this.startPromise = (async () => {
-      const executable = chromeExecutable()
+      const executable = chromeExecutable({ engine: this.engine, executable: this.executable })
       if (!executable) {
-        throw error('UNSUPPORTED_BACKEND', 'no Chrome/Chromium executable found for the headless backend (set DSH_HEADLESS_CHROME)')
+        throw error('UNSUPPORTED_BACKEND', 'no Chrome/Chromium/Edge/Brave executable found for the headless backend (set DSH_HEADLESS_CHROME or DSH_CHROME_BROWSER)')
       }
       const profileDir = this.profileDir
       await fsp.mkdir(profileDir, { recursive: true })
@@ -1429,10 +1430,25 @@ export class HeadlessDriver {
   }
 }
 
-export function headlessSupported() {
-  return Boolean(chromeExecutable())
+/**
+ * Whether the headless backend has (or was explicitly told to use) a browser.
+ *
+ * An explicit but unavailable selection counts as supported here so the first
+ * request reaches the driver and reports the precise
+ * `HEADLESS_EXECUTABLE_NOT_FOUND` / `HEADLESS_ENGINE_UNKNOWN` instead of the
+ * router degrading to a generic `UNSUPPORTED_BACKEND`. Default probing still
+ * requires an actually installed browser.
+ */
+export function headlessSupported(options = {}) {
+  try {
+    return Boolean(chromeExecutable(options))
+  } catch (error) {
+    if (error?.code === 'HEADLESS_EXECUTABLE_NOT_FOUND' || error?.code === 'HEADLESS_ENGINE_UNKNOWN') return true
+    throw error
+  }
 }
 
-export function headlessChromeExecutable() {
-  return chromeExecutable()
+/** Selected headless executable (null when no browser is installed). */
+export function headlessChromeExecutable(options = {}) {
+  return chromeExecutable(options)
 }

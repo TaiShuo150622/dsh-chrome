@@ -8,6 +8,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { HEADLESS_ENGINES } from './headless-browsers.js'
+
 export const CONFIG_VERSION = 1
 export const PRESETS = ['sandbox', 'sandbox-persistent', 'debug', 'collab']
 
@@ -15,6 +17,9 @@ export const DEFAULT_CONFIG = Object.freeze({
   version: CONFIG_VERSION,
   browser: {
     preset: 'sandbox',
+    // null keeps the legacy probe order (Chrome, then Chromium). An explicit
+    // engine never falls back to another browser.
+    engine: null,
     maxContexts: 4,
     idleTimeoutMs: 300_000,
     headless: {
@@ -85,6 +90,22 @@ function sanitize(config, warnings) {
   if (!PRESETS.includes(config.browser.preset)) {
     warnings.push(`unknown browser.preset ${JSON.stringify(config.browser.preset)}; using sandbox`)
     config.browser.preset = 'sandbox'
+  }
+  const engine = config.browser.engine == null
+    ? null
+    : String(config.browser.engine).trim().toLowerCase()
+  if (engine != null && !HEADLESS_ENGINES.includes(engine)) {
+    warnings.push(`unknown browser.engine ${JSON.stringify(config.browser.engine)}; using the default probe order`)
+    config.browser.engine = null
+  } else {
+    config.browser.engine = engine || null
+  }
+  const executable = config.browser.headless.chromeExecutable
+  if (executable != null && (typeof executable !== 'string' || executable.trim() === '')) {
+    warnings.push('invalid browser.headless.chromeExecutable; using auto-detection')
+    config.browser.headless.chromeExecutable = null
+  } else if (typeof executable === 'string') {
+    config.browser.headless.chromeExecutable = executable.trim()
   }
   config.browser.maxContexts = clampInt(config.browser.maxContexts, 1, 16, 4, warnings, 'browser.maxContexts')
   config.browser.idleTimeoutMs = clampInt(config.browser.idleTimeoutMs, 10_000, 3_600_000, 300_000, warnings, 'browser.idleTimeoutMs')
