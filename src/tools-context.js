@@ -6,6 +6,10 @@
 export function createContextTool({ contexts, contextViewer, ownerOf, outputSchema, renderText }) {
   return {
       name: 'chrome_context',
+      mutating: false,
+      // Creates/activates/closes provider-side browser contexts. It changes
+      // lifecycle state, not the page in a shared tab, so no write lease.
+      stateful: true,
       description:
         'Manage isolated browser contexts for sandbox verification: op="create" makes a per-session headless context (default preset sandbox), op="use" switches the session active context, op="list" lists this session contexts, op="current" shows the active one, op="close" closes one. Contexts are isolated (separate profile); backend:"headless" calls route to the session active context.',
       parameters: {

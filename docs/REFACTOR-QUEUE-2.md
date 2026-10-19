@@ -16,7 +16,7 @@
   - `view` / `frame` / `input` 同时校验全局 token + access；viewer HTML 的 frame/input URL 带上 access；
   - 不改变 loopback/token 语义；更新 `test/context-viewer.mjs`；
   - 全量测试。
-- [ ] Q9 工具 metadata 单一来源
+- [x] Q9 工具 metadata 单一来源
   - 运行时 `isWriteTool` 只读工具对象 `mutating`，移除 `WRITE_TOOLS` 名字回退；
   - `test/tool-metadata.mjs` 不再正则扫描 `src/tools.js`，改为从实际工具定义/抽出模块校验；
   - 给有状态但不是 mutating 的工具（capture/screencast/context）补显式说明或 metadata；

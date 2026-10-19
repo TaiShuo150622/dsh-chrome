@@ -1755,6 +1755,10 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
   // ----------------------------------------------------- 4j. screencast
   list.push({
     name: 'chrome_screencast',
+    mutating: false,
+    // Stateful provider-side stream, but it does not mutate page/tab state and
+    // therefore does not take a write lease.
+    stateful: true,
     description:
       'Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image (only for the session that started an active stream), op="stop" ends the stream; op="viewer" returns the loopback live-view URL; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.',
     parameters: {
@@ -2284,6 +2288,9 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
   // ---------------------------------------------------- 4f. HTTP capture (C2a)
   list.push({
     name: 'chrome_capture_start',
+    mutating: false,
+    // Stateful capture buffer, not a page mutation: no write lease.
+    stateful: true,
     description:
       'Start capturing HTTP requests for one DSH session tab through the DevTools Network domain. Records method/URL/status/mimeType/resourceType/timing; headers (Cookie, Authorization, Set-Cookie) are never captured. Requires explicit user confirmation every time; Chrome shows a debugging banner while capture is active (max 10 minutes).',
     parameters: {
@@ -2341,6 +2348,9 @@ ${lines.length ? lines.join('\n') : '(none)'}`)
 
   list.push({
     name: 'chrome_capture_stop',
+    mutating: false,
+    // Counterpart of chrome_capture_start: freezes provider-side state only.
+    stateful: true,
     description:
       'Stop the active network capture, release the debugger pin and freeze the buffer. Captured entries stay readable through chrome_capture_requests; new requests are not recorded.',
     parameters: {

@@ -5,31 +5,13 @@
  * choosing a backend and adding the `backend` parameter. write-lease policy
  * (which tools mutate, how the active tab is resolved) lives here and can be
  * tested without a real browser.
+ *
+ * Mutating is declared once, on the tool definition itself (`mutating: true`).
+ * There is deliberately no name list here: a fallback that maps tool names to
+ * write behavior drifts from the definitions and silently misses new tools.
  */
-export const WRITE_TOOLS = Object.freeze(new Set([
-  'chrome_goto',
-  'chrome_click',
-  'chrome_click_at',
-  'chrome_type',
-  'chrome_press',
-  'chrome_scroll',
-  'chrome_select',
-  'chrome_drag',
-  'chrome_upload',
-  'chrome_tabs',
-  'chrome_history',
-  'chrome_hover',
-  'chrome_storage',
-  'chrome_emulate',
-  'chrome_close_session',
-  'chrome_evaluate',
-  'chrome_pointer',
-  'chrome_annotate',
-]))
-
 export function isWriteTool(tool) {
-  if (tool && typeof tool === 'object') return tool.mutating === true
-  return WRITE_TOOLS.has(String(tool))
+  return Boolean(tool && typeof tool === 'object' && tool.mutating === true)
 }
 
 /**
