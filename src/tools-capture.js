@@ -7,6 +7,7 @@
 export function createCaptureTools({
   call,
   ownerOf,
+  currentSite,
   hardConfirmAsk,
   captureConfirmTimeoutMs,
   outputSchema,
@@ -29,7 +30,11 @@ export function createCaptureTools({
           description: 'Resource types to record (default: xhr, fetch, document).',
         },
         maxEntries: { type: 'number', description: 'Max requests kept in the buffer (default 300, max 1000).' },
-        storeBodies: { type: 'boolean', description: 'Fetch and cache truncated, redacted text bodies while attached (default true).' },
+        storeBodies: {
+          type: 'boolean',
+          description:
+            'Record redacted request/response bodies (default false: metadata only). Pass true explicitly to store bodies; bodies may contain personal data.',
+        },
       },
       additionalProperties: false,
     },
@@ -51,12 +56,21 @@ export function createCaptureTools({
         ),
     },
     async execute(args, exec) {
-      const tabHint = Number.isFinite(args?.tabId) ? `标签 ${args.tabId}` : '当前会话标签'
+      // Resolve the target page before prompting so the confirmation names the
+      // exact tab and origin the capture will attach to (H1).
+      const site = await currentSite(exec, Number.isFinite(args?.tabId) ? args.tabId : null)
+      const targetTab = site?.tabId ?? (Number.isFinite(args?.tabId) ? args.tabId : '当前会话标签')
+      const targetOrigin = site?.origin || '(origin 未知)'
+      const storeBodies = args?.storeBodies === true
+      const bodyLine = storeBodies
+        ? '本次会记录脱敏后的请求/响应体（可能含个人信息）。'
+        : '本次不记录请求/响应体（仅 metadata；需要 body 请显式传 storeBodies:true）。'
       await hardConfirmAsk(exec, 'chrome_capture_start', {
         header: '开始抓取网络请求（高敏感）',
-        question: `允许抓取${tabHint} 的网络请求吗？会记录 URL/状态/脱敏后的请求与响应体（默认不含 Cookie/Authorization 等 headers），可能包含个人信息。`,
+        question: `允许对标签 ${targetTab}（${targetOrigin}）抓取网络请求吗？${bodyLine}不会采集 Cookie/Authorization 等 headers。`,
         detail: '停止：chrome_capture_stop；最长 10 分钟自动停止；抓包期间 Chrome 会显示「正在调试此浏览器」横幅',
         timeoutMs: captureConfirmTimeoutMs,
+        site,
       })
       return call(
         'tab.capture_start',
@@ -64,7 +78,7 @@ export function createCaptureTools({
           tabId: args?.tabId,
           resourceTypes: args?.resourceTypes,
           maxEntries: args?.maxEntries,
-          storeBodies: args?.storeBodies,
+          storeBodies,
           owner: ownerOf(exec),
         },
         30000,

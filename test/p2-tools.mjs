@@ -654,6 +654,12 @@ const captureByName = Object.fromEntries(captureTools.map((definition) => [defin
 const captureStart = await captureByName.chrome_capture_start.execute({ maxEntries: 10 }, exec())
 check('capture start executes after confirmation', captureStart?.captureId === 'cap-1' && captureStart?.active === true)
 check('capture start params reach the extension', requests.at(-1)?.method === 'tab.capture_start' && requests.at(-1)?.params?.maxEntries === 10)
+check('capture start defaults storeBodies to false', requests.at(-1)?.params?.storeBodies === false)
+const captureStartWithBodies = await captureByName.chrome_capture_start.execute({ maxEntries: 10, storeBodies: true }, exec())
+check(
+  'capture start forwards an explicit storeBodies:true',
+  captureStartWithBodies?.captureId === 'cap-1' && requests.at(-1)?.params?.storeBodies === true,
+)
 
 const captureStop = await captureByName.chrome_capture_stop.execute({}, exec())
 check('capture stop freezes the buffer', captureStop?.active === false && captureStop?.requests === 1)

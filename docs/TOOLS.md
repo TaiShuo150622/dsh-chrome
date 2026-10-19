@@ -354,7 +354,7 @@ Start capturing HTTP requests for one DSH session tab through the DevTools Netwo
 | `tabId` | number | no | Optional tab id owned by this session. |
 | `resourceTypes` | array | no | Resource types to record (default: xhr, fetch, document). |
 | `maxEntries` | number | no | Max requests kept in the buffer (default 300, max 1000). |
-| `storeBodies` | boolean | no | Fetch and cache truncated, redacted text bodies while attached (default true). |
+| `storeBodies` | boolean | no | Record redacted request/response bodies (default false: metadata only). Pass true explicitly to store bodies; bodies may contain personal data. |
 
 ### `chrome_capture_stop`
 

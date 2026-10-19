@@ -27,33 +27,34 @@
 
 ### 1.1 抓包（capture）的脱敏在哪里
 
-脱敏规则是 **headless 与 extension 两份同源实现**，`test/capture-parity.mjs` 要求两边行为一致：
+脱敏规则是 **headless 与 extension 两份同源实现**，`test/capture-parity.mjs` 要求两边行为一致；H1 之后桌面侧的键名、fragment、inline 规则已与 headless 对齐：
 
 | 位置 | 内容 |
 |---|---|
 | `src/headless-redact.js` | headless 侧的 URL/body 脱敏、body 预算、截断 |
-| `extension/background.js:1308-1454` | 桌面扩展侧的同一套规则（`CAPTURE_SECRET_PARAM`、`redactUrl`、`maskSecretsInText`、`redactJsonValue`、`redactBodyText`、`materializeCaptureBody`） |
+| `extension/background.js:1319-1454` | 桌面扩展侧的同一套规则（`CAPTURE_SECRET_PARAM`、`CAPTURE_INLINE_SECRET`、`redactFragment`、`redactUrl`、`maskSecretsInText`、`redactJsonValue`、`redactBodyText`、`materializeCaptureBody`） |
 | `src/headless-events.js:12-17,58-163` | headless 把 CDP `Network.*` 事件映射进 capture，并调用上面的脱敏 |
 | `test/capture-parity.mjs` | 两侧 URL、JSON、form、缓存 body、真实 Chrome 路径的对照测试 |
+| `test/capture-redact.mjs` | 桌面路径的哨兵测试：query/fragment/JSON/form/plain 文本/headers 都不泄漏（H1） |
 
 具体规则（以 `src/headless-redact.js` 为准）：
 
-- **URL**：`redactUrl()` 把 URL 的 `username`/`password`（userinfo）替换为 `«redacted»`；查询参数名命中 `CAPTURE_SECRET_PARAM` 的值替换为 `«redacted»`；URL 超过 2048 字符截断（`src/headless-redact.js:26-40`）。
-- **JSON body**：解析后按键名递归脱敏，键名命中 `CAPTURE_SECRET_PARAM` 的值替换；字符串值再走 `maskSecretsInText()`（`src/headless-redact.js:42-53`）。
-- **form body**：`application/x-www-form-urlencoded` 按 `name=value` 拆分，键名命中规则的替换（`src/headless-redact.js:65-73`）。
-- **普通文本**：只替换 `Bearer ...`、`sk-...`、JWT、`AKIA...` 四种形态（`src/headless-redact.js:18-24`）。
-- **非文本 MIME**：不保留内容，只写 `<binary N chars>`（`src/headless-redact.js:81-95`）。
-- **预算**：单响应 body 4096 字符、单请求 body 2048 字符、单次 capture 总 body 8 MiB；超预算写 `<body not captured: capture body budget exceeded>`（`src/headless-redact.js:11-13,81-96`）。
-- **headers 根本不采集**：capture 只从 CDP `Network.*` 事件和 `Network.getResponseBody` / `Network.getRequestPostData` 取数据，不保存 `request.headers` / `response.headers`；Cookie、Authorization、Set-Cookie 不会进入 capture 缓冲。工具描述也明确写了这一点（`src/tools-capture.js:20-21,116-117`）。
-- **启动确认**：`chrome_capture_start` 每次都走 `hardConfirmAsk`，没有配置旁路；默认 `storeBodies: true`；10 分钟自动停（`src/tools-capture.js:15-71`、`extension/background.js:1558-1618`、`src/headless.js:1057-1115`）。
+- **URL**：`redactUrl()` 把 URL 的 `username`/`password`（userinfo）替换为 `«redacted»`；查询参数名命中 `CAPTURE_SECRET_PARAM`（含 `pwd`/`otp`/`cvv`/`auth` 整段键名）的值替换为 `«redacted»`；fragment 里的 `key=value` 同样按键名脱敏，其余部分走 inline 规则；URL 超过 2048 字符截断（`src/headless-redact.js:26-68`）。
+- **JSON body**：解析后按键名递归脱敏，键名命中 `CAPTURE_SECRET_PARAM` 的值替换；字符串值再走 `maskSecretsInText()`（`src/headless-redact.js:70-81`）。
+- **form body**：`application/x-www-form-urlencoded` 按 `name=value` 拆分，键名命中规则的替换（`src/headless-redact.js:93-101`）。
+- **普通文本**：替换 `Bearer ...`、`sk-...`、JWT、`AKIA...`，以及 `password=...` / `token: ...` 这类 inline `key=value` 形态（`src/headless-redact.js:28-35`）。
+- **非文本 MIME**：不保留内容，只写 `<binary N chars>`（`src/headless-redact.js:109-123`）。
+- **预算**：单响应 body 4096 字符、单请求 body 2048 字符、单次 capture 总 body 8 MiB；超预算写 `<body not captured: capture body budget exceeded>`（`src/headless-redact.js:13-15,109-123`）。
+- **headers 根本不采集**：capture 只从 CDP `Network.*` 事件和 `Network.getResponseBody` / `Network.getRequestPostData` 取数据，不保存 `request.headers` / `response.headers`；Cookie、Authorization、Set-Cookie 不会进入 capture 缓冲（包括 `*ExtraInfo` 事件）。工具描述也明确写了这一点（`src/tools-capture.js:20-21,120-121`）。
+- **启动确认**：`chrome_capture_start` 每次都走 `hardConfirmAsk`，没有配置旁路；确认卡写明目标 tab 与 origin；默认 `storeBodies: false`（只记 metadata），只有显式 `storeBodies:true` 才记录 body；10 分钟自动停（`src/tools-capture.js:15-90`、`extension/background.js:1600-1655`、`src/headless.js:1057-1115`）。
 - **脱敏不是加密**：`Network.getResponseBody` 返回的原始明文先进入 Chrome/DevTools 和 driver/扩展内存，之后才被字符串替换；capture 缓冲里的 `«redacted»` 不代表原始 body 从未存在。
 
-**当前抓包规则的已知缺口**（不是本文提案的一部分，见 §3.9 矩阵）：
+**H1 关闭的缺口**（Q33 已先修 headless，H1 把桌面侧对齐）：
 
-- `CAPTURE_SECRET_PARAM` 不匹配 `pwd`、`otp`、`cvv`、`auth` 等常见键名；JSON `{"pwd":"..."}`、`{"otp":"..."}` 不会被脱敏（`src/headless-redact.js:15-16`）。
-- `redactUrl()` 不处理 fragment（`#token=...`）；fragment 里的 secret 会保留。
-- 普通文本只认四种 token 形态，不认 `password=...`、`pwd=...` 这类键值文本。
-- `documentURL` 在 extension 侧会脱敏，headless 侧可能省略；`test/capture-parity.mjs:777-781` 把它记为容忍的差异。
+- ~~`CAPTURE_SECRET_PARAM` 不匹配 `pwd`、`otp`、`cvv`、`auth`~~：两侧均已匹配（`auth` 只匹配整段键名，`author` 不受影响）。
+- ~~`redactUrl()` 不处理 fragment~~：两侧均已按键名/inline 规则处理 `#access_token=...`、`#password=...`。
+- ~~普通文本不认 `password=...`~~：两侧均已把 inline `key=value` 纳入 `maskSecretsInText()`。
+- 仍存在的差异：`documentURL` 在 extension 侧会脱敏，headless 侧可能省略；`test/capture-parity.mjs:777-781` 把它记为容忍的差异。
 
 ### 1.2 登录：主要是 visible / manual
 

@@ -928,7 +928,8 @@ try {
 
   let captureId = null
   await check('chrome_capture_start starts a capture after confirmation', async () => {
-    const value = await run('chrome_capture_start', { maxEntries: 50 })
+    // H1: bodies are opt-in, so this end-to-end check asks for them explicitly.
+    const value = await run('chrome_capture_start', { maxEntries: 50, storeBodies: true })
     assert.equal(value.active, true)
     assert.ok(String(value.captureId).startsWith('hl-'))
     captureId = value.captureId

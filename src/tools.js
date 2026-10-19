@@ -74,6 +74,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
   const captureTools = createCaptureTools({
     call,
     ownerOf,
+    currentSite,
     hardConfirmAsk,
     captureConfirmTimeoutMs,
     outputSchema,

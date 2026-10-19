@@ -177,7 +177,7 @@ DEFAULT_CONFIG
 | `allowEvaluate` | `false` | bool | **高**（页面内任意 JS） | ❌ 危险（MVP 文件） | provider reload（工具注册） | ✅ |
 | `evaluateConfirmTimeoutMs` | `120000` | int 1000–600000 | 低 | ✅ 自动页 | 实时 | ✅ 构造时缓存，需小改 |
 | `captureConfirmTimeoutMs` | `120000` | int 1000–600000 | 低 | ✅ 自动页 | 实时 | ✅ 构造时缓存，需小改 |
-| `capture.storeBodiesByDefault` | `true` | bool | **中高**（body 可能含敏感数据） | ⚠️ 未来页（接线后） | 实时 | 🆕 当前是工具参数默认 true |
+| `capture.storeBodiesByDefault` | `false` | bool | **中高**（body 可能含敏感数据） | ⚠️ 未来页（接线后） | 实时 | 🆕 当前是工具参数默认 false（H1：body 显式 opt-in） |
 | `capture.confirmMode` | `hard`（固定） | 不可配置 | — | ❌ | — | ✅ 不是设置，别加 |
 
 > `chrome_capture_*` 的“确认”与 `verification.captureNetwork` 是两件事：前者是抓包工具，后者（如果接线）只影响 `chrome_verify` 的产物。
@@ -238,8 +238,8 @@ DEFAULT_CONFIG
 
 先给结论：
 
-- **默认开启 = 保持现状**：`viewer.enabled`、`operationLog.enabled`、`verification.captureConsole`、`capture.storeBodiesByDefault`（当前工具默认），以及所有硬确认/脱敏/审计不变量。
-- **默认关闭 = 所有会扩大权限、数据面或网络的开关**：`allowEvaluate`、`browser.shared.enabled`、`update.enabled`、`update.autoInstall`、`upload.extraRoots`、`browser.headless.chromeExecutable`、`safety.allowedOrigins`、`redaction.extraSecretKeys`（空数组）。
+- **默认开启 = 保持现状**：`viewer.enabled`、`operationLog.enabled`、`verification.captureConsole`，以及所有硬确认/脱敏/审计不变量。
+- **默认关闭 = 所有会扩大权限、数据面或网络的开关**：`allowEvaluate`、`capture.storeBodiesByDefault`（H1 后 body 默认不存）、`browser.shared.enabled`、`update.enabled`、`update.autoInstall`、`upload.extraRoots`、`browser.headless.chromeExecutable`、`safety.allowedOrigins`、`redaction.extraSecretKeys`（空数组）。
 - 数值/枚举项（如 `maxContexts`、`idleTimeoutMs`、`artifactRetentionRuns`）保持当前默认值，不因为“放进设置”而改变行为。
 
 ### 4.1 基础组（默认开启 / 保持现状，低风险）
@@ -252,7 +252,7 @@ DEFAULT_CONFIG
 | `operationLog.enabled` | **开** | 保持当前审计能力；关闭只影响本地操作日志，不影响抓包审计 |
 | `verification.captureConsole` | **开** | 接线后 `chrome_verify` 默认收集 console；可在单次调用里覆盖 |
 | `verification.captureNetwork` | `metadata` | 只采 method/URL/status/timing，不采 headers；`bodies` 仅在高级显式选 |
-| `capture.storeBodiesByDefault` | **开** | 保持当前 `storeBodies` 默认 true；单次调用可传 `false` 覆盖 |
+| `capture.storeBodiesByDefault` | **关** | 当前 `storeBodies` 默认 false（只记 metadata）；单次调用可显式传 `true` 记录脱敏后的 body |
 | `verification.artifactRetentionRuns` | `50` | 保留最近 50 次验证产物 |
 | `evaluateConfirmTimeoutMs` | `120000` | 只改等待上限，不改变“必须确认” |
 | `captureConfirmTimeoutMs` | `120000` | 同上 |
@@ -385,7 +385,7 @@ export const Config = z.object({
   }),
   capture: z.object({
     confirmTimeoutMs: z.natural().min(1_000).max(600_000).default(120_000).volatile(),
-    storeBodiesByDefault: z.boolean().default(true).volatile(),
+    storeBodiesByDefault: z.boolean().default(false).volatile(),
   }),
   update: z.object({ /* ... 全部非 volatile */ }),
 })
@@ -649,7 +649,7 @@ DEFAULT_CONFIG
 |---|---|---|---|
 | 1 | 危险项要不要在 MVP 进 GUI？ | **不进**；文件/条目 patch | 用户要手写 YAML；但不会误点 |
 | 2 | 项目级配置保留吗？ | 保留安全子集，危险键忽略 | 需要在 loader 里维护 allowlist |
-| 3 | `capture.storeBodiesByDefault` 默认 true 还是 false？ | **先保持 true**（兼容当前行为） | 隐私上不是最优；下个大版再讨论默认 false |
+| 3 | `capture.storeBodiesByDefault` 默认 true 还是 false？ | **false**（H1 已把工具默认改为不存 body；显式 opt-in） | 需要 body 的调用方要显式传 `storeBodies:true` |
 | 4 | `safety.allowedOrigins` 实现还是删除？ | 先决定语义；实现成“允许列表”则默认 null 不限制 | 语义不清会变成假配置 |
 | 5 | `verification.*` 接线还是删除？ | **接线**（用户已经以为是生效的） | 需要改 `chrome_verify` 和产物限制 |
 | 6 | `viewer.enabled` 默认开还是关？ | **开**（保持现状），提供关闭 | 关闭后 sidepanel viewer 不可用 |

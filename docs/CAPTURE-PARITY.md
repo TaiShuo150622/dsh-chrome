@@ -145,3 +145,10 @@ node test/capture-parity.mjs
 - `captureId` 不存在 → `CAPTURE_LOST`；owner 不匹配 → `CAPTURE_NOT_FOUND`。
 
 `test/capture-parity.mjs` 保持「旧行为或修复后行为都接受」的差异断言，严格断言 77 项仍全绿；本文件 §3 的待修清单作为历史差异记录保留。
+
+## 7. H1 桌面侧脱敏对齐（2026-10-19）
+
+- `extension/background.js` 采用与 `src/headless-redact.js` 相同的 `CAPTURE_SECRET_PARAM`/`CAPTURE_INLINE_SECRET` 规则：`pwd`/`otp`/`cvv`/`auth` 整段键名、URL fragment（`#access_token=…`、`#password=…`）、free text / JSON 字符串里的 inline `key=value`。
+- `test/capture-redact.mjs` 用哨兵值断言桌面路径的 URL/body/headers 不泄漏，并已接入 `npm test`。
+- `chrome_capture_start` 工具默认 `storeBodies:false`（只记 metadata）；确认卡写明目标 tab 与 origin，body 需要显式 `storeBodies:true`。
+

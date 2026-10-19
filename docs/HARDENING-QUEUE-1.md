@@ -5,7 +5,7 @@
 
 ## 队列
 
-- [ ] H1 桌面 capture 脱敏与 headless 对齐
+- [x] H1 桌面 capture 脱敏与 headless 对齐
   - `extension/background.js` 的 capture 脱敏采用 headless 的规则：`pwd/otp/cvv/auth`、URL fragment、inline `password=...`；保留 headers 不采集。
   - `src/tools-capture.js`：`capture_start` 默认 `storeBodies:false`（显式 true 才存）；确认卡写明目标 origin/tab；文档同步。
   - 新增/扩展 `test/capture-redact.mjs` 或现有 capture 测试，用哨兵断言 desktop 路径不泄漏；全量测试。
