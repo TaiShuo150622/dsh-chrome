@@ -117,22 +117,8 @@ try {
   assert.equal(await manager.closeOwned(owned.contextId, 'owner-a'), true)
   assert.equal(manager.get(owned.contextId), null)
 
-  // Artifact runs live outside ephemeral profiles and retention keeps the newest N.
-  const runA = await manager.createArtifactRun('run-a')
-  const runB = await manager.createArtifactRun('run-b')
-  const runC = await manager.createArtifactRun('run-c')
-  fs.writeFileSync(path.join(runA, 'report.json'), '{}')
-  fs.writeFileSync(path.join(runB, 'report.json'), '{}')
-  fs.writeFileSync(path.join(runC, 'report.json'), '{}')
-  const epoch = Date.now() / 1000
-  fs.utimesSync(runA, epoch - 30, epoch - 30)
-  fs.utimesSync(runB, epoch - 20, epoch - 20)
-  fs.utimesSync(runC, epoch - 10, epoch - 10)
-  const pruned = manager.pruneArtifacts(2)
-  assert.equal(pruned.length, 1)
-  assert.equal(fs.existsSync(runA), false, 'oldest artifact run should be pruned')
-  assert.equal(fs.existsSync(runB), true)
-  assert.equal(fs.existsSync(runC), true)
+  // Artifact runs are owned by ArtifactStore (test/artifact-store.mjs), not by
+  // the context manager: contexts only own browser profiles.
 
   // I2: visible isolation is a headed Chrome window with its own profile; shared still requires leases.
   const debug = await manager.create({ owner: 'debug', preset: 'debug' })

@@ -145,7 +145,7 @@ function normalizeLeaseError(error) {
   return new BridgeError('INTERNAL', error?.message || String(error))
 }
 
-export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null, contextViewer = null, update = null }) {
+export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null, contextViewer = null, update = null, artifactStore = null }) {
   const list = []
   const ownerOf = (exec) => exec?.agent?.id ?? 'default'
   const releaseOwnedLeases = (exec) => {
@@ -1632,7 +1632,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
 
   list.push(createLeaseTool({ leases, ownerOf, outputSchema, renderText, normalizeLeaseError }))
 
-  list.push(createVerifyTool({ contexts, ownerOf, fsp, path, randomUUID, outputSchema, renderText }))
+  list.push(createVerifyTool({ contexts, artifactStore, ownerOf, fsp, randomUUID, outputSchema, renderText }))
 
   // ------------------------------------------------ 4h-2. pointer/annotate
   list.push({

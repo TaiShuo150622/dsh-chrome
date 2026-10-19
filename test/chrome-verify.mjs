@@ -4,8 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { chromeTools } from '../src/tools.js'
+import { ArtifactStore } from '../src/artifact-store.js'
 
 const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-verify-'))
+const artifactStore = new ArtifactStore({ root: artifactDir, retentionRuns: 50 })
 const calls = []
 const driver = {
   async request(method, params) {
@@ -30,7 +32,6 @@ const contexts = {
   create: async () => context,
   driverFor() { return driver },
   driverForOwned(contextId, owner) { return contextId === 'ctx-test' && owner === 'session-a' ? driver : null },
-  artifactDirFor() { return artifactDir },
 }
 const tools = chromeTools({
   bridge: { call: async () => ({}), runWithBackend: (_mode, fn) => fn() },
@@ -41,6 +42,7 @@ const tools = chromeTools({
   userQuestions: () => null,
   config: () => ({}),
   contexts,
+  artifactStore,
 })
 const verify = tools.find((tool) => tool.name === 'chrome_verify')
 assert.ok(verify, 'chrome_verify must be registered')

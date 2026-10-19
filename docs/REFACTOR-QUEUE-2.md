@@ -25,7 +25,7 @@
   - 新建 `src/runtime.js`，先只收拢「contextViewer + liveview」注册和 dispose（不一次性搬 bridge/tools）；
   - `index.js` 的 webServer effect 改为调用 runtime；清理顺序不变；
   - 全量测试。
-- [ ] Q11 抽出 ArtifactStore
+- [x] Q11 抽出 ArtifactStore
   - 新建 `src/artifact-store.js`：`createArtifactRun`、prune、artifact 路径/复制；
   - `BrowserContextManager` 不再管理 verify artifacts；`tools-verify` 注入 artifact store（或 contexts.artifacts 适配层）；
   - 保留现有路径/保留策略；全量测试。

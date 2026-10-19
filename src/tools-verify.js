@@ -3,7 +3,7 @@
  * out of the main tool file so its step interpreter and artifact layout can be
  * tested without loading every chrome_* tool.
  */
-export function createVerifyTool({ contexts, ownerOf, fsp, path, randomUUID, outputSchema, renderText }) {
+export function createVerifyTool({ contexts, artifactStore, ownerOf, fsp, randomUUID, outputSchema, renderText }) {
   return {
       name: 'chrome_verify',
       description:
@@ -53,6 +53,7 @@ export function createVerifyTool({ contexts, ownerOf, fsp, path, randomUUID, out
       },
       async execute(args, exec) {
         if (!contexts) return { ok: false, error: 'CONTEXTS_UNAVAILABLE' }
+        if (!artifactStore) return { ok: false, error: 'ARTIFACTS_UNAVAILABLE' }
         const owner = ownerOf(exec)
         const runId = randomUUID()
         const steps = Array.isArray(args?.steps) ? args.steps.slice(0, 50) : []
@@ -69,10 +70,7 @@ export function createVerifyTool({ contexts, ownerOf, fsp, path, randomUUID, out
         }
         const driver = contexts.driverForOwned ? contexts.driverForOwned(contextId, owner) : contexts.driverFor(contextId)
         if (!driver) return { ok: false, error: 'CONTEXT_NOT_FOUND' }
-        const artifactDir = typeof contexts.createArtifactRun === 'function'
-          ? await contexts.createArtifactRun(runId)
-          : contexts.artifactDirFor(contextId)
-        await fsp.mkdir(artifactDir, { recursive: true })
+        const artifactDir = await artifactStore.createArtifactRun(runId)
         const startedAt = Date.now()
         const checks = []
         const artifacts = []
@@ -92,7 +90,7 @@ export function createVerifyTool({ contexts, ownerOf, fsp, path, randomUUID, out
               network: networkResult?.entries || [],
               durationMs: Date.now() - startedAt,
             }
-            const reportPath = path.join(artifactDir, `verify-${runId}.json`)
+            const reportPath = artifactStore.reportPath(artifactDir, runId)
             await fsp.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
             artifacts.push({ type: 'report', path: reportPath })
           } catch {
@@ -103,9 +101,9 @@ export function createVerifyTool({ contexts, ownerOf, fsp, path, randomUUID, out
             if (shot?.path) {
               // Context profiles are ephemeral; copy evidence into the global
               // artifact run so it survives context close.
-              const target = path.join(artifactDir, `screenshot-${runId}.png`)
+              const target = artifactStore.screenshotPath(artifactDir, runId)
               try {
-                await fsp.copyFile(shot.path, target)
+                await artifactStore.copyScreenshot(shot, artifactDir, runId)
                 artifacts.push({ type: 'screenshot', path: target, bytes: shot.bytes })
               } catch {
                 artifacts.push({ type: 'screenshot', path: shot.path, bytes: shot.bytes })
@@ -218,7 +216,7 @@ export function createVerifyTool({ contexts, ownerOf, fsp, path, randomUUID, out
         // Artifacts are first-class: always keep the JSON report + screenshot,
         // so a passing run is reproducible and a failing run has evidence.
         await makeArtifacts()
-        try { contexts.pruneArtifacts?.() } catch {}
+        try { artifactStore.pruneArtifacts?.() } catch {}
         try {
           const snap = await driver.request('tab.snapshot', { owner, maxChars: 2000 })
           lastUrl = snap?.url || lastUrl

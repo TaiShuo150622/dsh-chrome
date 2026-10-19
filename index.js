@@ -11,6 +11,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BackendRouter, wrapToolsForBackend } from './src/backend.js'
+import { ArtifactStore } from './src/artifact-store.js'
 import { BrowserContextManager } from './src/contexts.js'
 import { loadConfig } from './src/config.js'
 import { HeadlessContextRouter } from './src/headless-contexts.js'
@@ -60,6 +61,10 @@ export function apply(ctx) {
     for (const warning of configInfo.warnings) logger?.warn?.('dsh-chrome config: %s', warning)
   }
   const leases = new BrowserLeaseManager()
+  const artifactStore = new ArtifactStore({
+    root: configInfo.config.verification.artifactDir || path.join(home, 'cache', 'dsh-chrome', 'artifacts'),
+    retentionRuns: configInfo.config.verification.artifactRetentionRuns,
+  })
   const contexts = new BrowserContextManager({
     config: configInfo.config,
     home,
@@ -224,6 +229,7 @@ export function apply(ctx) {
         config: () => providerConfig,
         contexts,
         leases,
+        artifactStore,
         contextViewer: () => contextViewer.current,
         update: updateChecker,
       }),
