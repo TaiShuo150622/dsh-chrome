@@ -3,9 +3,9 @@
 **DSH 桌面端（DeepSeek Harness Desktop）的 Chrome 操控插件**：让模型直接操作你当前已登录的 Google Chrome —— 读页面、点击、填表、开后台标签、截图看图、按会话隔离，危险动作先问你。
 
 > 状态：**P1 真机可用（45 个工具；+evaluate 配置开启后 46；含后台 headless Chromium 同套工具面）**（2026-10-19）
-> 版本：扩展 **0.2.0** / provider **0.2.0**；`npm test` **32 个测试文件全过**；CI 绿。
+> 版本：扩展 **0.2.1** / provider **0.2.1**；`npm test` **33 个测试文件全过**；CI 绿。
 > 重点能力：桌面 Chrome 可见操作 + `backend:"headless"` 后台无窗口浏览器 + screencast 实时画面 viewer。
-> 最新发布说明：[docs/RELEASE-NOTES-0.2.0.md](docs/RELEASE-NOTES-0.2.0.md)；Windows 外部测试说明：[docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md](docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md)。
+> 最新发布说明：[docs/RELEASE-NOTES-0.2.1.md](docs/RELEASE-NOTES-0.2.1.md)；Windows 外部测试说明：[docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md](docs/WINDOWS-TESTER-GUIDE-EXTERNAL.md)。
 
 Windows 预览包：[v0.1.93-win-preview.1](https://github.com/TaiShuo150622/dsh-chrome/releases/tag/v0.1.93-win-preview.1)。
 
@@ -67,6 +67,7 @@ Windows 预览包：[v0.1.93-win-preview.1](https://github.com/TaiShuo150622/dsh
 
 ## 文档
 
+- [版本号规则](docs/VERSIONING.md)
 - [浏览器支持路线（Chrome/Edge/Safari）](docs/BROWSER-ROADMAP.md)
 - [Edge 支持说明](docs/EDGE.md) · [Safari 可行性结论](docs/SAFARI-SPIKE.md)
 - [设计文档：架构、协议、工具契约、安全模型、里程碑](docs/DESIGN.md)

@@ -11,6 +11,11 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.1] - 2026-10-19
+
+- 版本号规则：普通改动只升第三位；minor 变化需先告知用户
+- 新增 version-consistency CI 测试（package/manifest 一致 + semver）
+
 ## [0.2.0] - 2026-10-19
 
 - lease 生命周期收尾：goto/history/tab close/close_session 自动 releaseTab/释放 owner leases
