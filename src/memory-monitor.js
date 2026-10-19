@@ -319,13 +319,17 @@ export class MemoryMonitor {
       add('tabs_sessions_mismatch', `tabs ${sample.tabs} != bySession ${sample.bySession}`, sample.tabs)
     }
     const current = new Set(pids)
+    // An orphan pid stays in `knownPids` until it dies, so the alert reflects
+    // "still alive" instead of clearing on the next sample.
+    const aliveOrphans = new Set()
     for (const pid of this.knownPids) {
       if (current.has(pid)) continue
       if (this.isPidAlive(pid)) {
         add(`chrome_pid_alive:${pid}`, `context closed but chrome pid ${pid} is still alive`, pid)
+        aliveOrphans.add(pid)
       }
     }
-    this.knownPids = current
+    this.knownPids = new Set([...current, ...aliveOrphans])
 
     for (const [code, alert] of next) {
       if (!this.alerts.has(code)) {

@@ -270,9 +270,10 @@ console.log('alerts: capture bodies, bridge pending, tabs/sessions, closed pid')
     snapshot({ tabs: 1, bySession: 1, pids: [] }),
   ]
   let index = 0
+  let alive = true
   const { monitor, timers } = makeMonitor({
     sample: () => values[Math.min(index++, values.length - 1)],
-    options: { isPidAlive: (pid) => pid === 4242 },
+    options: { isPidAlive: (pid) => pid === 4242 && alive },
   })
   monitor.start()
   const first = new Set(monitor.status().alerts.map((alert) => alert.code))
@@ -287,9 +288,22 @@ console.log('alerts: capture bodies, bridge pending, tabs/sessions, closed pid')
   assert.equal(codes.has('bridge_pending'), false)
   assert.equal(codes.has('tabs_sessions_mismatch'), false)
   assert.equal(monitor.status().alerts.find((alert) => alert.code === 'chrome_pid_alive:4242').value, 4242)
+  timers.fire()
+  assert.equal(
+    monitor.status().alerts.some((alert) => alert.code === 'chrome_pid_alive:4242'),
+    true,
+    'the orphan pid alert persists while the pid stays alive',
+  )
+  alive = false
+  timers.fire()
+  assert.equal(
+    monitor.status().alerts.some((alert) => alert.code === 'chrome_pid_alive:4242'),
+    false,
+    'the orphan pid alert clears once the pid is gone',
+  )
   assert.equal(MEMORY_CAPTURE_BODY_ALERT_BYTES, 8 * 1024 * 1024)
   assert.equal(MEMORY_BRIDGE_PENDING_ALERT, 64)
-  assert.equal(monitor.status().alerts.length, 1)
+  assert.equal(monitor.status().alerts.length, 0)
   monitor.stop()
 }
 
