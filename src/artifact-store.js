@@ -50,10 +50,25 @@ export class ArtifactStore {
   }
 
   /**
+   * Resolve the retention policy. `retentionRuns` may be a number (tests and
+   * existing callers) or a getter function (index.js, so a DSH settings edit
+   * takes effect without reconstructing the store).
+   */
+  #retentionLimit() {
+    let value = this.retentionRuns
+    try {
+      if (typeof value === 'function') value = value()
+    } catch {
+      value = 50
+    }
+    return Number.isInteger(value) && value >= 1 ? value : 50
+  }
+
+  /**
    * Keep the newest `maxRuns` run directories. Best-effort: any filesystem
    * error leaves the remaining runs in place and returns what was removed.
    */
-  pruneArtifacts(maxRuns = this.retentionRuns) {
+  pruneArtifacts(maxRuns = this.#retentionLimit()) {
     try {
       if (!fs.existsSync(this.root)) return []
       const runs = fs

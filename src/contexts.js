@@ -41,10 +41,19 @@ export class BrowserContextManager {
     this.creatingByOwner = new Map()
     // profileId -> reservation while a named profile's driver is being created.
     this.reservedProfiles = new Set()
-    this.maxContexts = config.browser.maxContexts
-    this.idleTimeoutMs = config.browser.idleTimeoutMs
     this.profilesRoot = config.browser.profilesDir || path.join(home, 'cache', 'dsh-chrome', 'profiles')
     this.reaper = null
+  }
+
+  // Read limits from the current effective config rather than caching them at
+  // construction: the settings MVP can update these volatile fields in place
+  // after a DSH settings edit (index.js adopts the new config object).
+  get maxContexts() {
+    return this.config.browser.maxContexts
+  }
+
+  get idleTimeoutMs() {
+    return this.config.browser.idleTimeoutMs
   }
 
   list() {
