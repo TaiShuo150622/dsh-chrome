@@ -38,7 +38,7 @@ import {
 // callers that need the rest: maxChars (up to 200000) and chrome_get_text.
 const SNAPSHOT_TEXT_DEFAULT_CHARS = 20000
 
-export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null, contextViewer = null, update = null, artifactStore = null, memoryStats = null, memoryMonitor = null }) {
+export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null, contextViewer = null, update = null, artifactStore = null, memoryStats = null, memoryMonitor = null, verifyPrivateAllowlist = null }) {
   const list = []
   const {
     ownerOf,
@@ -232,6 +232,13 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     renderText,
     hardConfirmAsk,
     evaluateConfirmTimeoutMs,
+    // H6: verify steps navigate/click/type through the same site guard and
+    // audit log as the ordinary chrome_* tools. privateAllowlist is a test
+    // injection only; index.js never passes one.
+    guard,
+    writeAudit,
+    validateHttpUrl,
+    privateAllowlist: verifyPrivateAllowlist,
   }))
 
   // ------------------------------------------------ 4h-2. pointer/annotate

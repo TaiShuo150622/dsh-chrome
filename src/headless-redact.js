@@ -67,6 +67,37 @@ export function redactUrl(rawUrl) {
   return url.length > 2048 ? `${url.slice(0, 2048)}…` : url
 }
 
+/** Mask secrets in free text (console lines, error text, …). */
+export function redactText(text) {
+  return maskSecretsInText(String(text ?? ''))
+}
+
+/**
+ * Redact one `tab.console` entry for a persisted verify artifact. Console text
+ * is model/page supplied and can contain `password=…`, bearer tokens or signed
+ * URLs, so it goes through the same free-text masking as capture bodies.
+ */
+export function redactConsoleEntry(entry) {
+  if (!entry || typeof entry !== 'object') return entry
+  const out = { ...entry }
+  if (out.text != null) out.text = redactText(out.text)
+  return out
+}
+
+/**
+ * Redact one `tab.network` entry. Performance entries carry the full request URL
+ * (query tokens included), a document URL and, on failures, an error text.
+ */
+export function redactNetworkEntry(entry) {
+  if (!entry || typeof entry !== 'object') return entry
+  const out = { ...entry }
+  if (out.url != null) out.url = redactUrl(out.url)
+  if (out.documentURL != null) out.documentURL = redactUrl(out.documentURL)
+  if (out.errorText != null) out.errorText = redactText(out.errorText)
+  if (out.statusText != null) out.statusText = redactText(out.statusText)
+  return out
+}
+
 function redactJsonValue(value) {
   if (Array.isArray(value)) return value.map((item) => redactJsonValue(item))
   if (value && typeof value === 'object') {

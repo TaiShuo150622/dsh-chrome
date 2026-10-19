@@ -234,14 +234,24 @@ export function createToolSupport({ bridge, approval, sessionContext, userQuesti
     return site
   }
 
-  async function guard(exec, toolName, action, { tabId = null, targetUrl = null, allowForeign = false } = {}) {
+  async function guard(exec, toolName, action, { tabId = null, targetUrl = null, allowForeign = false, site: providedSite = null } = {}) {
     if (!exec?.agent) {
       writeAudit(exec, toolName, action, null, 'denied', 'no-agent')
       throw new BridgeError('APPROVAL_DENIED', 'browser actions require a live agent session')
     }
     let site
     let lookupError = null
-    if (targetUrl != null) {
+    if (providedSite) {
+      // Callers that own the page (chrome_verify's isolated context) resolve the
+      // site from their own driver; the desktop bridge's active tab is not the
+      // page the action runs on and must not be consulted.
+      site = {
+        origin: providedSite.origin ?? originOf(providedSite.url),
+        url: String(providedSite.url || ''),
+        title: String(providedSite.title || ''),
+        tabId: providedSite.tabId ?? (Number.isFinite(tabId) ? tabId : null),
+      }
+    } else if (targetUrl != null) {
       // goto / tabs new: judge the destination URL, not the departure page
       // (R-02). No lookup: the target is known before anything navigates.
       site = {

@@ -3,6 +3,9 @@
  * out of the main tool file so its step interpreter and artifact layout can be
  * tested without loading every chrome_* tool.
  */
+import { redactConsoleEntry, redactNetworkEntry, redactUrl } from './headless-redact.js'
+import { classifyTarget, targetAllowedByAllowlist } from './verify-targets.js'
+
 export function createVerifyTool({
   contexts,
   artifactStore,
@@ -13,7 +16,49 @@ export function createVerifyTool({
   renderText,
   hardConfirmAsk = null,
   evaluateConfirmTimeoutMs = 120000,
+  guard = null,
+  writeAudit = null,
+  validateHttpUrl = null,
+  privateAllowlist = null,
 }) {
+  // Test-only allowlist for loopback/link-local/private navigations. The
+  // provider never passes one, so there is no config/env/model switch that
+  // turns off the private-target refusal at runtime.
+  const allowlist = Array.isArray(privateAllowlist) ? privateAllowlist.slice() : []
+
+  function blockedTarget(rawUrl) {
+    const target = classifyTarget(rawUrl)
+    if (!target.http || !target.reason) return null
+    if (targetAllowedByAllowlist(target, allowlist)) return null
+    return target
+  }
+
+  function privateTargetError(exec, action, rawUrl, target) {
+    writeAudit?.(
+      exec,
+      'chrome_verify',
+      action,
+      { origin: target.origin, url: redactUrl(rawUrl), tabId: null },
+      'denied',
+      `private-target:${target.reason}`,
+    )
+    const error = new Error(
+      `chrome_verify refuses a ${target.reason} target (${redactUrl(rawUrl)}); ` +
+        'loopback/link-local/private targets are blocked by default',
+    )
+    error.code = 'PROTECTED_PAGE'
+    return error
+  }
+
+  function requireGuard(toolName) {
+    if (typeof guard !== 'function') {
+      const error = new Error(`${toolName} requires the site guard; refusing the step`)
+      error.code = 'APPROVAL_DENIED'
+      return error
+    }
+    return null
+  }
+
   // H5: a verify `type` step is model-supplied input too. The driver refuses a
   // password/OTP/payment target with SENSITIVE_FIELD; only after this one-shot
   // hard confirmation is the step retried. The step text never enters the card.
@@ -111,7 +156,45 @@ export function createVerifyTool({
         const checks = []
         const artifacts = []
         let failed = false
+        let failureCode = null
         let lastUrl = ''
+        const siteFrom = (url, title = '', tabId = null) => {
+          const target = classifyTarget(url)
+          return {
+            origin: target.origin,
+            url: String(url || ''),
+            title: String(title || ''),
+            tabId: Number.isInteger(tabId) ? tabId : null,
+          }
+        }
+        // Resolve the page the verify context is on, through its own driver.
+        // The desktop bridge's active tab is a different page and must never
+        // decide what this step is allowed to touch.
+        const resolveSite = async () => {
+          try {
+            const site = await driver.request('browser.site', { owner })
+            if (site && typeof site.url === 'string') return siteFrom(site.url, site.title, site.tabId)
+          } catch {}
+          try {
+            const snap = await driver.request('tab.snapshot', { owner, maxChars: 2000 })
+            if (snap && typeof snap.url === 'string') return siteFrom(snap.url, snap.title, snap.tabId)
+          } catch {}
+          return null
+        }
+        const noSiteError = () => {
+          const error = new Error('cannot resolve the verify context page; refusing to act on an unknown site')
+          error.code = 'APPROVAL_DENIED'
+          return error
+        }
+        const guardAction = async (action, options) => {
+          const missing = requireGuard('chrome_verify')
+          if (missing) throw missing
+          await guard(exec, 'chrome_verify', action, options)
+        }
+        const assertAllowedTarget = (rawUrl, action) => {
+          const target = blockedTarget(rawUrl)
+          if (target) throw privateTargetError(exec, action, rawUrl, target)
+        }
         const makeArtifacts = async () => {
           try {
             const consoleResult = await driver.request('tab.console', { owner, level: 'error', limit: 200 })
@@ -120,10 +203,14 @@ export function createVerifyTool({
               runId,
               at: new Date().toISOString(),
               contextId,
-              url: lastUrl,
+              // H6: persisted artifacts are model/page supplied, so the final
+              // URL and every console/network entry are redacted before they
+              // hit disk. Console text and performance URLs routinely carry
+              // tokens and `password=` pairs.
+              url: redactUrl(lastUrl),
               checks,
-              console: consoleResult?.entries || [],
-              network: networkResult?.entries || [],
+              console: (Array.isArray(consoleResult?.entries) ? consoleResult.entries : []).map(redactConsoleEntry),
+              network: (Array.isArray(networkResult?.entries) ? networkResult.entries : []).map(redactNetworkEntry),
               durationMs: Date.now() - startedAt,
             }
             const reportPath = artifactStore.reportPath(artifactDir, runId)
@@ -151,11 +238,31 @@ export function createVerifyTool({
           for (const step of steps) {
             const action = String(step?.action || '')
             if (action === 'navigate') {
-              const url = String(step.url || '')
-              if (!url) { checks.push({ id: `step-${checks.length + 1}`, type: 'navigate', ok: false, message: 'missing url' }); failed = true; break }
+              const raw = String(step.url || '')
+              if (!raw) { checks.push({ id: `step-${checks.length + 1}`, type: 'navigate', ok: false, message: 'missing url' }); failed = true; break }
+              if (typeof validateHttpUrl !== 'function') {
+                const error = new Error('URL validation is unavailable; refusing to navigate')
+                error.code = 'PROTECTED_PAGE'
+                throw error
+              }
+              const url = validateHttpUrl(raw)
+              assertAllowedTarget(url, `navigate to ${redactUrl(url)}`)
+              // H6: navigate targets are approved like chrome_goto, and the
+              // decision is audited under chrome_verify.
+              await guardAction(`navigate to ${redactUrl(url)}`, { targetUrl: url })
               const result = await driver.request('tab.goto', { owner, url })
-              lastUrl = result?.url || url
-              artifacts.push({ type: 'navigation', url: lastUrl })
+              const finalUrl = String(result?.url || url)
+              const redirected = blockedTarget(finalUrl)
+              if (redirected) {
+                // The approval covered the public URL. A redirect into the
+                // local network must not become a post-approval read: leave
+                // the page (so artifacts do not capture it) and stop the run.
+                try { await driver.request('tab.goto', { owner, url: 'about:blank' }) } catch {}
+                lastUrl = 'about:blank'
+                throw privateTargetError(exec, `navigate to ${redactUrl(finalUrl)}`, finalUrl, redirected)
+              }
+              lastUrl = finalUrl
+              artifacts.push({ type: 'navigation', url: redactUrl(finalUrl) })
               continue
             }
             if (action === 'waitFor') {
@@ -171,10 +278,21 @@ export function createVerifyTool({
               continue
             }
             if (action === 'click') {
+              const site = await resolveSite()
+              if (!site) throw noSiteError()
+              const actionLabel = `click on ${redactUrl(site.url)}`
+              assertAllowedTarget(site.url, actionLabel)
+              await guardAction(actionLabel, { site })
               await driver.request('tab.click', { owner, selector: step.selector, ref: step.ref })
               continue
             }
             if (action === 'type') {
+              const site = await resolveSite()
+              if (!site) throw noSiteError()
+              const actionLabel = `type into ${redactUrl(site.url)}`
+              assertAllowedTarget(site.url, actionLabel)
+              await guardAction(actionLabel, { site })
+              if (site.url) lastUrl = site.url
               const typeParams = {
                 owner,
                 selector: step.selector,
@@ -186,7 +304,7 @@ export function createVerifyTool({
                 await driver.request('tab.type', typeParams)
               } catch (error) {
                 if (error?.code !== 'SENSITIVE_FIELD') throw error
-                await confirmSensitiveType(exec, lastUrl || step.url || '')
+                await confirmSensitiveType(exec, site.url || lastUrl || step.url || '')
                 await driver.request('tab.type', { ...typeParams, sensitiveApproved: true })
               }
               continue
@@ -258,7 +376,17 @@ export function createVerifyTool({
             break
           }
         } catch (error) {
-          checks.push({ id: `error-${checks.length + 1}`, type: 'action', ok: false, message: String(error?.message || error) })
+          const check = {
+            id: `error-${checks.length + 1}`,
+            type: 'action',
+            ok: false,
+            message: String(error?.message || error),
+          }
+          if (typeof error?.code === 'string') {
+            check.code = error.code
+            failureCode = error.code
+          }
+          checks.push(check)
           failed = true
         }
         const options = args?.options || {}
@@ -277,6 +405,7 @@ export function createVerifyTool({
           durationMs: Date.now() - startedAt,
           checks,
           artifacts,
+          ...(failureCode ? { error: failureCode } : {}),
         }
       },
   }

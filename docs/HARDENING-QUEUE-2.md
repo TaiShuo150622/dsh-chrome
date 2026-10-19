@@ -13,7 +13,7 @@
   - 扩展/headless 的 type/press/verify.type 识别 password/OTP/payment 字段；命中走 `hardConfirmAsk` 或 credential 模式，不自动明文输入。
   - `chrome_headless_login` 确认卡显示完整 URL/origin；`credentials.fill` 接收 target origin/scope，默认只允许 https（loopback 例外）。
   - 补测试：敏感字段确认/拒绝、不泄漏值、origin 不匹配失败。
-- [ ] H6 chrome_verify 安全收口
+- [x] H6 chrome_verify 安全收口
   - steps 的 navigate/click/type 走 guard/audit；默认拒绝 loopback/link-local/私网（测试 allowlist 可放行）。
   - console/network artifact 脱敏；navigate 目标 URL 审批；补测试。
 - [ ] H7 close 有界 + 取消
