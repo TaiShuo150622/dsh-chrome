@@ -17,7 +17,7 @@
 - [x] Q29 update 内部拆分
   - 拆为 release-source / state / host-installer 等；`UpdateChecker` 只做编排；
   - release 解析/版本比较/SHA 校验/写盘行为不变；全量测试。
-- [ ] Q30 tools.js 组装层收尾
+- [x] Q30 tools.js 组装层收尾
   - 把剩余公共 helper（call/guard/approval/policy/owner/session 等）抽到 `src/tool-support.js`（或等价），`tools.js` 只做注册/装配；
   - 不改变工具顺序/schema/render/错误码；全量测试。
 
