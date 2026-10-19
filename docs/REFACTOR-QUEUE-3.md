@@ -18,7 +18,7 @@
 - [x] Q16 runtime 继续收拢
   - `src/runtime.js` 接管 update checker 的创建/start/stop（viewer/liveview 已在）；
   - `index.js` 只保留 effect 与注入；清理顺序不变；全量测试。
-- [ ] Q17 headless 页面动作拆出
+- [x] Q17 headless 页面动作拆出
   - 新建 `src/headless-page-actions.js`，迁移 `snapshotPage`、`clickPage`、`typePage`、`findPage`、`selectPage`、`dragPage` 等纯页面脚本辅助（按实际依赖可调整范围）；
   - `HeadlessDriver` 保留 `pageAction` 与 dispatch，行为/输出不变；全量测试。
 
