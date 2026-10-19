@@ -9,7 +9,7 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 
 import { BridgeError } from './bridge.js'
-import { getLiveViewInfo, getLiveViewUrl, getViewerActivity } from './liveview.js'
+import { getLiveViewInfo, getLiveViewOpenInfo, getViewerActivity } from './liveview.js'
 import { dshHome } from './policy.js'
 import { createScreencastGuard } from './screencast-guard.js'
 
@@ -40,7 +40,7 @@ export function createScreencastTools({
     // therefore does not take a write lease.
     stateful: true,
     description:
-      'Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image (only for the session that started an active stream), op="stop" ends the stream; op="viewer" returns the loopback live-view URL; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.',
+      'Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image (only for the session that started an active stream), op="stop" ends the stream; op="viewer" writes the loopback live-view URL to a local handoff file and returns its path plus an opaque handle (the bearer URL is never returned); op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.',
     parameters: {
       type: 'object',
       properties: {
@@ -67,7 +67,9 @@ export function createScreencastTools({
         metaPath: { type: 'string' },
         frameOwner: {},
         image: {},
-        url: { type: 'string' },
+        handle: { type: 'string' },
+        urlFile: { type: 'string' },
+        hint: { type: 'string' },
         enabled: { type: 'boolean' },
       }),
       render: (args, value) => {
@@ -76,11 +78,7 @@ export function createScreencastTools({
           return renderText(JSON.stringify(entries.slice(-12), null, 1))
         }
         if (args?.op === 'viewer') {
-          return renderText(
-            value.enabled
-              ? `Live viewer: ${value.url}\nOpen it in a browser; it polls the latest screencast frame (300ms). Only reachable on loopback with the token.`
-              : 'Live viewer is disabled (Host webServer is unavailable).',
-          )
+          return renderText(value.hint || (value.enabled ? 'Live viewer is running.' : 'Live viewer is disabled (Host webServer is unavailable).'))
         }
         const blocks = []
         if (value.image) blocks.push({ type: 'image', attachment: value.image })
@@ -158,8 +156,8 @@ export function createScreencastTools({
         return call('tab.debug_diag', { owner }, 15000)
       }
       if (op === 'viewer') {
-        const url = getLiveViewUrl()
-        return { enabled: Boolean(url), url }
+        // The live URL carries the bearer token; return only the local handoff.
+        return getLiveViewOpenInfo()
       }
       if (op === 'status') {
         const status = await call('tab.screencast_status', { owner }, 15000)

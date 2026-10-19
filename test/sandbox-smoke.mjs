@@ -999,7 +999,10 @@ try {
   await check('chrome_screencast viewer answers even without a web server', async () => {
     const value = await run('chrome_screencast', { op: 'viewer' })
     assert.equal(typeof value.enabled, 'boolean')
-    if (value.enabled) assert.equal(typeof value.url, 'string')
+    assert.equal(value.url, undefined, 'viewer must not return the bearer URL')
+    assert.equal(JSON.stringify(value).includes('token='), false, 'viewer result must not contain token=')
+    assert.equal(JSON.stringify(value).includes('access='), false, 'viewer result must not contain access=')
+    if (value.enabled) assert.equal(typeof value.urlFile, 'string')
     if (!value.enabled) gap('chrome_screencast viewer', 'live viewer is disabled in this harness (no Host webServer); only the disabled response was exercised')
   })
 

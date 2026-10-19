@@ -10,6 +10,7 @@
 | `allowEvaluate` | `false` | 为 `true` 时注册第 33 个工具 `chrome_evaluate`；关闭时工具**不存在** | 高：页面内任意 JS |
 | `evaluateConfirmTimeoutMs` | `120000` | evaluate 硬确认等待上限；超时 → `APPROVAL_TIMEOUT` | 低 |
 | `captureConfirmTimeoutMs` | `120000` | 抓包确认等待上限（start 固定硬确认，没有配置逃逸口） | 低 |
+| `contextViewer.allowInput` | `false` | context viewer 的点击/输入/滚动写操作 opt-in；默认只读，写请求返回 `403 VIEWER_READ_ONLY` | 高：绕过工具层直接操作页面 |
 
 ## 示例
 
@@ -44,3 +45,4 @@
   - 单 capture body 预算 8 MiB，响应 4 KiB / 请求 2 KiB 截断（读取时最多放大到 64 KiB）；
   - 抓包期间 Chrome 显示「正在调试此浏览器」横幅，最长 10 分钟自动停止。
 - 抓包缓冲在扩展 Service Worker 内存；worker 被回收后 `chrome_capture_requests` 返回 `CAPTURE_LOST`，不会假装还在抓。
+- viewer（`chrome_context {op:"viewer"}` / `chrome_screencast {op:"viewer"}`）：带 `token`/`access` 的 URL 只写进本机 0600 文件，工具结果、render 与 operation log 里只有 `handle` + `urlFile` + `hint`；viewer 输入默认只读，opt-in 后每次写操作写 audit（不记输入文本/URL）。

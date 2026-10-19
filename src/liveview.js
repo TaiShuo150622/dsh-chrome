@@ -8,6 +8,8 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 
+import { viewerOpenHint, writeViewerUrlFile } from './viewer-open.js'
+
 const state = {
   origin: null,
   token: null,
@@ -182,8 +184,35 @@ export function getLiveViewUrl() {
   return `${state.origin}/dsh-chrome/live?token=${encodeURIComponent(state.token)}`
 }
 
+/**
+ * Model-safe viewer handle (H3): write the bearer URL to a 0600 local file and
+ * return only the path + hint. The URL itself must never cross the tool
+ * boundary, the render block or the operation log.
+ */
+export function getLiveViewOpenInfo() {
+  if (!state.origin || !state.token) {
+    return { enabled: false, handle: null, urlFile: null, hint: 'Live viewer is disabled (Host webServer is unavailable).' }
+  }
+  if (!state.home) {
+    return { enabled: true, handle: 'live', urlFile: null, hint: 'Live viewer is running but its DSH home is unknown, so no local URL handoff file was written.' }
+  }
+  try {
+    const url = getLiveViewUrl()
+    const urlFile = writeViewerUrlFile(state.home, 'live', url)
+    return { enabled: true, handle: 'live', urlFile, hint: viewerOpenHint(urlFile, 'live viewer') }
+  } catch (error) {
+    return {
+      enabled: true,
+      handle: 'live',
+      urlFile: null,
+      hint: `Live viewer is running but its local URL handoff file could not be written: ${error?.message || String(error)}`,
+    }
+  }
+}
+
+/** Host-side status only: no bearer URL, so status surfaces cannot leak it. */
 export function getLiveViewInfo() {
-  return { enabled: Boolean(state.origin && state.token), url: getLiveViewUrl(), origin: state.origin }
+  return { enabled: Boolean(state.origin && state.token), origin: state.origin }
 }
 
 export function getViewerActivity() {

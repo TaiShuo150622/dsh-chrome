@@ -27,14 +27,15 @@ import { createUpdateChecker } from './update.js'
  * @param {{register: Function, getOrigin?: Function}} options.webServer Host web server.
  * @param {string} options.home DSH home (viewer token files and screencast frames).
  * @param {(contextId: string) => ({driver: object, owner?: string} | null | Promise<...>)} options.getContext Context lookup for the per-context viewer.
+ * @param {boolean} [options.allowInput] Explicit opt-in for context-viewer input (default read-only).
  * @param {{info?: Function, warn?: Function}} [options.logger]
  */
-export function createViewerRuntime({ webServer, home, logger = null, getContext }) {
+export function createViewerRuntime({ webServer, home, logger = null, getContext, allowInput = false }) {
   // Same registration order as the original inline effect: live view first,
   // then the context viewer. Both fail soft; registration errors are logged by
   // the individual modules and surface as disabled handles.
   const liveview = registerLiveView({ webServer, home, logger })
-  const viewer = registerContextViewer({ webServer, home, logger, getContext })
+  const viewer = registerContextViewer({ webServer, home, logger, getContext, allowInput })
   let disposed = false
   return {
     viewer,

@@ -17,7 +17,16 @@
 | `current` | 当前 active context |
 | `use` | 切换当前会话的 active context |
 | `close` | 关闭 context（ephemeral profile 会清理） |
-| `viewer` | 返回当前 context 的 DSH 右侧边栏 viewer URL（需 Host webServer） |
+| `viewer` | 把当前 context 的 viewer URL 写到本机 0600 文件，返回文件路径与 opaque handle（需 Host webServer；bearer URL 不返回模型） |
+
+### 2.1 Viewer 与写操作（H3）
+
+- `chrome_context {op:"viewer"}` / `chrome_screencast {op:"viewer"}` 不再把带 `token`/`access` 的 URL 放进工具结果或 render：URL 写到 `$DSH_HOME/cache/dsh-chrome/viewer/*.url`（0600），模型只拿 `handle` + `urlFile` + `hint`；
+- viewer 的点击/输入/滚动等写操作**默认只读**；需要在 provider config 里显式 opt-in：
+  ```json
+  { "contextViewer": { "allowInput": true } }
+  ```
+- opt-in 后每次被接受的 viewer 写操作都会写入 `$DSH_HOME/cache/dsh-chrome/audit.jsonl`（`tool:"context-viewer"`，只记 kind/owner，不记输入文本或 URL）；未 opt-in 的写请求返回 `403 VIEWER_READ_ONLY` 并记一条 denied audit。
 
 `backend:"headless"` 的工具调用会自动使用当前会话的 active context；没有则按配置默认 preset 新建。`chrome_context` 创建后可通过 `use` 切换。
 

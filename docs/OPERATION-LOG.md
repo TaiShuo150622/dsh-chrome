@@ -55,7 +55,7 @@
 
 先做脱敏，再做截断：
 
-- **URL**：去掉 `userinfo`（`user:pass@` 整段不出现）；查询参数与 fragment 中名称像 secret 的值替换成 `«redacted»`（`token`、`secret`、`password`、`api_key`、`signature`、`session_id`、`code` 等，见 `isSecretQueryName()`）；其余查询值截断 80 字符；URL 总计最长 400 字符。非 http(s) URL 只记录 `[non-http-url N chars]`，data URL 只记录 `[data-url N chars]`。
+- **URL**：去掉 `userinfo`（`user:pass@` 整段不出现）；查询参数与 fragment 中名称像 secret 的值替换成 `«redacted»`（`token`、`secret`、`password`、`api_key`、`signature`、`session_id`、`code`、`access` 等，见 `isSecretQueryName()`）；其余查询值截断 80 字符；URL 总计最长 400 字符。非 http(s) URL 只记录 `[non-http-url N chars]`，data URL 只记录 `[data-url N chars]`。
 - **字段名脱敏**：名称命中 password/passwd/passphrase、secret、token、api_key、authorization、cookie、credential、session_id、private_key、csrf/xsrf、signature 等规则的字段，值替换成 `«redacted»`，嵌套对象同样处理。
 - **chrome_storage 特例**：如果同级的 `key`/`name` 本身像 secret，`value`/`values` 也替换成 `«redacted»`。
 - **行内 secret**：字符串里出现的 `token=...`、`password: ...`、`Bearer ...`、`sk-...`、JWT、`AKIA...` 会被替换掉。

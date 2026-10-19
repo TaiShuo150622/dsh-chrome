@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { getLiveViewUrl, registerLiveView, unregisterLiveView } from '../src/liveview.js'
+import { getLiveViewInfo, getLiveViewOpenInfo, getLiveViewUrl, registerLiveView, unregisterLiveView } from '../src/liveview.js'
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-liveview-test-'))
 const routes = new Map()
@@ -45,6 +45,19 @@ try {
   const token = new URL(url).searchParams.get('token')
   assert.ok(token && token.length >= 32)
 
+  // H3: the model-facing handoff is a 0600 local file, never the bearer URL.
+  const openInfo = getLiveViewOpenInfo()
+  assert.equal(openInfo.enabled, true)
+  assert.equal(openInfo.handle, 'live')
+  assert.equal(openInfo.url, undefined, 'open info must not return the bearer URL')
+  assert.equal(JSON.stringify(openInfo).includes('token='), false)
+  assert.ok(openInfo.urlFile, 'open info must name a local handoff file')
+  assert.equal(fs.statSync(openInfo.urlFile).mode & 0o777, 0o600)
+  assert.ok(fs.readFileSync(openInfo.urlFile, 'utf8').includes('token='), 'the local handoff file must contain the live URL')
+  const statusInfo = getLiveViewInfo()
+  assert.equal(statusInfo.enabled, true)
+  assert.equal(statusInfo.url, undefined, 'status info must not return the bearer URL')
+
   const html = await request(routes.get('/dsh-chrome/live'), `/dsh-chrome/live?token=${token}`)
   assert.equal(html.status, 200)
   assert.ok(String(html.body).includes('/dsh-chrome/live/frame?token='))
@@ -70,6 +83,7 @@ try {
   unregisterLiveView()
   assert.equal(routes.size, 0)
   assert.equal(getLiveViewUrl(), null)
+  assert.equal(getLiveViewOpenInfo().enabled, false)
   console.log('LIVEVIEW TEST: PASS')
 } finally {
   fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })

@@ -11,7 +11,7 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
       // lifecycle state, not the page in a shared tab, so no write lease.
       stateful: true,
       description:
-        'Manage isolated browser contexts for sandbox verification: op="create" makes a per-session headless context (default preset sandbox), op="use" switches the session active context, op="list" lists this session contexts, op="current" shows the active one, op="close" closes one. Contexts are isolated (separate profile); backend:"headless" calls route to the session active context.',
+        'Manage isolated browser contexts for sandbox verification: op="create" makes a per-session headless context (default preset sandbox), op="use" switches the session active context, op="list" lists this session contexts, op="current" shows the active one, op="close" closes one. op="viewer" writes the viewer URL to a local handoff file and returns its path plus an opaque handle; the bearer URL is never returned. Contexts are isolated (separate profile); backend:"headless" calls route to the session active context.',
       parameters: {
         type: 'object',
         properties: {
@@ -31,12 +31,16 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
           visible: { type: 'boolean' },
           isolation: { type: 'string' },
           contexts: { type: 'array', items: { type: 'object', additionalProperties: true } },
-          url: { type: 'string' },
+          handle: { type: 'string' },
+          urlFile: { type: 'string' },
+          hint: { type: 'string' },
           error: { type: 'string' },
         }),
         render: (_args, value) => {
           if (!value?.ok) return renderText(`Context error: ${value?.error || 'unknown'}`)
-          if (typeof value.url === 'string' && value.url) return renderText(`Context viewer: ${value.url}`)
+          if (typeof value.urlFile === 'string' && value.urlFile) {
+            return renderText(`Context viewer ready for ${value.contextId} (${value.handle}).\n${value.hint}`)
+          }
           if (Array.isArray(value.contexts)) {
             return renderText(value.contexts.length ? value.contexts.map((ctx) => `${ctx.contextId} ${ctx.preset} ${ctx.isolation}${ctx.visible ? ' visible' : ''} owner=${ctx.owner}`).join('\n') : 'No browser contexts for this session.')
           }
@@ -62,8 +66,12 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
           const ctx = contexts.activeFor(owner)
           if (!ctx) return { ok: false, error: 'NO_ACTIVE_CONTEXT' }
           const viewer = typeof contextViewer === 'function' ? contextViewer() : contextViewer
-          const url = viewer?.urlFor?.(ctx.contextId)
-          return url ? { ok: true, contextId: ctx.contextId, url } : { ok: false, error: 'VIEWER_UNAVAILABLE' }
+          // openFor keeps the bearer token/access URL on the Host: the model
+          // receives only an opaque handle and the 0600 local handoff path.
+          const info = viewer?.openFor?.(ctx.contextId)
+          return info
+            ? { ok: true, contextId: ctx.contextId, handle: `context:${ctx.contextId}`, urlFile: info.urlFile, hint: info.hint }
+            : { ok: false, error: 'VIEWER_UNAVAILABLE' }
         }
         if (op === 'use') {
           return { ok: true, ...contexts.setActive(owner, String(args?.contextId || '')) }

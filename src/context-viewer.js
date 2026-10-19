@@ -10,9 +10,13 @@
  *   POST /dsh-chrome/context/:id/input?token=...&access=...  JSON input -> driver tab.* call
  *
  * `access` is a per-run random capability bound to one contextId. It is only
- * handed out through `urlFor(contextId)` (and embedded in the viewer HTML), so
- * knowing the global token is not enough to reach a context the caller was not
- * given a URL for.
+ * handed out through `urlFor(contextId)` (Host/test API) and `openFor(contextId)`
+ * (which writes the URL to a 0600 local handoff file for the model), so knowing
+ * the global token is not enough to reach a context the caller was not given a
+ * URL for. Tool results never carry the bearer URL (H3).
+ *
+ * Input forwarding is read-only by default: the human opts in with
+ * `contextViewer.allowInput:true`; accepted writes are appended to audit.jsonl.
  *
  * `getContext(contextId)` is injected by the caller and returns
  * `{ driver, owner? }` or null. The viewer uses the context owner (the DSH
@@ -21,6 +25,7 @@
  */
 import fsp from 'node:fs/promises'
 
+import { appendAudit } from './policy.js'
 import {
   CONTEXT_ID_PATTERN,
   MAX_CONTEXT_ID_LENGTH,
@@ -45,6 +50,7 @@ import {
 import { callDriver, resolveContext } from './viewer-driver.js'
 import { serveInput } from './viewer-input.js'
 import { viewerHtml } from './viewer-html.js'
+import { viewerOpenHint, writeViewerUrlFile } from './viewer-open.js'
 
 const META_CACHE_MS = 750
 
@@ -164,7 +170,26 @@ async function dispatch(req, res, deps) {
     }
     if (req.method !== 'POST') throw methodNotAllowed('POST')
     asJson = true
-    await serveInput(req, res, route.contextId, deps)
+    // Input is a browser write. Default read-only: the human must opt in with
+    // `contextViewer.allowInput:true`, and every accepted write is audited.
+    if (!deps.state.allowInput) {
+      deps.audit?.({ action: 'viewer-input', decision: 'denied', reason: 'viewer-read-only' })
+      throw new ViewerError(
+        403,
+        'VIEWER_READ_ONLY',
+        'context viewer input is disabled (read-only); set contextViewer.allowInput=true in the provider config to opt in',
+      )
+    }
+    await serveInput(req, res, route.contextId, {
+      ...deps,
+      audit: (entry) =>
+        deps.audit?.({
+          action: `viewer-input:${entry.kind}`,
+          decision: 'allowed',
+          reason: 'viewer-input-opt-in',
+          owner: entry.owner,
+        }),
+    })
   } catch (error) {
     if (res.writableEnded) return
     const status = error instanceof ViewerError ? error.status : 500
@@ -177,7 +202,7 @@ async function dispatch(req, res, deps) {
 }
 
 function disabledViewer() {
-  return { enabled: false, token: null, urlFor: () => null, dispose: () => {} }
+  return { enabled: false, token: null, urlFor: () => null, openFor: () => null, dispose: () => {} }
 }
 
 /**
@@ -187,11 +212,12 @@ function disabledViewer() {
  * @param {{register: Function, getOrigin?: Function}} options.webServer Host web server service.
  * @param {(contextId: string) => ({driver: object, owner?: string} | null | Promise<...>)} options.getContext Context lookup.
  * @param {string} [options.token] Optional existing token (memory only); generated/persisted otherwise.
+ * @param {boolean} [options.allowInput] Explicit opt-in for viewer click/type/key input (default false: read-only).
  * @param {{info?: Function, warn?: Function}} [options.logger]
  * @param {string} [options.home] DSH home for the token file (defaults to DSH_HOME or ~/.dsh).
- * @returns {{enabled: boolean, token: string|null, urlFor: (contextId: string) => string|null, dispose: () => void}}
+ * @returns {{enabled: boolean, token: string|null, urlFor: (contextId: string) => string|null, openFor: (contextId: string) => ({urlFile: string, hint: string}|null), dispose: () => void}}
  */
-export function registerContextViewer({ webServer, getContext, token, logger = null, home = defaultHome() } = {}) {
+export function registerContextViewer({ webServer, getContext, token, allowInput = false, logger = null, home = defaultHome() } = {}) {
   if (!webServer || typeof webServer.register !== 'function') {
     logger?.warn?.('dsh-chrome: context viewer disabled (Host webServer is unavailable)')
     return disabledViewer()
@@ -208,17 +234,32 @@ export function registerContextViewer({ webServer, getContext, token, logger = n
   const state = {
     token: viewerToken,
     origin: readOrigin(webServer),
+    allowInput: allowInput === true,
     disposed: false,
     inflight: new Map(),
     metaCache: new Map(),
     access: new Map(),
+  }
+  // Viewer input is a browser write outside the tool layer; keep it in the
+  // same audit log as guarded chrome_* writes. Audit failures never block.
+  const audit = (record) => {
+    appendAudit(home, {
+      ts: new Date().toISOString(),
+      session: record.owner ? String(record.owner) : null,
+      tool: 'context-viewer',
+      origin: null,
+      tabId: null,
+      action: String(record.action || '').slice(0, 300),
+      decision: record.decision === 'allowed' ? 'allowed' : 'denied',
+      reason: String(record.reason || '').slice(0, 300),
+    })
   }
   let disposeRoute
   try {
     disposeRoute = webServer.register({
       kind: 'prefix',
       path: ROUTE_PREFIX,
-      handler: (req, res) => dispatch(req, res, { getContext, logger, state }),
+      handler: (req, res) => dispatch(req, res, { getContext, logger, state, audit }),
     })
   } catch (error) {
     logger?.warn?.('dsh-chrome: context viewer registration failed: %s', error?.message || String(error))
@@ -226,23 +267,36 @@ export function registerContextViewer({ webServer, getContext, token, logger = n
   }
 
   logger?.info?.(
-    'dsh-chrome: context viewer registered at %s (token file %s)',
+    'dsh-chrome: context viewer registered at %s (token file %s, input %s)',
     `${state.origin || '<origin unavailable>'}${ROUTE_PREFIX}/:id/view`,
     callerToken != null ? '<memory only>' : tokenPath(home),
+    state.allowInput ? 'opt-in' : 'read-only',
   )
+
+  function issueUrl(contextId) {
+    if (state.disposed) return null
+    const id = String(contextId ?? '')
+    if (!id || id.length > MAX_CONTEXT_ID_LENGTH || !CONTEXT_ID_PATTERN.test(id)) return null
+    const origin = state.origin || readOrigin(webServer)
+    if (!origin) return null
+    state.origin = origin
+    const access = accessFor(state, id)
+    return `${origin}${ROUTE_PREFIX}/${encodeURIComponent(id)}/view?token=${encodeURIComponent(viewerToken)}&access=${encodeURIComponent(access)}`
+  }
 
   return {
     enabled: true,
     token: viewerToken,
-    urlFor(contextId) {
-      if (state.disposed) return null
-      const id = String(contextId ?? '')
-      if (!id || id.length > MAX_CONTEXT_ID_LENGTH || !CONTEXT_ID_PATTERN.test(id)) return null
-      const origin = state.origin || readOrigin(webServer)
-      if (!origin) return null
-      state.origin = origin
-      const access = accessFor(state, id)
-      return `${origin}${ROUTE_PREFIX}/${encodeURIComponent(id)}/view?token=${encodeURIComponent(viewerToken)}&access=${encodeURIComponent(access)}`
+    urlFor: issueUrl,
+    openFor(contextId) {
+      const url = issueUrl(contextId)
+      if (!url) return null
+      try {
+        const urlFile = writeViewerUrlFile(home, `context-${String(contextId)}`, url)
+        return { urlFile, hint: viewerOpenHint(urlFile, 'context viewer') }
+      } catch {
+        return null
+      }
     },
     dispose() {
       if (state.disposed) return

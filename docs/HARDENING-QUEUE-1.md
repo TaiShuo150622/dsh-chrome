@@ -12,7 +12,7 @@
 - [x] H2 chrome_pdf 路径收敛
   - 默认写到 `$DSH_HOME/cache/dsh-chrome/pdfs/`；显式 path 限制在 cache 或会话 cwd，realpath 后拒绝 symlink/已存在文件；显式 path 走 hardConfirm 并显示完整路径；`chrome_pdf` 标记 mutating/lease。
   - 补路径逃逸/符号链接/策略文件覆盖测试；全量测试。
-- [ ] H3 viewer/live-view bearer 收口
+- [x] H3 viewer/live-view bearer 收口
   - `chrome_context {op:"viewer"}` / `chrome_screencast viewer` 不再把带 token/access 的完整 URL 返回给模型/render；模型只拿 opaque handle 或本地打开提示（Host 侧/工具结果不含 secret）；`access` 加入 operation log secret 查询名。
   - viewer 写操作写 audit（或默认关闭写，只读）；明确 opt-in。
   - 更新 context-viewer/liveview 测试，断言 tool result/render/operations 中无 `token=`/`access=`；全量测试。

@@ -105,11 +105,19 @@ async function performInput(payload, driver) {
   throw badRequest('INVALID_KIND', 'kind must be one of click, type, key, scroll, navigate, history')
 }
 
-async function serveInput(req, res, contextId, { getContext, state }) {
-  const { driver } = await resolveContext(contextId, getContext)
+async function serveInput(req, res, contextId, { getContext, state, audit }) {
+  const { context, driver } = await resolveContext(contextId, getContext)
   const payload = await readJsonBody(req)
   const result = await performInput(payload, driver)
   state.metaCache.delete(contextId)
+  // The viewer is a second surface onto the same page: audit every accepted
+  // write (kind + owner only, never the typed text or URL) like a guarded
+  // chrome_* tool call. Audit failure must not fail the action.
+  try {
+    audit?.({ kind: payload.kind, owner: context?.owner || null })
+  } catch {
+    // best effort
+  }
   sendJson(res, 200, { ok: true, kind: payload.kind, ...result })
 }
 

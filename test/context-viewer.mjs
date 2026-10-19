@@ -72,6 +72,7 @@ const viewer = registerContextViewer({
   token,
   logger,
   home: path.join(root, 'home'),
+  allowInput: true,
 })
 
 function lastCall(method) {
@@ -130,6 +131,39 @@ try {
   const otherAccess = new URL(String(viewer.urlFor('ctx-2'))).searchParams.get('access')
   assert.notEqual(otherAccess, access, 'each context gets its own capability')
   assert.equal(viewer.urlFor('bad id'), null)
+
+  // H3: the model-facing handoff is a 0600 local file, never the bearer URL.
+  const opened = viewer.openFor('ctx-1')
+  assert.ok(opened?.urlFile, 'openFor must return a local handoff path')
+  assert.equal(opened.hint.includes('token='), false, 'openFor hint must not contain the bearer URL')
+  const handoff = fs.readFileSync(opened.urlFile, 'utf8')
+  assert.ok(handoff.includes('token=') && handoff.includes('access='), 'the local handoff file must contain the viewer URL')
+  assert.equal(fs.statSync(opened.urlFile).mode & 0o777, 0o600)
+  assert.equal(viewer.openFor('bad id'), null)
+
+  // H3: input is read-only unless the host explicitly opts in. The default
+  // viewer refuses the write before the driver sees it and audits the denial.
+  const readOnlyRoutes = new Map()
+  const readOnlyViewer = registerContextViewer({
+    webServer: makeWebServer(readOnlyRoutes),
+    getContext,
+    token,
+    home: path.join(root, 'read-only-home'),
+    logger,
+  })
+  const readOnlyAccess = new URL(String(readOnlyViewer.urlFor('ctx-1'))).searchParams.get('access')
+  const callsBeforeReadOnly = calls.length
+  const readOnlyPost = await request(
+    readOnlyRoutes.get('/dsh-chrome/context'),
+    `/dsh-chrome/context/ctx-1/input?token=${token}&access=${readOnlyAccess}`,
+    { method: 'POST', body: JSON.stringify({ kind: 'click', x: 1, y: 2 }) },
+  )
+  assert.equal(readOnlyPost.status, 403)
+  assert.match(String(readOnlyPost.body), /VIEWER_READ_ONLY/)
+  assert.equal(calls.length, callsBeforeReadOnly, 'read-only viewer input must not reach the driver')
+  const readOnlyAudit = fs.readFileSync(path.join(root, 'read-only-home', 'cache', 'dsh-chrome', 'audit.jsonl'), 'utf8')
+  assert.ok(readOnlyAudit.includes('viewer-read-only'), 'read-only denial must be audited')
+  readOnlyViewer.dispose()
 
   function contextUrl(contextId, action, extra = '') {
     const issued = new URL(String(viewer.urlFor(contextId)))
@@ -284,6 +318,21 @@ try {
   const getInput = await request(handler, contextUrl('ctx-1', 'input'))
   assert.equal(getInput.status, 405)
   assert.equal(getInput.headers.allow, 'POST')
+
+  // H3: accepted viewer writes are audited with the owning session, never with
+  // the typed text or visited URL.
+  const auditEntries = fs
+    .readFileSync(path.join(root, 'home', 'cache', 'dsh-chrome', 'audit.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+  const allowedInputs = auditEntries.filter((entry) => entry.tool === 'context-viewer' && entry.decision === 'allowed')
+  assert.ok(allowedInputs.length > 0, 'accepted viewer input must be audited')
+  assert.equal(allowedInputs[0].session, 'session-a')
+  assert.ok(allowedInputs.some((entry) => entry.action === 'viewer-input:click'))
+  assert.ok(allowedInputs.some((entry) => entry.action === 'viewer-input:type'))
+  assert.ok(allowedInputs.every((entry) => !JSON.stringify(entry).includes('hello')), 'audit must not record typed text')
 
   // Dispose removes the prefix route and stops handing out URLs.
   viewer.dispose()

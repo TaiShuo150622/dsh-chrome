@@ -144,7 +144,7 @@ await check('redacts URL userinfo/secret queries, password fields and inline sec
       durationMs: 3,
       ok: true,
       args: {
-        url: 'https://user:pass@example.com/path?token=SUPERSECRET&ok=1#access_token=FRAGMENT',
+        url: 'https://user:pass@example.com/path?token=SUPERSECRET&ok=1&access=VIEWERCAP#access_token=FRAGMENT',
         password: 'hunter2',
         text: 'hello '.repeat(100),
         nested: { apiKey: 'k-12345', note: 'token=abc123 keep' },
@@ -174,6 +174,8 @@ await check('redacts URL userinfo/secret queries, password fields and inline sec
   assert.ok(entry.args.url.startsWith('https://example.com/path?'), entry.args.url)
   assert.ok(entry.args.url.includes('token=«redacted»'), entry.args.url)
   assert.ok(entry.args.url.includes('ok=1'), entry.args.url)
+  assert.ok(entry.args.url.includes('access=«redacted»'), entry.args.url)
+  assert.equal(entry.args.url.includes('VIEWERCAP'), false, 'viewer access capability is a secret query value')
   assert.ok(entry.args.url.includes('access_token=«redacted»'), entry.args.url)
 
   assert.equal(entry.args.text, '«redacted»', 'chrome_type input is never logged')

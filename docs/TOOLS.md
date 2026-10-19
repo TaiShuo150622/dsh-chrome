@@ -235,7 +235,7 @@ Open a visible, dedicated Chrome window at a human-interaction step (login, CAPT
 
 ### `chrome_context`
 
-Manage isolated browser contexts for sandbox verification: op="create" makes a per-session headless context (default preset sandbox), op="use" switches the session active context, op="list" lists this session contexts, op="current" shows the active one, op="close" closes one. Contexts are isolated (separate profile); backend:"headless" calls route to the session active context.
+Manage isolated browser contexts for sandbox verification: op="create" makes a per-session headless context (default preset sandbox), op="use" switches the session active context, op="list" lists this session contexts, op="current" shows the active one, op="close" closes one. op="viewer" writes the viewer URL to a local handoff file and returns its path plus an opaque handle; the bearer URL is never returned. Contexts are isolated (separate profile); backend:"headless" calls route to the session active context.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
@@ -307,7 +307,7 @@ Draw annotations over the current page: highlight text (text/ref/selector), box/
 
 ### `chrome_screencast`
 
-Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image (only for the session that started an active stream), op="stop" ends the stream; op="viewer" returns the loopback live-view URL; op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.
+Continuous page view prototype: op="start" begins CDP Page.startScreencast (JPEG frames every Nth frame), the native host writes the latest frame to ~/.dsh/cache/dsh-chrome/screencast/latest.jpg, op="status" returns it as an image (only for the session that started an active stream), op="stop" ends the stream; op="viewer" writes the loopback live-view URL to a local handoff file and returns its path plus an opaque handle (the bearer URL is never returned); op="diag" returns the last extension diagnostics. Frames are not sent to the model unless status is called.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|

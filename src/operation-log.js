@@ -85,6 +85,7 @@ const QUERY_SECRET_EXACT = new Set([
   'key',
   'api_key',
   'apikey',
+  'access',
   'access_token',
   'refresh_token',
   'id_token',

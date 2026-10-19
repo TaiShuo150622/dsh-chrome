@@ -229,6 +229,9 @@ export function apply(ctx, config) {
       webServer,
       home,
       logger,
+      // Read-only by default: viewer input clicks/types into the page, so the
+      // human must opt in explicitly through the provider config file.
+      allowInput: providerConfig?.contextViewer?.allowInput === true,
       getContext: (contextId) => {
         const ctx = contexts.get(contextId)
         if (!ctx) return null
