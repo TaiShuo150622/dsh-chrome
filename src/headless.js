@@ -525,7 +525,8 @@ export class HeadlessDriver {
         childExit = code
         if (this.chrome !== child) return
         this.logger?.warn?.('headless Chrome exited: %s', code)
-        this.handleBrowserExit(code)
+        // The child is already gone; do not signal it again.
+        this.handleBrowserExit(code, { killChild: false })
       })
       const deadline = Date.now() + 15000
       let activePort = null
@@ -1897,12 +1898,15 @@ export class HeadlessDriver {
    * Used by normal close (including context close / idle reap) and by the
    * child `exit` / CDP `close` handlers. `dead` defaults to true (the browser
    * exited unexpectedly); the deliberate `close()` path passes false so this
-   * same teardown is not mistaken for a crash.
+   * same teardown is not mistaken for a crash. `killChild` is true for a CDP
+   * disconnect (Chrome may still be running and would otherwise be orphaned)
+   * and false when the child already emitted `exit`.
    */
-  handleBrowserExit(reason = 'browser-exit', { dead = true } = {}) {
+  handleBrowserExit(reason = 'browser-exit', { dead = true, killChild = Boolean(dead) } = {}) {
     // Detach the CDP client first: closing it below invokes its onClose hook,
     // and that hook must not treat an intentional teardown as a crash.
     const cdp = this.cdp
+    const child = this.chrome
     this.cdp = null
     for (const tab of [...this.tabs.values()]) this.cleanupTab(tab, { reason })
     for (const capture of this.captures.values()) {
@@ -1925,6 +1929,13 @@ export class HeadlessDriver {
       cdp?.close()
     } catch {
       // already closed
+    }
+    if (killChild) {
+      try {
+        child?.kill?.('SIGTERM')
+      } catch {
+        // already gone
+      }
     }
     this.dead = Boolean(dead)
     this.deathReason = dead ? String(reason) : null
