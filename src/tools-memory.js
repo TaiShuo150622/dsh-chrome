@@ -54,12 +54,13 @@ function snapshotLines(value) {
     `contexts: ${contexts.contexts ?? 0}/${contexts.maxContexts ?? '?'} (pending ${contexts.pending ?? 0})  drivers ${Array.isArray(contexts.drivers) ? contexts.drivers.length : 0}`,
     `retained: tabs ${totals.tabs ?? 0}  owners ${totals.owners ?? 0}  sessions ${totals.bySession ?? 0}  console buffers ${totals.consoleBuffers ?? 0}  captures ${totals.captures ?? 0} (entries ${totals.captureEntries ?? 0}, bodies ${size(totals.captureBodyBytes)})`,
     `downloads ${totals.downloads ?? 0} (${totals.downloadByGuid ?? 0} indexed)  shot streams ${totals.shotStreams ?? 0}  idle timers ${totals.idleTimers ?? 0}  visible drivers ${totals.visibleDrivers ?? 0}`,
+    `chrome processes: ${totals.processCount ?? 'unknown'}  rss ${totals.chromeRss != null ? size(totals.chromeRss) : 'unknown'}`,
     `bridge: ${bridge.connected ? 'CONNECTED' : 'DISCONNECTED'}  pending ${bridge.pending ?? 0}  handlers ${bridge.handlers ?? 0}`,
   ]
   for (const driver of Array.isArray(contexts.drivers) ? contexts.drivers : []) {
     const stats = driver?.stats || {}
     lines.push(
-      `driver ${String(driver?.contextId ?? '?').slice(0, 8)}: chrome pid ${stats.chromePid ?? '?'}  tabs ${stats.tabs ?? 0}  captures ${stats.captures ?? 0}  shot streams ${stats.shotStreams ?? 0}  ${driver?.connected ? 'connected' : 'disconnected'}`,
+      `driver ${String(driver?.contextId ?? '?').slice(0, 8)}: chrome pid ${stats.chromePid ?? '?'}  rss ${stats.chromeRss != null ? size(stats.chromeRss) : 'unknown'} (${stats.processCount ?? '?'} proc)  tabs ${stats.tabs ?? 0}  captures ${stats.captures ?? 0}  shot streams ${stats.shotStreams ?? 0}  ${driver?.connected ? 'connected' : 'disconnected'}`,
     )
   }
   if (value.error) lines.push('', `WARNING: ${value.error}`)
@@ -107,7 +108,7 @@ export function createMemoryTools({ memoryStats = null, memoryMonitor = null, ou
   const memory = {
     name: 'chrome_memory_stats',
     description:
-      'Report a provider memory snapshot: Node rss/heapUsed/heapTotal/external/arrayBuffers in bytes, plus retained-object counts for browser contexts, drivers, captures, console buffers, downloads, screenshot streams and the bridge. op:"start" begins explicit continuous sampling every intervalMs (default 5000ms, in-memory ring of 600, numeric JSONL at ~/.dsh/cache/dsh-chrome/memory.jsonl); op:"stop" ends sampling; op:"dump" returns the recent ring, retained-memory deltas and alerts; the default op:"status" returns a fresh snapshot plus monitor state. Numbers only — never page content, URLs, console text or credentials — so repeated calls can be compared to locate a leak.',
+      'Report a provider memory snapshot: Node rss/heapUsed/heapTotal/external/arrayBuffers in bytes, plus retained-object counts for browser contexts, drivers, captures, console buffers, downloads, screenshot streams and the bridge. On macOS/Linux each driver also reports the Chrome process-tree rss and process count (Windows: unknown). op:"start" begins explicit continuous sampling every intervalMs (default 5000ms, in-memory ring of 600, numeric JSONL at ~/.dsh/cache/dsh-chrome/memory.jsonl); op:"stop" ends sampling; op:"dump" returns the recent ring, retained-memory deltas and alerts; the default op:"status" returns a fresh snapshot plus monitor state. Numbers only — never page content, URLs, console text or credentials — so repeated calls can be compared to locate a leak.',
     parameters: {
       type: 'object',
       properties: {
@@ -176,7 +177,7 @@ export function createMemoryTools({ memoryStats = null, memoryMonitor = null, ou
           const lines = [
             `Memory monitor dump: ${value.count ?? 0} sample(s) (ring ${value.ringLimit ?? '?'})  ${value.running ? 'RUNNING' : 'stopped'}  every ${value.intervalMs ?? '?'}ms`,
             `window: ${retained.seconds ?? 0}s  rss ${size(retained.rssBytes)} (${signedSize(retained.rssDeltaBytes)})  heapUsed ${size(retained.heapUsedBytes)} (${signedSize(retained.heapUsedDeltaBytes)})  arrayBuffers ${size(retained.arrayBuffersBytes)} (${signedSize(retained.arrayBuffersDeltaBytes)})`,
-            `retained now: capture bodies ${size(retained.captureBodyBytes)} (${retained.captureEntries ?? 0} entries)  tabs ${retained.tabs ?? 0}  sessions ${retained.bySession ?? 0}  bridge pending ${retained.bridgePending ?? 0}`,
+            `retained now: capture bodies ${size(retained.captureBodyBytes)} (${retained.captureEntries ?? 0} entries)  tabs ${retained.tabs ?? 0}  sessions ${retained.bySession ?? 0}  bridge pending ${retained.bridgePending ?? 0}  chrome rss ${size(retained.chromeRss)} (${retained.processCount ?? 0} proc)`,
             jsonlLine(value.jsonl),
             ...alertLines(value.alerts),
           ]

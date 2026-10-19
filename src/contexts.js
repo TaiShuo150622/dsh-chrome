@@ -297,6 +297,12 @@ export class BrowserContextManager {
         }
         if (driverStats.idleTimer) snapshot.totals.idleTimers += 1
         if (driverStats.visible) snapshot.totals.visibleDrivers += 1
+        if (Number.isFinite(driverStats.chromeRss)) {
+          snapshot.totals.chromeRss = (snapshot.totals.chromeRss ?? 0) + Math.round(driverStats.chromeRss)
+        }
+        if (Number.isFinite(driverStats.processCount)) {
+          snapshot.totals.processCount = (snapshot.totals.processCount ?? 0) + Math.round(driverStats.processCount)
+        }
       } else {
         driverStats = null
       }

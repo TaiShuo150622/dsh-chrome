@@ -50,6 +50,10 @@ export function emptyContextStats() {
   // how many own a visible window.
   totals.idleTimers = 0
   totals.visibleDrivers = 0
+  // M8: Chrome-side best-effort totals. They stay null until at least one
+  // driver reports a process tree, so "unknown" is distinguishable from zero.
+  totals.chromeRss = null
+  totals.processCount = null
   return { contexts: 0, pending: 0, maxContexts: null, drivers: [], totals }
 }
 

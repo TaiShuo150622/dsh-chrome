@@ -17,7 +17,7 @@
   - `chrome_memory_stats {op:"start|stop|status|dump", intervalMs}`：start 需要显式调用；status 默认快照；dump 返回最近 ring 和 retained 计算。
   - alerts：单次 rss > baseline*1.2、captureBodyBytes>8MB、pending>64、tabs!=bySession、context 关闭后 chromePid 仍存在。
   - 测试 fake timer/fake fs；不影响正常工具路径。
-- [ ] M8 Chrome 进程树 RSS
+- [x] M8 Chrome 进程树 RSS
   - 新增 `src/process-tree.js`：按 chromePid 递归读取子进程 RSS（mac/linux `ps`；Windows 返回 unsupported 或 PowerShell fallback），注入 exec 供测试。
   - `HeadlessDriver.memoryStats()` 增加 chromeRss/processCount（best-effort，失败 null，不阻塞工具）。
   - 测试 fake ps 输出、pid 关闭、Windows unsupported；`chrome_memory_stats` 返回 chrome 侧字段。

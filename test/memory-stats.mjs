@@ -87,7 +87,12 @@ try {
 
   // ------------------------------------------------------ HeadlessDriver
   console.log('HeadlessDriver.memoryStats')
-  const driver = new HeadlessDriver({ home, executable: process.execPath, visible: true })
+  const driver = new HeadlessDriver({
+    home,
+    executable: process.execPath,
+    visible: true,
+    processTree: () => ({ rss: 4096, processCount: 3 }),
+  })
   driver.chrome = { pid: 4242 }
   driver.owners.set('owner-a', { owner: 'owner-a', tabs: new Map(), pending: 0, activeTabId: null })
   driver.bySession.set('session-1', {})
@@ -106,6 +111,8 @@ try {
   const driverStats = driver.memoryStats()
   assert.deepEqual(driverStats, {
     chromePid: 4242,
+    chromeRss: 4096,
+    processCount: 3,
     tabs: 2,
     owners: 1,
     bySession: 1,
@@ -135,6 +142,8 @@ try {
   driver.handleBrowserExit('test')
   assert.deepEqual(driver.memoryStats(), {
     chromePid: null,
+    chromeRss: null,
+    processCount: null,
     tabs: 0,
     owners: 0,
     bySession: 0,
@@ -161,6 +170,8 @@ try {
   manager.pending = 1
   const statsA = {
     chromePid: 111,
+    chromeRss: 4096,
+    processCount: 3,
     tabs: 2,
     owners: 1,
     bySession: 2,
@@ -176,6 +187,8 @@ try {
   }
   const statsB = {
     chromePid: 222,
+    chromeRss: 1024,
+    processCount: 1,
     tabs: 1,
     owners: 0,
     bySession: 1,
@@ -222,6 +235,8 @@ try {
   assert.equal(totals.shotStreams, 1)
   assert.equal(totals.idleTimers, 1)
   assert.equal(totals.visibleDrivers, 1)
+  assert.equal(totals.chromeRss, 5120)
+  assert.equal(totals.processCount, 4)
 
   // A manager with no contexts still returns the complete zero shape.
   const emptyManager = new BrowserContextManager({

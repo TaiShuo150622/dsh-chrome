@@ -23,6 +23,7 @@ import { handleConsoleEvent, handleNetworkEvent } from './headless-events.js'
 import { pageCall } from './headless-page-actions.js'
 import { createHeadlessActions } from './headless-actions.js'
 import { createHeadlessLogin } from './headless-login.js'
+import { readProcessTree } from './process-tree.js'
 
 let overlaySourceCache = null
 function overlaySource() {
@@ -281,9 +282,10 @@ class Cdp {
 
 // ------------------------------------------------------------------ driver
 export class HeadlessDriver {
-  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null, visible = false, windowSize = null, engine = null, executable = null, autoPointer = null, maxTabs = null, captureSummaryTtlMs = null, captureSummaryLimit = null, shotFrameMaxBytes = null, shotFrameMaxPixels = null } = {}) {
+  constructor({ home, logger, spawnImpl = spawn, profileDir = null, screenshotDir = null, downloadDir = null, visible = false, windowSize = null, engine = null, executable = null, autoPointer = null, maxTabs = null, captureSummaryTtlMs = null, captureSummaryLimit = null, shotFrameMaxBytes = null, shotFrameMaxPixels = null, processTree = readProcessTree } = {}) {
     this.home = home
     this.visible = Boolean(visible)
+    this.processTree = typeof processTree === 'function' ? processTree : null
     this.windowSize = windowSize || (this.visible ? { width: 1440, height: 900 } : null)
     this.engine = engine || null
     this.executable = executable || null
@@ -366,6 +368,8 @@ export class HeadlessDriver {
    * snapshot can be compared across calls without leaking page content.
    * `chromePid` is the launched/reused browser child (or the visible login
    * window); `visible` reports any visible window this driver currently owns.
+   * M8 adds the best-effort Chrome process-tree RSS: a missing `ps`, gone pid
+   * or Windows keeps `chromeRss`/`processCount` null without failing the tool.
    */
   memoryStats() {
     let captureEntries = 0
@@ -376,8 +380,24 @@ export class HeadlessDriver {
     }
     let shotStreams = 0
     for (const tab of this.tabs.values()) if (tab?.shotStream) shotStreams += 1
+    const chromePid = this.chrome?.pid ?? this.loginProcess?.pid ?? null
+    let chromeRss = null
+    let processCount = null
+    if (chromePid != null && this.processTree) {
+      try {
+        const tree = this.processTree(chromePid)
+        chromeRss = Number.isFinite(tree?.rss) ? tree.rss : null
+        processCount = Number.isFinite(tree?.processCount) ? tree.processCount : null
+      } catch {
+        // Best-effort diagnostic: a failed ps never breaks the snapshot.
+        chromeRss = null
+        processCount = null
+      }
+    }
     return {
-      chromePid: this.chrome?.pid ?? this.loginProcess?.pid ?? null,
+      chromePid,
+      chromeRss,
+      processCount,
       tabs: this.tabs.size,
       owners: this.owners.size,
       bySession: this.bySession.size,
