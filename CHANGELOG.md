@@ -11,6 +11,11 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.3] - 2026-10-19
+
+- 结构拆分：lease 写门控从 backend.js 抽到 tool-guards.js，backend 只负责 backend 路由
+- 自审文档 docs/CODE-REVIEW-SELF.md
+
 ## [0.2.2] - 2026-10-19
 
 - 可选自动更新检查：update.enabled/channel/autoInstall；GitHub Release 检查、状态文件、Windows host 自动安装（SHA-256）

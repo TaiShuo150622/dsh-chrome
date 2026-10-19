@@ -11,6 +11,8 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 
+import { withWriteLease } from './tool-guards.js'
+
 import {
   CAPABILITIES,
   backendSupports,
@@ -150,29 +152,6 @@ export class BackendRouter {
   }
 }
 
-// Tools whose effect can change browser state. When shared-visible mode is
-// enabled, these take an implicit write lease on the active tab.
-const WRITE_TOOLS = new Set([
-  'chrome_goto',
-  'chrome_click',
-  'chrome_click_at',
-  'chrome_type',
-  'chrome_press',
-  'chrome_scroll',
-  'chrome_select',
-  'chrome_drag',
-  'chrome_upload',
-  'chrome_tabs',
-  'chrome_history',
-  'chrome_hover',
-  'chrome_storage',
-  'chrome_emulate',
-  'chrome_close_session',
-  'chrome_evaluate',
-  'chrome_pointer',
-  'chrome_annotate',
-])
-
 /**
  * Add the `backend` parameter to every chrome_* tool and route execution.
  * The wrapped tool sees the original arguments (without `backend`).
@@ -205,28 +184,8 @@ export function wrapToolsForBackend(tools, router, { leases = null, leaseRequire
         const mode = args?.backend === 'headless' ? 'headless' : 'desktop'
         const { backend: _backend, ...rest } = args || {}
         const run = () => router.runWithBackend(mode, () => tool.execute(rest, exec))
-        if (!leaseRequired || !leases || !WRITE_TOOLS.has(tool.name)) return run()
-        const owner = exec?.agent?.id ?? 'default'
-        let tabId = rest?.tabId
-        if (tabId == null) {
-          try {
-            const list = await router.runWithBackend(mode, () => router.call('tab.tabs', { op: 'list', owner }))
-            tabId = list?.activeTabId ?? null
-          } catch {
-            tabId = null
-          }
-        }
-        if (tabId == null) return run()
-        const lease = leases.acquire({ tabId, owner, mode: 'write' })
-        try {
-          return await run()
-        } finally {
-          try {
-            leases.release(lease.leaseId, { owner })
-          } catch {
-            // A closed/navigated tab may already have dropped the lease.
-          }
-        }
+        if (!leaseRequired) return run()
+        return withWriteLease({ toolName: tool.name, args: rest, exec, mode, router, leases, run })
       },
     }
   })
