@@ -10,7 +10,7 @@ const tools = chromeTools({
   config: () => ({ allowEvaluate: true }),
 })
 const byName = new Map(tools.map((tool) => [tool.name, tool]))
-assert.equal(tools.length, 46, 'expected 45 default tools + conditional chrome_evaluate')
+assert.equal(tools.length, 47, 'expected 46 default tools + conditional chrome_evaluate')
 
 // Tools that mutate the user's browser. Keep this list in sync with the
 // definitions: a write tool without `mutating: true` would silently skip the

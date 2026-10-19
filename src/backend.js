@@ -28,10 +28,10 @@ const backendStorage = new AsyncLocalStorage()
  */
 export const BACKENDS = ['desktop', 'headless']
 
-// These tools own their browser/context lifecycle instead of routing a
-// browser call through a backend. Adding the generic `backend` parameter
-// would be misleading (and chrome_verify would silently ignore it).
-const HEADLESS_ONLY_TOOLS = new Set(['chrome_verify'])
+// These tools are backend-agnostic: they own their browser/context lifecycle
+// or report process-wide provider state, so routing a `backend` argument
+// through them would be misleading (and silently ignored).
+const BACKEND_AGNOSTIC_TOOLS = new Set(['chrome_verify', 'chrome_memory_stats'])
 
 
 /**
@@ -178,7 +178,7 @@ export class BackendRouter {
  */
 export function wrapToolsForBackend(tools, router, { leases = null, leaseRequired = false } = {}) {
   return tools.map((tool) => {
-    if (HEADLESS_ONLY_TOOLS.has(tool.name)) {
+    if (BACKEND_AGNOSTIC_TOOLS.has(tool.name)) {
       return {
         ...tool,
         async execute(args, exec) {

@@ -174,7 +174,7 @@ const tools = chromeTools({
   }),
 })
 const byName = Object.fromEntries(tools.map((definition) => [definition.name, definition]))
-check('forty-five tools registered', tools.length === 45, tools.map((t) => t.name).join(', '))
+check('forty-six tools registered', tools.length === 46, tools.map((t) => t.name).join(', '))
 check('chrome_find registered', Boolean(byName.chrome_find))
 
 const exec = () => ({ agent: { id: 'session-p2' }, callId: 'call-1', signal: new AbortController().signal })
@@ -701,7 +701,7 @@ const allowTools = evalTools(
   { ask: async () => ({ answers: [{ id: 'confirm', selected: ['允许一次'] }] }) },
 )
 const allowByName = Object.fromEntries(allowTools.map((definition) => [definition.name, definition]))
-check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 46 && Boolean(allowByName.chrome_evaluate))
+check('enabling allowEvaluate registers chrome_evaluate', allowTools.length === 47 && Boolean(allowByName.chrome_evaluate))
 const evalValue = await allowByName.chrome_evaluate.execute({ expression: '1 + 1' }, exec())
 check('evaluate returns the CDP value', evalValue?.value === 2 && evalValue?.type === 'number')
 check('evaluate params reach the extension', requests.at(-1)?.method === 'tab.evaluate' && requests.at(-1)?.params?.expression === '1 + 1')

@@ -360,6 +360,39 @@ export class HeadlessDriver {
     return this.tabs.size
   }
 
+  /**
+   * M6: counts of everything this driver retains, for `chrome_memory_stats`.
+   * Numbers only — no page text, console entries, URLs or capture bodies — so a
+   * snapshot can be compared across calls without leaking page content.
+   * `chromePid` is the launched/reused browser child (or the visible login
+   * window); `visible` reports any visible window this driver currently owns.
+   */
+  memoryStats() {
+    let captureEntries = 0
+    let captureBodyBytes = 0
+    for (const capture of this.captures.values()) {
+      captureEntries += Array.isArray(capture?.entries) ? capture.entries.length : 0
+      captureBodyBytes += Number.isFinite(capture?.bodyBytes) && capture.bodyBytes > 0 ? capture.bodyBytes : 0
+    }
+    let shotStreams = 0
+    for (const tab of this.tabs.values()) if (tab?.shotStream) shotStreams += 1
+    return {
+      chromePid: this.chrome?.pid ?? this.loginProcess?.pid ?? null,
+      tabs: this.tabs.size,
+      owners: this.owners.size,
+      bySession: this.bySession.size,
+      consoleBuffers: this.consoleBuffers.size,
+      captures: this.captures.size,
+      captureEntries,
+      captureBodyBytes,
+      downloads: this.downloads.length,
+      downloadByGuid: this.downloadByGuid.size,
+      shotStreams,
+      idleTimer: Boolean(this.idleTimer),
+      visible: Boolean(this.visible || this.visibleMode || this.loginProcess),
+    }
+  }
+
   async ensureStarted() {
     if (this.loginProcess) {
       throw error('HEADLESS_LOGIN_OPEN', 'an interactive login window is open; finish it before using the headless backend')

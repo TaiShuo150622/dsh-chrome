@@ -1,11 +1,17 @@
 # 工具参考
 
 > 自动生成：`npm run docs:tools`。请改 `src/tools.js`，不要手改本文件。
-> 工具数量：45
+> 工具数量：46
 
 ### `chrome_status`
 
 Report the Chrome bridge state: whether the extension is connected, extension/host/protocol versions, install paths, and the last known tab for this DSH session. Call this first when browser tools fail.
+
+无参数。
+
+### `chrome_memory_stats`
+
+Report a provider memory snapshot: Node rss/heapUsed/heapTotal/external/arrayBuffers in bytes, plus retained-object counts for browser contexts, drivers, captures, console buffers, downloads, screenshot streams and the bridge. Numbers only — never page content, URLs, console text or credentials — so repeated calls can be compared to locate a leak.
 
 无参数。
 

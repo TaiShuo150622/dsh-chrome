@@ -20,6 +20,7 @@ import { createMiscTools } from './tools-misc.js'
 import { createContextTool } from './tools-context.js'
 import { createVerifyTool } from './tools-verify.js'
 import { createLoginTool } from './tools-login.js'
+import { createMemoryTools } from './tools-memory.js'
 import {
   createToolSupport,
   normalizeLeaseError,
@@ -37,7 +38,7 @@ import {
 // callers that need the rest: maxChars (up to 200000) and chrome_get_text.
 const SNAPSHOT_TEXT_DEFAULT_CHARS = 20000
 
-export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null, contextViewer = null, update = null, artifactStore = null }) {
+export function chromeTools({ bridge, attachments, assets, approval, sessionContext, userQuestions, config, contexts, leases = null, contextViewer = null, update = null, artifactStore = null, memoryStats = null }) {
   const list = []
   const {
     ownerOf,
@@ -120,6 +121,10 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
     renderText,
   })
 
+  // Memory diagnostics (M6): a read-only snapshot assembled by the provider
+  // (Node counters + context/bridge object counts). No page content is read.
+  const memoryTools = createMemoryTools({ memoryStats, outputSchema, renderText })
+
   // Screencast/overlay tools (screencast/pointer/annotate/emulate) live in their
   // own module (Q20). The per-session stream guards and ownership ledger move
   // with the tool, so one provider instance still owns exactly one map each.
@@ -166,6 +171,9 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
 
   // ---------------------------------------------------------------- 1. status
   list.push(statusTools.status)
+
+  // --------------------------------------------------------- 1c. memory stats
+  list.push(memoryTools.memory)
 
   // ------------------------------------------------------------------ 2. goto
   list.push(navigation.goto)

@@ -17,6 +17,7 @@ import { loadConfig } from './src/config.js'
 import { Config, pluginConfigWarnings } from './src/config-schema.js'
 import { HeadlessContextRouter } from './src/headless-contexts.js'
 import { BrowserLeaseManager } from './src/lease.js'
+import { collectMemoryStats } from './src/memory-stats.js'
 import { createBridgeRuntime, createUpdateRuntime, createViewerRuntime } from './src/runtime.js'
 import { HeadlessDriver, headlessSupported } from './src/headless.js'
 import { wrapToolsForOperationLog } from './src/operation-log.js'
@@ -297,6 +298,9 @@ export function apply(ctx, config) {
         artifactStore,
         contextViewer: () => contextViewer.current,
         update: updateChecker,
+        // M6: one reader for chrome_memory_stats. The closure is evaluated per
+        // call, so it always sees the live context manager and bridge.
+        memoryStats: () => collectMemoryStats({ contexts, bridge }),
       }),
       router,
       {

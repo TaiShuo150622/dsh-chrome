@@ -5,7 +5,7 @@
 
 ## 队列
 
-- [ ] M6 `chrome_memory_stats` 快照
+- [x] M6 `chrome_memory_stats` 快照
   - 新增 `src/memory-stats.js`：`nodeMemory()`（rss/heapUsed/heapTotal/external/arrayBuffers）、`objectCounts()` 从 contexts/bridge 汇总。
   - `HeadlessDriver.memoryStats()`：chromePid、tabs、owners、bySession、consoleBuffers、captures、captureEntries、captureBodyBytes、downloads、downloadByGuid、shotStreams、idleTimer、visible。
   - `BrowserContextManager.memoryStats()` 聚合每个 context 的 driver stats；`BridgeServer.memoryStats()`（connected/pending/handlers）。

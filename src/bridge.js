@@ -70,6 +70,15 @@ export class BridgeServer {
     return Boolean(this.socket && !this.socket.destroyed && this.authed)
   }
 
+  /**
+   * M6: bridge retention counters for `chrome_memory_stats`. Counts only; the
+   * pending-call table and the extension->provider handler table are the two
+   * maps whose size can grow with tool usage.
+   */
+  memoryStats() {
+    return { connected: this.connected, pending: this.pending.size, handlers: this.handlers.size }
+  }
+
   async start() {
     try {
       return await this.#start()

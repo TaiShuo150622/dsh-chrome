@@ -196,7 +196,7 @@ try {
       approval: () => null,
       leases: toolManager,
     })
-    assert.equal(tools.length, 45)
+    assert.equal(tools.length, 46)
     const leaseTool = tools.find((tool) => tool.name === 'chrome_lease')
     assert.ok(leaseTool)
     const exec = (id) => ({ agent: { id }, callId: 'lease-call', signal: new AbortController().signal })

@@ -12,6 +12,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 import { presetToMode } from './config.js'
+import { DRIVER_COUNT_FIELDS, emptyContextStats } from './memory-stats.js'
 
 export class ContextError extends Error {
   constructor(code, message) {
@@ -270,6 +271,45 @@ export class BrowserContextManager {
 
   stats() {
     return { active: this.contexts.size, max: this.maxContexts, sessions: [...this.contexts.values()].map((ctx) => ({ contextId: ctx.contextId, owner: ctx.owner, preset: ctx.preset, visible: ctx.visible, isolation: ctx.isolation })) }
+  }
+
+  /**
+   * M6: aggregate the driver retention counters over every context. A driver's
+   * `memoryStats()` is best-effort — a driver without the method or one that
+   * throws contributes a null detail and zeros to the totals, never an error.
+   */
+  memoryStats() {
+    const snapshot = emptyContextStats()
+    snapshot.contexts = this.contexts.size
+    snapshot.pending = this.pending
+    snapshot.maxContexts = this.maxContexts
+    for (const ctx of this.contexts.values()) {
+      let driverStats = null
+      try {
+        driverStats = typeof ctx.driver?.memoryStats === 'function' ? ctx.driver.memoryStats() : null
+      } catch {
+        driverStats = null
+      }
+      if (driverStats && typeof driverStats === 'object') {
+        for (const field of DRIVER_COUNT_FIELDS) {
+          const value = driverStats[field]
+          if (Number.isFinite(value) && value > 0) snapshot.totals[field] += Math.round(value)
+        }
+        if (driverStats.idleTimer) snapshot.totals.idleTimers += 1
+        if (driverStats.visible) snapshot.totals.visibleDrivers += 1
+      } else {
+        driverStats = null
+      }
+      snapshot.drivers.push({
+        contextId: ctx.contextId,
+        owner: ctx.owner,
+        preset: ctx.preset,
+        visible: ctx.visible,
+        connected: typeof ctx.driver?.connected === 'boolean' ? ctx.driver.connected : false,
+        stats: driverStats,
+      })
+    }
+    return snapshot
   }
 
   #view(ctx) {

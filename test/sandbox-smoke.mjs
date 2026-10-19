@@ -1246,13 +1246,21 @@ try {
     assert.equal(result.error, 'LEASES_UNAVAILABLE')
   })
 
+  await check('chrome_memory_stats returns a numbers-only provider snapshot', async () => {
+    const stats = await run('chrome_memory_stats', {})
+    assert.ok(stats.node.rss > 0 && stats.node.heapTotal > 0)
+    assert.ok(stats.objects?.contexts && stats.objects?.bridge)
+    assert.equal(typeof stats.objects.contexts.contexts, 'number')
+    assert.equal(typeof stats.objects.bridge.connected, 'boolean')
+  })
+
   await check('all chrome_* tool definitions were exercised', () => {
     const missing = tools.map((tool) => tool.name).filter((name) => !covered.has(name))
     assert.deepEqual(missing, [], `tools never exercised: ${missing.join(', ')}`)
-    assert.equal(tools.length, 46, 'expected 45 default tools + conditional chrome_evaluate')
+    assert.equal(tools.length, 47, 'expected 46 default tools + conditional chrome_evaluate')
   })
 
-  await check('default registration is 45 tools (chrome_evaluate is opt-in)', () => {
+  await check('default registration is 46 tools (chrome_evaluate is opt-in)', () => {
     const defaultTools = chromeTools({
       bridge: router,
       attachments,
@@ -1262,7 +1270,7 @@ try {
       userQuestions,
       config: () => ({}),
     })
-    assert.equal(defaultTools.length, 45)
+    assert.equal(defaultTools.length, 46)
     assert.equal(defaultTools.some((tool) => tool.name === 'chrome_evaluate'), false)
   })
 
