@@ -37,6 +37,8 @@ export class BrowserContextManager {
     this.maxContexts = config.browser.maxContexts
     this.idleTimeoutMs = config.browser.idleTimeoutMs
     this.profilesRoot = config.browser.profilesDir || path.join(home, 'cache', 'dsh-chrome', 'profiles')
+    this.artifactRoot = config.verification?.artifactDir || path.join(home, 'cache', 'dsh-chrome', 'artifacts')
+    this.artifactRetentionRuns = config.verification?.artifactRetentionRuns || 50
     this.reaper = null
   }
 
@@ -127,6 +129,31 @@ export class BrowserContextManager {
   artifactDirFor(contextId) {
     const ctx = this.contexts.get(contextId)
     return ctx ? path.join(ctx.profileDir, 'artifacts') : null
+  }
+
+  async createArtifactRun(runId) {
+    const dir = path.join(this.artifactRoot, `verify-${runId}`)
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+    return dir
+  }
+
+  pruneArtifacts(maxRuns = this.artifactRetentionRuns) {
+    try {
+      if (!fs.existsSync(this.artifactRoot)) return []
+      const runs = fs
+        .readdirSync(this.artifactRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith('verify-'))
+        .map((entry) => {
+          const full = path.join(this.artifactRoot, entry.name)
+          return { full, name: entry.name, mtime: fs.statSync(full).mtimeMs }
+        })
+        .sort((a, b) => b.mtime - a.mtime)
+      const removed = runs.slice(Math.max(0, maxRuns))
+      for (const run of removed) fs.rmSync(run.full, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+      return removed.map((run) => run.name)
+    } catch {
+      return []
+    }
   }
 
   view(contextId) {

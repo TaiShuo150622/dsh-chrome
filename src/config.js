@@ -30,6 +30,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     captureNetwork: 'metadata',
     artifactDir: null,
     maxArtifactBytes: 52_428_800,
+    artifactRetentionRuns: 50,
   },
   externalAgents: {
     claude: { preset: 'debug' },
@@ -87,6 +88,7 @@ function sanitize(config, warnings) {
     : 'metadata'
   config.verification.screenshotFormat = ['png', 'jpeg'].includes(config.verification.screenshotFormat) ? config.verification.screenshotFormat : 'png'
   config.verification.maxArtifactBytes = clampInt(config.verification.maxArtifactBytes, 1_048_576, 2_147_483_648, 52_428_800, warnings, 'verification.maxArtifactBytes')
+  config.verification.artifactRetentionRuns = clampInt(config.verification.artifactRetentionRuns, 1, 1000, 50, warnings, 'verification.artifactRetentionRuns')
   for (const name of ['claude', 'codex']) {
     if (!PRESETS.includes(config.externalAgents[name].preset)) {
       warnings.push(`unknown externalAgents.${name}.preset; using debug`)

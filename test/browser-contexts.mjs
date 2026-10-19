@@ -107,6 +107,19 @@ try {
   assert.equal(fs.existsSync(path.join(home, 'cache', 'dsh-chrome', 'profiles', idle.profileId)), false)
   await idleManager.closeAll()
 
+  // Artifact runs live outside ephemeral profiles and retention keeps the newest N.
+  const runA = await manager.createArtifactRun('run-a')
+  const runB = await manager.createArtifactRun('run-b')
+  const runC = await manager.createArtifactRun('run-c')
+  fs.writeFileSync(path.join(runA, 'report.json'), '{}')
+  fs.writeFileSync(path.join(runB, 'report.json'), '{}')
+  fs.writeFileSync(path.join(runC, 'report.json'), '{}')
+  const pruned = manager.pruneArtifacts(2)
+  assert.equal(pruned.length, 1)
+  assert.equal(fs.existsSync(runA), false, 'oldest artifact run should be pruned')
+  assert.equal(fs.existsSync(runB), true)
+  assert.equal(fs.existsSync(runC), true)
+
   // Shared and visible are explicitly not implemented in I1.
   await assert.rejects(() => manager.create({ owner: 'x', preset: 'collab' }), (error) => error.code === 'UNSUPPORTED_MODE')
   await assert.rejects(() => manager.create({ owner: 'debug', preset: 'debug' }), (error) => error.code === 'UNSUPPORTED_MODE')

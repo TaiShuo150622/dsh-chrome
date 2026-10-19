@@ -1788,7 +1788,9 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         }
         const driver = contexts.driverFor(contextId)
         if (!driver) return { ok: false, error: 'CONTEXT_NOT_FOUND' }
-        const artifactDir = contexts.artifactDirFor(contextId)
+        const artifactDir = typeof contexts.createArtifactRun === 'function'
+          ? await contexts.createArtifactRun(runId)
+          : contexts.artifactDirFor(contextId)
         await fsp.mkdir(artifactDir, { recursive: true })
         const startedAt = Date.now()
         const checks = []
@@ -1817,7 +1819,17 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
           }
           try {
             const shot = await driver.request('tab.screenshot', { owner })
-            if (shot?.path) artifacts.push({ type: 'screenshot', path: shot.path, bytes: shot.bytes })
+            if (shot?.path) {
+              // Context profiles are ephemeral; copy evidence into the global
+              // artifact run so it survives context close.
+              const target = path.join(artifactDir, `screenshot-${runId}.png`)
+              try {
+                await fsp.copyFile(shot.path, target)
+                artifacts.push({ type: 'screenshot', path: target, bytes: shot.bytes })
+              } catch {
+                artifacts.push({ type: 'screenshot', path: shot.path, bytes: shot.bytes })
+              }
+            }
           } catch {}
         }
         try {
@@ -1925,6 +1937,7 @@ export function chromeTools({ bridge, attachments, assets, approval, sessionCont
         // Artifacts are first-class: always keep the JSON report + screenshot,
         // so a passing run is reproducible and a failing run has evidence.
         await makeArtifacts()
+        try { contexts.pruneArtifacts?.() } catch {}
         try {
           const snap = await driver.request('tab.snapshot', { owner, maxChars: 2000 })
           lastUrl = snap?.url || lastUrl

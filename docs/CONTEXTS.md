@@ -69,7 +69,7 @@
 - **只实现 headless 隔离**；`debug`/`collab` 目前会分别创建 named/visible 模型，但 shared 模式在 I1 直接拒绝（`UNSUPPORTED_MODE`），visible 窗口需要后续 I2；
 - 还没有 `chrome_verify` 断言编排；先用 snapshot/screenshot/console/network 让 agent 断言；
 - 还没有跨平台 Chrome 路径自动探测的完整矩阵（沿用现有 headless 探测）；
-- 还没有 artifacts 清单/失败保留策略（下一步 I1 收尾）。
+- `chrome_verify` 的 report/screenshot 会保存到全局 artifacts 目录（`~/.dsh/cache/dsh-chrome/artifacts/verify-<runId>/`），context 关闭后仍保留；默认保留最近 50 次，可用 `verification.artifactRetentionRuns` 调整。
 
 ## 7. `chrome_verify`（I1.5）
 
