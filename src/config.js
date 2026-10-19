@@ -35,6 +35,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     // engine never falls back to another browser.
     engine: null,
     maxContexts: SETTING_SPECS['browser.maxContexts'].default,
+    maxTabs: SETTING_SPECS['browser.maxTabs'].default,
     idleTimeoutMs: SETTING_SPECS['browser.idleTimeoutMs'].default,
 
     headless: {
@@ -200,6 +201,7 @@ function sanitize(config, warnings) {
     config.browser.headless.chromeExecutable = executable.trim()
   }
   config.browser.maxContexts = clampInt(config.browser.maxContexts, 1, 16, 4, warnings, 'browser.maxContexts')
+  config.browser.maxTabs = clampInt(config.browser.maxTabs, 1, 64, 12, warnings, 'browser.maxTabs')
   config.browser.idleTimeoutMs = clampInt(config.browser.idleTimeoutMs, 10_000, 3_600_000, 300_000, warnings, 'browser.idleTimeoutMs')
   config.browser.headless.viewport.width = clampInt(config.browser.headless.viewport.width, 200, 7680, 1440, warnings, 'browser.headless.viewport.width')
   config.browser.headless.viewport.height = clampInt(config.browser.headless.viewport.height, 200, 4320, 900, warnings, 'browser.headless.viewport.height')

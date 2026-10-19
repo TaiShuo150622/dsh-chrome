@@ -127,7 +127,7 @@ chrome_headless_login {op:"status"}
 - 页面内容仍按不可信处理；`chrome_evaluate` 的 `allowEvaluate` 硬确认照旧；
 - 同一 owner 的 headless tabs 隔离；不同 DSH session 的 owner 互见不到；
 - **空闲回收**：没有 tab 且 5 分钟无请求时自动关闭 headless Chrome（`DSH_HEADLESS_IDLE_MINUTES` 可调）；
-- **并发限制**：最多 12 个 headless tabs（`DSH_HEADLESS_MAX_TABS` 可调），超出返回 `RESOURCE_LIMIT`；
+- **并发限制**：每个 headless 浏览器最多 12 个 tabs（`browser.maxTabs`，DSH 设置页可改，范围 1–64；未显式配置时 `DSH_HEADLESS_MAX_TABS` 作为后备），超出返回 `RESOURCE_LIMIT`；同一浏览器内可开多个 tab，关闭一个后容量立即释放；
 - **CPU/内存基线**（本机 Chrome 155，headless 无 tab 空闲 60s 采样）：见下方 §4.1。
 
 ### 4.1 空闲与活跃基线（本机，Chrome 155）

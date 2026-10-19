@@ -4,7 +4,7 @@
 >
 > 范围：`dsh-desktop-chrome` provider 的用户可配置项，以及它与 DSH 插件设置页、扩展 popup、配置文件、环境变量的边界。
 >
-> 已落地（本地）：`src/settings.js` 字段表、`src/config-schema.js` 的 `Config`（4 个 volatile 字段）、`index.js` 导出 `Config` / 读取 `configEditor` override / 监听 `loader/volatile-update`、project 级危险键过滤、`contexts` 与 `ArtifactStore` 的实时读取；`test/settings.mjs` 覆盖 schema、合并与危险键。`npm test` 全绿。
+> 已落地（本地）：`src/settings.js` 字段表、`src/config-schema.js` 的 `Config`（5 个 volatile 字段）、`index.js` 导出 `Config` / 读取 `configEditor` override / 监听 `loader/volatile-update`、project 级危险键过滤、`contexts` 与 `ArtifactStore` 的实时读取；`test/settings.mjs` 覆盖 schema、合并与危险键。`npm test` 全绿。
 >
 > 另用本机安装的 DSH desktop runtime 0.2.1-rc.2 自带的 `@deepseek-ai/schemastery` 3.18.5 离线重建过 `Config.toJSON()` 并跑通 `volatileForm` / `resolveConfig`，但**没有**在运行中的 DSH 里安装过本分支。
 >
@@ -12,9 +12,9 @@
 
 ## 0. 结论先行
 
-1. **MVP 已有代码，但还没有在真实 DSH 安装里验证。** 本分支导出 `Config`（4 个 volatile 字段）并让 `apply(ctx, config)` 接收配置；真实 DSH 的 `Config/listConfigs` 是否显示 `status: "schema"`、Plugins 自动页是否出现，仍需按 §6.5 验收。provider 侧其余设置仍落在三份 JSON 配置（canonical / legacy / project）、`policy.json` 和一批环境变量里；扩展侧还有一个 `chrome.storage.local` 的侧边栏 URL。
+1. **MVP 已有代码，但还没有在真实 DSH 安装里验证。** 本分支导出 `Config`（5 个 volatile 字段）并让 `apply(ctx, config)` 接收配置；真实 DSH 的 `Config/listConfigs` 是否显示 `status: "schema"`、Plugins 自动页是否出现，仍需按 §6.5 验收。provider 侧其余设置仍落在三份 JSON 配置（canonical / legacy / project）、`policy.json` 和一批环境变量里；扩展侧还有一个 `chrome.storage.local` 的侧边栏 URL。
 2. **推荐路径：DSH 插件条目配置做唯一“用户设置”入口，DSH 自动设置页只放可实时生效的低风险项；危险项在 MVP 仍只走配置文件/DSH 条目 patch。** 不新建扩展设置页，不写大 UI，不复制一套设置存储。
-3. **MVP 的最小闭环**是：新增 `Config` schema + `apply(ctx, config)`，让 DSH 自动生成一个只含低风险 volatile 字段的设置页（本分支先收 4 个：`browser.preset` / `browser.maxContexts` / `browser.idleTimeoutMs` / `verification.artifactRetentionRuns`）；其余选项继续由配置文件承载，用 `chrome_config` 只读工具和文档解释。若实测 DSH 自动页对该 bundle 不出现，MVP 退回“配置文件 + 文档 + `chrome_config`”，不发布半成品 UI。
+3. **MVP 的最小闭环**是：新增 `Config` schema + `apply(ctx, config)`，让 DSH 自动生成一个只含低风险 volatile 字段的设置页（本分支先收 5 个：`browser.preset` / `browser.maxContexts` / `browser.maxTabs` / `browser.idleTimeoutMs` / `verification.artifactRetentionRuns`）；其余选项继续由配置文件承载，用 `chrome_config` 只读工具和文档解释。若实测 DSH 自动页对该 bundle 不出现，MVP 退回“配置文件 + 文档 + `chrome_config`”，不发布半成品 UI。
 4. **安全不变量不设置化**：evaluate/capture/upload/login 的硬确认、抓包不采 headers、脱敏、loopback+token、受保护 scheme、10 分钟抓包上限，这些都不做“关闭开关”。
 5. **必须先修“假配置”**：`verification.screenshotFormat`、`verification.captureConsole`、`verification.captureNetwork`、`verification.maxArtifactBytes`、`browser.headless.chromeExecutable`、`browser.headless.viewport`、`browser.shared.requireLease`、`externalAgents.*`、`safety.allowedOrigins` 目前要么完全没接线，要么只在文档里存在。设置设计不能把这些包装成“已经可调”。
 
@@ -131,7 +131,7 @@ DEFAULT_CONFIG
 > **GUI**：✅ 适合 MVP 自动页（必须能实时生效）/ ⚠️ 适合未来自定义页（需 reload 或需要风险文案）/ ❌ 只走文件或环境变量。
 > **目标生效**：实时 = 下一次调用即生效；provider reload = 重载插件条目（会关闭当前浏览器 context）；DSH restart = 重启应用。
 >
-> “GUI ✅”只说明这个字段适合自动页，不代表它已经在自动页里；MVP 自动页只放 §5.2 的 volatile 字段（本分支先 4 个）。
+> “GUI ✅”只说明这个字段适合自动页，不代表它已经在自动页里；MVP 自动页只放 §5.2 的 volatile 字段（本分支先 5 个）。
 
 生效动作对照：
 
@@ -148,8 +148,9 @@ DEFAULT_CONFIG
 | 键 | 默认值 | 类型 / 范围 | 风险 | GUI | 目标生效 | 现状 |
 |---|---|---|---|---|---|---|
 | `browser.preset` | `sandbox` | enum `sandbox \| sandbox-persistent \| debug` | 中（`debug` 会开可见窗口） | ✅ 自动页 | 实时（只影响新 context） | ✅ 需读取 volatile |
-| `browser.maxContexts` | `4` | int 1–16 | 低（资源） | ✅ 自动页 | 实时（只影响新建） | ✅ 构造时缓存，需小改 |
-| `browser.idleTimeoutMs` | `300000` | int 10000–3600000 | 低 | ✅ 自动页 | 实时 | ✅ 构造时缓存，需小改 |
+| `browser.maxContexts` | `4` | int 1–16 | 低（资源） | ✅ 自动页 | 实时（只影响新建） | ✅ 实时读取（getter） |
+| `browser.maxTabs` | `12` | int 1–64 | 低（资源） | ✅ 自动页 | 实时（下一个 tab 生效） | ✅ 实时读取（getter，传给 HeadlessDriver） |
+| `browser.idleTimeoutMs` | `300000` | int 10000–3600000 | 低 | ✅ 自动页 | 实时 | ✅ 实时读取（getter） |
 | `browser.profilesDir` | `null` | 绝对路径 / null | 中（写盘位置） | ❌ 文件 | provider reload | ✅ |
 | `browser.headless.chromeExecutable` | `null` | 绝对路径 / null | **高**（任意可执行文件） | ❌ 文件 | provider reload | ⚠️ 未接线 |
 | `browser.headless.viewport` | `1440×900` | width 200–7680，height 200–4320 | 低 | ⚠️ 未来页 | 实时（新 context）/当前需 reload | ⚠️ 未接线 |
@@ -224,7 +225,7 @@ DEFAULT_CONFIG
 | `DSH_HEADLESS_CHROME` | 自动探测 | headless Chrome 路径 | 与 `browser.headless.chromeExecutable` 重复；先合并再谈 UI |
 | `DSH_HEADLESS_CHROME_ARGS` | 空 | 追加 Chrome 启动参数 | **危险**（任意开关）；CI/实验用 |
 | `DSH_HEADLESS_IDLE_MINUTES` | `5` | headless tab 空闲 | 和 `browser.idleTimeoutMs` 语义不同（tab vs context） |
-| `DSH_HEADLESS_MAX_TABS` | `12` | 单 driver 最大 tab | 高级；可用配置替代后再迁移 |
+| `DSH_HEADLESS_MAX_TABS` | `12` | 单 driver 最大 tab | 已由 `browser.maxTabs` 取代；只在设置仍为默认值时作为后备（显式设置 > env > 默认 12） |
 | `DSH_HEADLESS_SHOT_STREAM` / `_JPEG_CROP` / `_VISUAL_PROBE` 等 | 开 | 性能实验开关 | 诊断/性能用，不是用户偏好 |
 | `DSH_AUTO_POINTER` | `0` | 虚拟光标自动跟随 | 演示用 |
 | `DSH_CHROME_UPLOAD_ROOTS` | 空 | 上传额外根目录 | 危险；先做成 `upload.extraRoots` 再决定 GUI |
@@ -240,11 +241,11 @@ DEFAULT_CONFIG
 
 - **默认开启 = 保持现状**：`viewer.enabled`、`operationLog.enabled`、`verification.captureConsole`，以及所有硬确认/脱敏/审计不变量。
 - **默认关闭 = 所有会扩大权限、数据面或网络的开关**：`allowEvaluate`、`capture.storeBodiesByDefault`（H1 后 body 默认不存）、`browser.shared.enabled`、`update.enabled`、`update.autoInstall`、`upload.extraRoots`、`browser.headless.chromeExecutable`、`safety.allowedOrigins`、`redaction.extraSecretKeys`（空数组）。
-- 数值/枚举项（如 `maxContexts`、`idleTimeoutMs`、`artifactRetentionRuns`）保持当前默认值，不因为“放进设置”而改变行为。
+- 数值/枚举项（如 `maxContexts`、`maxTabs`、`idleTimeoutMs`、`artifactRetentionRuns`）保持当前默认值，不因为“放进设置”而改变行为。
 
 ### 4.1 基础组（默认开启 / 保持现状，低风险）
 
-> 分组按“默认值 + 风险”划分，不等于 MVP 自动页会显示；自动页只显示 §5.2 的 volatile 字段（本分支先 4 个）。下面有些项（如 `viewer.enabled`）默认开但需要 reload，因此 MVP 仍走文件/条目 patch。
+> 分组按“默认值 + 风险”划分，不等于 MVP 自动页会显示；自动页只显示 §5.2 的 volatile 字段（本分支先 5 个）。下面有些项（如 `viewer.enabled`）默认开但需要 reload，因此 MVP 仍走文件/条目 patch。
 
 | 项 | 默认 | 说明 |
 |---|---|---|
@@ -326,6 +327,7 @@ DSH Web/Desktop
        └─ 自动生成的设置表单（只有 volatile 字段）
             ├─ browser.preset
             ├─ browser.maxContexts
+            ├─ browser.maxTabs
             ├─ browser.idleTimeoutMs
             ├─ verification.artifactRetentionRuns
             ├─ evaluateConfirmTimeoutMs
@@ -333,7 +335,7 @@ DSH Web/Desktop
   └─ 其他设置：profile patch / 配置文件（文档 + chrome_config 指引）
 ```
 
-> 实现状态：本分支的 `Config` 只收前 4 个 volatile 字段（`browser.preset` / `browser.maxContexts` / `browser.idleTimeoutMs` / `verification.artifactRetentionRuns`）。`evaluateConfirmTimeoutMs` / `captureConfirmTimeoutMs` 仍走旧 provider 文件，未进 `Config`；`update.*` 全部非 volatile，不进自动页。
+> 实现状态：本分支的 `Config` 只收前 5 个 volatile 字段（`browser.preset` / `browser.maxContexts` / `browser.maxTabs` / `browser.idleTimeoutMs` / `verification.artifactRetentionRuns`）。`evaluateConfirmTimeoutMs` / `captureConfirmTimeoutMs` 仍走旧 provider 文件，未进 `Config`；`update.*` 全部非 volatile，不进自动页。
 
 - 不新增 `extension/` 页面。
 - 不新增客户端 bundle / 构建链。
@@ -352,7 +354,7 @@ DSH 的插件配置契约（本机 DSH 0.2.x）：
 
 可参考的本机实现：`@deepseek-ai/dsh-client-hmr`（`Config` + `apply(ctx, config)`）、`@deepseek-ai/dsh-agent-default-model`（volatile 字段 + `settings.configure({ auto: false })`）、`@deepseek-ai/dsh-settings`（`SettingsForms` 的 volatile 投影/写入契约）。
 
-建议的完整 schema 形状（只示意；本分支只实现 §5.2 的 4 个 volatile 字段，且由本地窄 schemastery 协议实现，见 `src/config-schema.js`）：
+建议的完整 schema 形状（只示意；本分支只实现 §5.2 的 5 个 volatile 字段，且由本地窄 schemastery 协议实现，见 `src/config-schema.js`）：
 
 ```js
 import z from '@deepseek-ai/schemastery'
@@ -599,14 +601,14 @@ DEFAULT_CONFIG
 
 ### Phase 1：Config schema + DSH 自动页 MVP（1–2 天）
 
-> 实现状态（2026-10-19）：`Config` / `apply(ctx, config)` / entry override / volatile 更新已落地；真实 DSH 自动页与 `cordis_inspect` 尚未验收。本分支先收 4 个 volatile 字段（不含 evaluate/capture 的超时项）。
+> 实现状态（2026-10-19）：`Config` / `apply(ctx, config)` / entry override / volatile 更新已落地；真实 DSH 自动页与 `cordis_inspect` 尚未验收。本分支先收 5 个 volatile 字段（不含 evaluate/capture 的超时项）。
 
 - 新增 `src/config-schema.js`：导出 `Config`（schemastery，含 volatile 标记）。Phase 1 **只**把 §5.2 列出的低风险字段标 `.volatile()`，其余字段先保持非 volatile，避免未接线项出现在自动页。
 - `index.js`：`export { Config }`，`apply(ctx, config)`；从 `configEditor` 取 override 层；保留文件兼容层。
 - 新增 `src/settings.js`：`live()`、`LIVE_PATHS`、`PROJECT_FORBIDDEN`、`sources`、`reloadRequired`。
 - `tools.js` / `contexts.js` / `artifact-store.js`：把 volatile 基础字段改成按调用读取（或接收 getter）。
 - `chrome_config`：输出 effective/sources/reloadRequired/files/warnings；保持只读。**本分支未做，仍是旧 provider 文件视图。**
-- 验收（本分支未做真实 DSH 验收）：DSH 自动页出现 4 个 volatile 字段；改超时实时生效；`cordis_inspect` 的 `Config` 状态不再是 `absent`；`npm test` 绿。
+- 验收（本分支未做真实 DSH 验收）：DSH 自动页出现 5 个 volatile 字段；改超时实时生效；`cordis_inspect` 的 `Config` 状态不再是 `absent`；`npm test` 绿。
 
 ### Phase 2：接线假配置（1 天）
 
@@ -662,7 +664,7 @@ DEFAULT_CONFIG
 
 ## 9. 当前明确未实现（不要当成已有）
 
-- ✅ `Config` schema 已实现（MVP；4 个 volatile 字段）；`apply(ctx, config)` 已接收配置。
+- ✅ `Config` schema 已实现（MVP；5 个 volatile 字段）；`apply(ctx, config)` 已接收配置。
 - ⏳ 真实 DSH 安装里的 Plugins 自动页与 `Config/listConfigs` 投影尚未验证；本地 `toJSON` / `volatileForm` 离线核对通过。
 - ❌ 扩展 popup 没有设置表单；只有状态和操作。
 - ❌ `chrome_config` 只读 provider 文件，不展示 canonical/entry/project 配置，也不写配置。
@@ -680,4 +682,4 @@ DEFAULT_CONFIG
 
 ## 10. 一句话版本
 
-**把“现在只能改文件”的选项分成三层：DSH 自动设置页只放实时、低风险的 volatile 字段（MVP 先 4 个）；高级项继续走条目 patch / 配置文件；危险项默认关闭、只允许用户级文件显式开启，且必须重载。先接线假配置，再谈 UI；MVP 不写扩展设置页，也不做大的客户端。**
+**把“现在只能改文件”的选项分成三层：DSH 自动设置页只放实时、低风险的 volatile 字段（MVP 先 5 个）；高级项继续走条目 patch / 配置文件；危险项默认关闭、只允许用户级文件显式开启，且必须重载。先接线假配置，再谈 UI；MVP 不写扩展设置页，也不做大的客户端。**

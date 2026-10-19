@@ -30,6 +30,7 @@ try {
   const expectedSpecs = {
     'browser.preset': { type: 'enum', values: ['sandbox', 'sandbox-persistent', 'debug'], default: 'sandbox', volatile: true },
     'browser.maxContexts': { type: 'integer', min: 1, max: 16, step: 1, default: 4, volatile: true },
+    'browser.maxTabs': { type: 'integer', min: 1, max: 64, step: 1, default: 12, volatile: true },
     'browser.idleTimeoutMs': { type: 'integer', min: 10_000, max: 3_600_000, step: 1, default: 300_000, volatile: true },
     'verification.artifactRetentionRuns': { type: 'integer', min: 1, max: 1000, step: 1, default: 50, volatile: true },
     'update.enabled': { type: 'boolean', default: false, volatile: false },
@@ -69,6 +70,7 @@ try {
   assert.deepEqual(LIVE_PATHS, [
     'browser.preset',
     'browser.maxContexts',
+    'browser.maxTabs',
     'browser.idleTimeoutMs',
     'verification.artifactRetentionRuns',
   ])
@@ -101,6 +103,10 @@ try {
   for (const value of [1.5, '4', 'fast', NaN, Infinity, -Infinity, 0, 17, null, undefined, {}]) {
     assert.equal(checkSettingValue('browser.maxContexts', value).ok, false, `integer rejects ${String(value)}`)
   }
+  for (const value of [0, 65, 1.5, '12']) {
+    assert.equal(checkSettingValue('browser.maxTabs', value).ok, false, `maxTabs range rejects ${String(value)}`)
+  }
+  assert.deepEqual(checkSettingValue('browser.maxTabs', 64), { ok: true, value: 64 })
   assert.equal(checkSettingValue('browser.idleTimeoutMs', 9_999).ok, false)
   assert.equal(checkSettingValue('browser.idleTimeoutMs', 3_600_001).ok, false)
   assert.equal(checkSettingValue('verification.artifactRetentionRuns', 0).ok, false)
@@ -114,7 +120,7 @@ try {
     assert.equal(isProjectForbidden(forbidden), true)
     assert.equal(isProjectForbidden(`${forbidden}.nested`), true)
   }
-  for (const safe of ['browser.maxContexts', 'browser.preset', 'verification.artifactRetentionRuns', 'update.checkIntervalHours', 'update.enabled', 'evaluateConfirmTimeoutMs', 'allowEvaluateNote']) {
+  for (const safe of ['browser.maxContexts', 'browser.maxTabs', 'browser.preset', 'verification.artifactRetentionRuns', 'update.checkIntervalHours', 'update.enabled', 'evaluateConfirmTimeoutMs', 'allowEvaluateNote']) {
     assert.equal(isProjectForbidden(safe), false, `safe path wrongly forbidden: ${safe}`)
   }
 
@@ -267,7 +273,7 @@ try {
 
   const projected = projectNativeConfig(json)
   assert.deepEqual(Object.keys(projected.properties), ['browser', 'verification', 'update'])
-  assert.deepEqual(Object.keys(projected.properties.browser.properties), ['preset', 'maxContexts', 'idleTimeoutMs'])
+  assert.deepEqual(Object.keys(projected.properties.browser.properties), ['preset', 'maxContexts', 'maxTabs', 'idleTimeoutMs'])
   assert.deepEqual(Object.keys(projected.properties.verification.properties), ['artifactRetentionRuns'])
   assert.deepEqual(Object.keys(projected.properties.update.properties), ['enabled', 'autoInstall', 'checkIntervalHours'])
   assert.equal(projected.properties.browser.properties.preset.anyOf.length, 3)
@@ -278,6 +284,9 @@ try {
   assert.equal(projected.properties.browser.properties.maxContexts.type, 'integer')
   assert.equal(projected.properties.browser.properties.maxContexts.minimum, 1)
   assert.equal(projected.properties.browser.properties.maxContexts.maximum, 16)
+  assert.equal(projected.properties.browser.properties.maxTabs.type, 'integer')
+  assert.equal(projected.properties.browser.properties.maxTabs.minimum, 1)
+  assert.equal(projected.properties.browser.properties.maxTabs.maximum, 64)
   assert.equal(projected.properties.verification.properties.artifactRetentionRuns.type, 'integer')
   assert.equal(projected.properties.update.properties.enabled.type, 'boolean')
   assert.equal(JSON.stringify(projected).includes('undefined'), false)
@@ -335,13 +344,14 @@ try {
 
   // -------------------------------------------------- validatePluginConfig()
   const validated = validatePluginConfig({
-    browser: { preset: 'debug', maxContexts: 99, idleTimeoutMs: 'fast', apiKey: 'sk-CANARY', unknown: true },
+    browser: { preset: 'debug', maxContexts: 99, maxTabs: 65, idleTimeoutMs: 'fast', apiKey: 'sk-CANARY', unknown: true },
     verification: { artifactRetentionRuns: 0 },
     update: { enabled: 'yes', autoInstall: false, checkIntervalHours: 24 },
   })
   assert.equal('issues' in validated, false)
   assert.equal(live(validated.value.browser.preset), 'debug')
   assert.equal(live(validated.value.browser.maxContexts), 4, 'invalid explicit values use the schema default')
+  assert.equal(live(validated.value.browser.maxTabs), 12)
   assert.equal(live(validated.value.browser.idleTimeoutMs), 300_000)
   assert.equal(live(validated.value.verification.artifactRetentionRuns), 50)
   assert.equal(validated.value.update.enabled, false)
@@ -349,6 +359,7 @@ try {
   assert.equal(validated.value.update.checkIntervalHours, 24)
   const warnings = pluginConfigWarnings(validated.value)
   assert.ok(warnings.some((line) => line.includes('browser.maxContexts')))
+  assert.ok(warnings.some((line) => line.includes('browser.maxTabs')))
   assert.ok(warnings.some((line) => line.includes('browser.idleTimeoutMs')))
   assert.ok(warnings.some((line) => line.includes('browser.apiKey: ignored secret-shaped key')))
   assert.ok(warnings.some((line) => line.includes('browser.unknown: ignored unknown key')))
@@ -433,17 +444,17 @@ try {
 
   const legacy = {
     version: 1,
-    browser: { preset: 'sandbox-persistent', maxContexts: 2 },
+    browser: { preset: 'sandbox-persistent', maxContexts: 2, maxTabs: 8 },
     update: { enabled: true },
   }
   const user = {
     version: 1,
-    browser: { maxContexts: 3, idleTimeoutMs: 20_000 },
+    browser: { maxContexts: 3, maxTabs: 9, idleTimeoutMs: 20_000 },
     verification: { artifactRetentionRuns: 10 },
   }
   const project = {
     version: 1,
-    browser: { preset: 'debug', maxContexts: 4, idleTimeoutMs: 30_000 },
+    browser: { preset: 'debug', maxContexts: 4, maxTabs: 10, idleTimeoutMs: 30_000 },
     verification: { artifactRetentionRuns: 20 },
   }
 
@@ -453,18 +464,20 @@ try {
     user,
     project,
     pluginConfig: {
-      browser: { maxContexts: 6, idleTimeoutMs: 40_000 },
+      browser: { maxContexts: 6, maxTabs: 11, idleTimeoutMs: 40_000 },
       verification: { artifactRetentionRuns: 30 },
       update: { checkIntervalHours: 12 },
     },
   })
   assert.equal(layered.config.browser.maxContexts, 6)
+  assert.equal(layered.config.browser.maxTabs, 11)
   assert.equal(layered.config.browser.idleTimeoutMs, 40_000)
   assert.equal(layered.config.verification.artifactRetentionRuns, 30)
   assert.equal(layered.config.browser.preset, 'debug', 'project file wins over legacy file')
   assert.equal(layered.config.update.enabled, true, 'legacy file remains a compatibility layer')
   assert.equal(layered.config.update.checkIntervalHours, 12)
   assert.equal(layered.sources['browser.maxContexts'], 'entry')
+  assert.equal(layered.sources['browser.maxTabs'], 'entry')
   assert.equal(layered.sources['browser.idleTimeoutMs'], 'entry')
   assert.equal(layered.sources['verification.artifactRetentionRuns'], 'entry')
   assert.equal(layered.sources['browser.preset'], 'project')
@@ -479,24 +492,26 @@ try {
     user,
     project,
     pluginConfig: {
-      browser: { preset: 'collab', maxContexts: 0, idleTimeoutMs: 'fast' },
+      browser: { preset: 'collab', maxContexts: 0, maxTabs: 0, idleTimeoutMs: 'fast' },
       verification: { artifactRetentionRuns: 1001 },
       update: { enabled: 'yes', checkIntervalHours: 169 },
     },
   })
   assert.equal(invalidEntry.config.browser.preset, 'debug')
   assert.equal(invalidEntry.config.browser.maxContexts, 4)
+  assert.equal(invalidEntry.config.browser.maxTabs, 10)
   assert.equal(invalidEntry.config.browser.idleTimeoutMs, 30_000)
   assert.equal(invalidEntry.config.verification.artifactRetentionRuns, 20)
   assert.equal(invalidEntry.config.update.enabled, true)
   assert.equal(invalidEntry.config.update.checkIntervalHours, 24)
   assert.equal(invalidEntry.sources['browser.preset'], 'project')
   assert.equal(invalidEntry.sources['browser.maxContexts'], 'project')
+  assert.equal(invalidEntry.sources['browser.maxTabs'], 'project')
   assert.equal(invalidEntry.sources['browser.idleTimeoutMs'], 'project')
   assert.equal(invalidEntry.sources['verification.artifactRetentionRuns'], 'project')
   assert.equal(invalidEntry.sources['update.enabled'], 'legacy-user')
   assert.equal(invalidEntry.sources['update.checkIntervalHours'], 'default')
-  for (const dotted of ['browser.preset', 'browser.maxContexts', 'browser.idleTimeoutMs', 'verification.artifactRetentionRuns', 'update.enabled', 'update.checkIntervalHours']) {
+  for (const dotted of ['browser.preset', 'browser.maxContexts', 'browser.maxTabs', 'browser.idleTimeoutMs', 'verification.artifactRetentionRuns', 'update.enabled', 'update.checkIntervalHours']) {
     assert.ok(
       invalidEntry.warnings.some((line) => line.includes('invalid DSH entry setting') && line.includes(dotted)),
       `missing invalid-entry warning for ${dotted}`,
@@ -516,6 +531,7 @@ try {
       evaluate: { enabled: true },
       browser: {
         maxContexts: 2,
+        maxTabs: 3,
         shared: { enabled: true, leaseTtlMs: 60_000 },
         headless: { chromeExecutable: '/tmp/evil-chrome' },
       },
@@ -525,6 +541,7 @@ try {
     },
   })
   assert.equal(projectDanger.config.browser.maxContexts, 2, 'safe project fields still apply')
+  assert.equal(projectDanger.config.browser.maxTabs, 3, 'maxTabs is a safe project field')
   assert.equal(projectDanger.config.browser.shared.enabled, false)
   assert.equal(projectDanger.config.browser.headless.chromeExecutable, null)
   assert.equal(projectDanger.config.update.autoInstall, false)

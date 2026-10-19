@@ -18,7 +18,7 @@
   - `ensureStarted` 任一步失败 kill child、清 `chrome/cdp/startPromise`，不留孤儿 Chrome；已存在 context 启动失败进入 crashed 或关闭。
   - `capture_stop` 后保留摘要并设置 TTL/数量上限；`chrome_capture_requests` 读取后释放原始 entries/body；默认 body 不存（H1 已做）。
   - 截图单帧增加字节/像素硬上限，超过不放入 `shot.last`；screencast 关闭时清理。
-- [ ] M4 用户可配置：maxTabs / maxContexts / 同一浏览器多页
+- [x] M4 用户可配置：maxTabs / maxContexts / 同一浏览器多页
   - 新增 canonical config `browser.maxTabs`（默认 12，范围 1–64），传给 HeadlessDriver；`browser.maxContexts` 已有。
   - DSH Config schema/settings 加入 `browser.maxTabs`（volatile），`chrome_status`/context view 显示 maxTabs、当前 tabs、maxContexts、contexts。
   - 文档 + 测试：一个 headless 浏览器内创建多个 tab、达到 maxTabs 报 RESOURCE_LIMIT、关闭后释放；两个 context 并发受 maxContexts 限制。

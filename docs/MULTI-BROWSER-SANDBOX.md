@@ -614,11 +614,12 @@ Safari 不是 Chromium：
 
 | 旋钮 | 默认 | 作用 | 现状 |
 |---|---|---|---|
-| `browser.maxContexts` | 4（1–16） | 全局 context 上限 | 串行有效；并发可超（C1） |
+| `browser.maxContexts` | 4（1–16） | 全局 context 上限 | 串行 + 并发均有效（pending 预留，C1 已修） |
+| `browser.maxTabs` | 12（1–64） | 每个 headless 浏览器的 tab 上限 | ✅ M4：canonical 设置，volatile，传给 HeadlessDriver；超限 `RESOURCE_LIMIT`，关 tab 释放 |
 | `browser.idleTimeoutMs` | 300000（10s–1h） | hidden context 空闲回收 | 只看 `lastUsedAt`；不管 tab/in-flight/viewer（C6） |
 | `browser.profilesDir` | `$DSH_HOME/cache/dsh-chrome/profiles` | profile 根 | 可用；无配额/GC |
 | `DSH_HEADLESS_IDLE_MINUTES` | 5 | driver 在无 tab 时关浏览器 | 与 context 回收是两套 |
-| `DSH_HEADLESS_MAX_TABS` | 12 | 每个 driver 的 tab 上限 | 每 context 独立；无全局 tab 预算 |
+| `DSH_HEADLESS_MAX_TABS` | 12 | 每个 driver 的 tab 上限 | 已由 `browser.maxTabs` 取代；仅在该设置仍为默认值时兜底 |
 | `verification.artifactRetentionRuns` | 50 | verify 运行目录保留 | 生效（仅 verify） |
 | `verification.maxArtifactBytes` | 50MB | 产物体积上限 | 未执行（C14） |
 

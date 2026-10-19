@@ -88,11 +88,12 @@ const EXTRA_CHROME_ARGS = String(process.env.DSH_HEADLESS_CHROME_ARGS || '')
   .filter(Boolean)
 
 const DEFAULT_IDLE_MINUTES = Number(process.env.DSH_HEADLESS_IDLE_MINUTES) || 5
-// Per-browser tab cap (M1). One headless Chrome can host several pages, but
+// Per-browser tab cap (M1/M4). One headless Chrome can host several pages, but
 // every page costs a renderer process, so the driver bounds how many it will
 // attach. The effective value is `maxTabs` option > DSH_HEADLESS_MAX_TABS >
-// DEFAULT_MAX_TABS, resolved per driver (see resolveMaxTabs) so the provider's
-// `browser.maxTabs` setting can reach it (M4).
+// DEFAULT_MAX_TABS, resolved per attach (see resolveMaxTabs). `maxTabs` may be
+// a getter function: the provider passes a live reader for the volatile
+// `browser.maxTabs` setting, so a DSH settings edit applies without a reload.
 export const DEFAULT_MAX_TABS = 12
 export const MAX_TABS_LIMIT = 64
 const MAX_TABS_ENV = 'DSH_HEADLESS_MAX_TABS'
@@ -288,7 +289,9 @@ export class HeadlessDriver {
     this.executable = executable || null
     this.logger = logger
     this.spawnImpl = spawnImpl
-    this.maxTabs = resolveMaxTabs(maxTabs)
+    // A function keeps the cap live across DSH settings edits; a number is the
+    // legacy/test form. The getter resolves it on each attach.
+    this.maxTabsOption = maxTabs
     this.profileDir = profileDir || path.join(home || '.', 'cache', 'dsh-chrome', 'headless', 'profile')
     this.chrome = null
     this.cdp = null
@@ -340,6 +343,21 @@ export class HeadlessDriver {
 
   get connected() {
     return Boolean(this.cdp)
+  }
+
+  /**
+   * Effective tab cap: a live getter function (provider setting) or a fixed
+   * option, then DSH_HEADLESS_MAX_TABS, then the default. Re-resolved on every
+   * attach so a volatile settings edit reaches an already running browser.
+   */
+  get maxTabs() {
+    const configured = typeof this.maxTabsOption === 'function' ? this.maxTabsOption() : this.maxTabsOption
+    return resolveMaxTabs(configured)
+  }
+
+  /** Committed tabs in this browser (pending attaches excluded). */
+  get tabCount() {
+    return this.tabs.size
   }
 
   async ensureStarted() {

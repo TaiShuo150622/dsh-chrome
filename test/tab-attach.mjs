@@ -15,6 +15,7 @@
  */
 import assert from 'node:assert/strict'
 
+import { DEFAULT_CONFIG } from '../src/config.js'
 import {
   DEFAULT_MAX_TABS,
   HeadlessDriver,
@@ -102,6 +103,7 @@ const assertNoTabs = (driver, entry) => {
 
 // ---------------------------------------------------------- resolveMaxTabs
 assert.equal(DEFAULT_MAX_TABS, 12)
+assert.equal(DEFAULT_CONFIG.browser.maxTabs, DEFAULT_MAX_TABS, 'canonical config default must match the driver default')
 assert.equal(MAX_TABS_LIMIT, 64)
 assert.equal(resolveMaxTabs(null, {}), 12, 'default cap')
 assert.equal(resolveMaxTabs(undefined, {}), 12)
@@ -164,6 +166,36 @@ try {
   assert.equal(callsOf(cdp, 'Target.createTarget').length, createCallsBefore, 'over-limit attach must not create a target')
   assert.equal(driver.pendingTabs, 0)
   assert.equal(driver.tabs.size, 2)
+}
+
+// ---------------------------- M4: live setting (getter) + close frees capacity
+{
+  const limit = { value: 1 }
+  const driver = makeDriver({ maxTabs: () => limit.value })
+  const cdp = attachFake(driver)
+  const entry = driver.ownerEntry('owner-m4')
+  assert.equal(driver.maxTabs, 1, 'getter option resolves to the current setting')
+  const first = await driver.attachTab(entry, 'about:blank')
+  assert.equal(driver.tabCount, 1)
+  await refusalOf(driver.attachTab(entry, 'about:blank'), 'RESOURCE_LIMIT')
+  assert.equal(callsOf(cdp, 'Target.createTarget').length, 1, 'over-limit attempt creates no target')
+
+  // A volatile settings edit (browser.maxTabs 1 -> 2) applies without a reload.
+  limit.value = 2
+  assert.equal(driver.maxTabs, 2)
+  const second = await driver.attachTab(entry, 'about:blank')
+  assert.equal(driver.tabs.size, 2)
+  assert.notEqual(second.tabId, first.tabId)
+
+  // Closing a tab releases its slot: the next attach is admitted again.
+  await driver.closeTab(first)
+  assert.equal(driver.tabCount, 1)
+  const third = await driver.attachTab(entry, 'about:blank')
+  assert.equal(driver.tabs.size, 2)
+  assert.equal(third.tabId, 3)
+  assert.equal(entry.activeTabId, third.tabId)
+  assert.equal(callsOf(cdp, 'Target.createTarget').length, 3)
+  assert.equal(callsOf(cdp, 'Target.closeTarget').length, 1)
 }
 
 // ------------------------------------- rollback: every failing initialization step

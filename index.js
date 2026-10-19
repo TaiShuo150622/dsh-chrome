@@ -96,6 +96,13 @@ export function apply(ctx, config) {
     executable: configInfo.config.browser.headless.chromeExecutable,
   }
   const headlessSupportedNow = headlessSupported(headlessConfig)
+  // M4: `browser.maxTabs` is the canonical per-browser tab cap. Pass a getter
+  // so a volatile settings edit reaches an already running driver. While the
+  // setting is still at its schema default, return null so
+  // DSH_HEADLESS_MAX_TABS keeps working as the fallback (explicit setting >
+  // env > default 12).
+  const maxTabsSetting = () =>
+    configInfo.sources['browser.maxTabs'] === 'default' ? null : configInfo.config.browser.maxTabs
   const contexts = new BrowserContextManager({
     config: configInfo.config,
     home,
@@ -111,6 +118,7 @@ export function apply(ctx, config) {
         autoPointer: visible === true ? true : null,
         engine: headlessConfig.engine,
         executable: headlessConfig.executable,
+        maxTabs: maxTabsSetting,
       }),
   })
   // DSH settings edits only the volatile fields. Re-read the explicit profile

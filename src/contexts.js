@@ -241,6 +241,33 @@ export class BrowserContextManager {
     return idle
   }
 
+  /**
+   * M4 status view: effective limits plus current usage across every context
+   * managed here. `maxTabs` comes from the first live driver (all contexts
+   * share the provider setting) and falls back to the configured value before
+   * any browser exists.
+   */
+  limits() {
+    let tabs = 0
+    let pendingTabs = 0
+    let maxTabs = this.config.browser.maxTabs
+    for (const ctx of this.contexts.values()) {
+      const driver = ctx.driver
+      if (Number.isFinite(driver?.tabCount)) tabs += driver.tabCount
+      else if (Number.isFinite(driver?.tabs?.size)) tabs += driver.tabs.size
+      if (Number.isFinite(driver?.pendingTabs)) pendingTabs += driver.pendingTabs
+      if (Number.isFinite(driver?.maxTabs)) maxTabs = driver.maxTabs
+    }
+    return {
+      maxTabs,
+      tabs,
+      pendingTabs,
+      maxContexts: this.maxContexts,
+      contexts: this.contexts.size,
+      pendingContexts: this.pending,
+    }
+  }
+
   stats() {
     return { active: this.contexts.size, max: this.maxContexts, sessions: [...this.contexts.values()].map((ctx) => ({ contextId: ctx.contextId, owner: ctx.owner, preset: ctx.preset, visible: ctx.visible, isolation: ctx.isolation })) }
   }

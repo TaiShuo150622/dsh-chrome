@@ -124,13 +124,21 @@ export class BackendRouter {
     if (this.desktop) this.desktop.extensionVersion = value
   }
 
+  /**
+   * Status payload for chrome_status. M4 adds the live limits (maxTabs / tab
+   * count / maxContexts / context count) when the backend exposes them; test
+   * bridges and remote drivers may only implement the original four fields.
+   */
   headlessInfo() {
-    return {
+    const info = {
       supported: Boolean(this.headlessSupported),
       running: Boolean(this.headless?.connected),
       browserVersion: this.headless?.browserVersion ?? null,
       profile: this.headless?.home ? `${this.headless.home}/cache/dsh-chrome/headless/profile` : null,
     }
+    const limits = typeof this.headless?.limits === 'function' ? this.headless.limits() : null
+    if (limits) Object.assign(info, limits)
+    return info
   }
 
   async call(method, params, timeoutMs) {

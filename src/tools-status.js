@@ -100,6 +100,11 @@ export function createStatusTools({ bridge, assets, update = null, currentSite, 
                 `headless: ${value.headless.supported ? 'available' : 'unavailable'}${value.headless.running ? ` (running ${value.headless.browserVersion || ''})` : ''}${value.headless.loginOpen ? ` (login window open, pid ${value.headless.loginPid ?? '?'})` : ''}`,
               ]
             : []),
+          ...(value.headless?.maxTabs != null || value.headless?.maxContexts != null
+            ? [
+                `headless limits: tabs ${value.headless.tabs ?? 0}/${value.headless.maxTabs ?? '?'}  contexts ${value.headless.contexts ?? 0}/${value.headless.maxContexts ?? '?'}`,
+              ]
+            : []),
           `Chrome bridge: ${value.connected ? 'CONNECTED' : 'NOT CONNECTED'}`,
           `provider: ${value.provider}  protocol: ${value.protocol}`,
           `extension: ${value.extensionVersion ?? 'unknown'}  host: ${value.hostVersion ?? 'unknown'}`,

@@ -23,6 +23,11 @@ export class HeadlessContextRouter {
     return this.lastBrowserVersion
   }
 
+  /** Live tab/context limits for chrome_status (M4). */
+  limits() {
+    return typeof this.manager.limits === 'function' ? this.manager.limits() : null
+  }
+
   async request(method, params = {}) {
     const owner = params?.owner || 'default'
     let ctx = this.manager.activeFor(owner)

@@ -52,6 +52,7 @@
   "browser": {
     "preset": "sandbox",
     "maxContexts": 4,
+    "maxTabs": 12,
     "idleTimeoutMs": 300000,
     "headless": { "chromeExecutable": null, "viewport": { "width": 1440, "height": 900 } }
   },
@@ -66,7 +67,7 @@
 
 - 配置里不放密码/API key/secret；
 - 未知字段忽略并 warning；错误版本回退默认；
-- 配置变更只影响新 context。
+- 配置变更一般只影响新 context；`maxTabs` / `maxContexts` / `idleTimeoutMs` 对运行中的 context 实时读取（`maxTabs` 在下一个 tab 上生效）。
 
 ## 5. 生命周期
 
@@ -74,6 +75,7 @@
 - 空闲 `idleTimeoutMs`（默认 5 分钟）后关闭；ephemeral profile 删除；
 - provider 卸载/停止时关闭所有 context；
 - `maxContexts` 默认 4，超过返回 `CONTEXT_LIMIT`；
+- `maxTabs` 默认 12（范围 1–64），是**同一个浏览器**内的 tab 上限，跨 owner 共享；达到上限返回 `RESOURCE_LIMIT`，关闭 tab 后释放；`chrome_status` 显示 `tabs/maxTabs` 与 `contexts/maxContexts`，`chrome_context {op:"list"|"current"}` 同样带 `limits`；
 - named profile 同一时间只能被一个 context 使用（`PROFILE_IN_USE`）。
 
 ## 5.1 I2 可见隔离（0.1.97）

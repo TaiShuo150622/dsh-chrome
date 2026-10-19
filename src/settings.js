@@ -39,6 +39,15 @@ export const SETTING_SPECS = Object.freeze({
     volatile: true,
     description: '同时存在的浏览器 context 上限；只影响新建 context。',
   }),
+  'browser.maxTabs': Object.freeze({
+    type: 'integer',
+    min: 1,
+    max: 64,
+    step: 1,
+    default: 12,
+    volatile: true,
+    description: '每个 headless 浏览器内的 tab 上限（per context，跨 owner 共享）；超出返回 RESOURCE_LIMIT，关闭 tab 后释放。',
+  }),
   'browser.idleTimeoutMs': Object.freeze({
     type: 'integer',
     min: 10_000,
