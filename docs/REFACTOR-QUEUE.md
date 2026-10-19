@@ -30,7 +30,7 @@
   - 新建 `src/headless-launch.js`：`buildLaunchArgs({visible, profileDir, windowSize, extraArgs})` + DevToolsActivePort 解析辅助函数（如有）；
   - `ensureStarted` 调用它；参数顺序/内容不变；
   - 新增/更新一个纯函数测试（不需要真 Chrome）；全量测试。
-- [ ] Q6 抽出 headless 脱敏
+- [x] Q6 抽出 headless 脱敏
   - 新建 `src/headless-redact.js`：`maskSecretsInText`、`redactUrl`、`redactJsonValue`、`redactBodyText`、`materializeCaptureBody` 及 capture 常量；
   - `headless.js` 改为 import；脱敏规则/预算不变；
   - 全量测试。
