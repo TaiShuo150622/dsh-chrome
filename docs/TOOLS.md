@@ -245,11 +245,11 @@ Open a visible, dedicated Chrome window at a human-interaction step (login, CAPT
 
 ### `chrome_context`
 
-Manage isolated browser contexts for sandbox verification: op="create" makes a per-session headless context (default preset sandbox), op="use" switches the session active context, op="list" lists this session contexts, op="current" shows the active one, op="close" closes one. op="viewer" writes the viewer URL to a local handoff file and returns its path plus an opaque handle; the bearer URL is never returned. Contexts are isolated (separate profile); backend:"headless" calls route to the session active context.
+Manage isolated browser contexts for sandbox verification: op="create" makes a per-session headless context (default preset sandbox), op="use" switches the session active context, op="list" lists this session contexts with driver state, op="current" shows the active one, op="close" closes one, op="restart" explicitly rebuilds a crashed/dead context. op="viewer" writes the viewer URL to a local handoff file and returns its path plus an opaque handle; the bearer URL is never returned. Contexts are isolated (separate profile); backend:"headless" calls route to the session active context.
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `op` | enum(create | use | list | current | close | viewer) | yes |  |
+| `op` | enum(create | use | list | current | close | restart | viewer) | yes |  |
 | `preset` | enum(sandbox | sandbox-persistent | debug | collab) | no |  |
 | `profile` | string | no | Named profile label for sandbox-persistent/debug. |
 | `contextId` | string | no | Context id for use/close. |
