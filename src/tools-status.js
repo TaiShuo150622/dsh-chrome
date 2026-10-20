@@ -112,6 +112,14 @@ export function createStatusTools({
                 `headless: ${value.headless.supported ? 'available' : 'unavailable'}${value.headless.running ? ` (running ${value.headless.browserVersion || ''})` : ''}${value.headless.loginOpen ? ` (login window open, pid ${value.headless.loginPid ?? '?'})` : ''}`,
               ]
             : []),
+          ...(value.headless?.state
+            ? [
+                `headless driver: ${value.headless.state}` +
+                  `${value.headless.activeContextId ? ` (${value.headless.activeContextId})` : ''}` +
+                  `${value.headless.deathReason ? ` — last exit: ${value.headless.deathReason}` : ''}` +
+                  `${value.headless.chromePid != null ? `  pid ${value.headless.chromePid}` : ''}`,
+              ]
+            : []),
           ...(value.headless?.maxTabs != null || value.headless?.maxContexts != null
             ? [
                 `headless limits: tabs ${value.headless.tabs ?? 0}/${value.headless.maxTabs ?? '?'}  contexts ${value.headless.contexts ?? 0}/${value.headless.maxContexts ?? '?'}`,
@@ -148,13 +156,14 @@ export function createStatusTools({
         return renderText(lines.join('\n'))
       },
     },
-    async execute() {
+    async execute(_args, exec) {
       const info = assets() ?? {}
       const bridgeError = typeof bridge.bridgeError === 'function' ? bridge.bridgeError() : bridge.lastError || null
+      const owner = exec?.agent?.id ?? null
       const value = {
         connected: bridge.connected,
         backend: bridge.backend || 'desktop',
-        headless: typeof bridge.headlessInfo === 'function' ? bridge.headlessInfo() : null,
+        headless: typeof bridge.headlessInfo === 'function' ? bridge.headlessInfo(owner) : null,
         provider: 'chrome-extension',
         bridgeError: bridgeError ? String(bridgeError.message || bridgeError) : null,
         protocol: 1,

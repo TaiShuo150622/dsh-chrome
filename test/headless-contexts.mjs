@@ -5,6 +5,7 @@ import path from 'node:path'
 
 import { DEFAULT_CONFIG } from '../src/config.js'
 import { BrowserContextManager } from '../src/contexts.js'
+import { driverState } from '../src/driver-state.js'
 import { HeadlessContextRouter } from '../src/headless-contexts.js'
 import { BackendRouter } from '../src/backend.js'
 import { chromeTools } from '../src/tools.js'
@@ -61,6 +62,139 @@ try {
 
   await router.close()
   assert.equal(manager.stats().active, 0)
+
+  // H8: a crashed driver stays visible (context kept, connected false) and is
+  // only rebuilt by an explicit chrome_context restart. A request must never
+  // silently relaunch it.
+  let crashMode = 'ok'
+  const crashDrivers = []
+  const crashManager = new BrowserContextManager({
+    config,
+    home,
+    createDriver: async ({ contextId, profileDir }) => {
+      const driver = {
+        contextId,
+        profileDir,
+        connected: true,
+        dead: false,
+        deathReason: null,
+        chrome: { pid: 4000 + crashDrivers.length + 1 },
+        async request(method) {
+          if (crashMode === 'crash') {
+            driver.dead = true
+            driver.deathReason = 'browser-exit:1'
+            driver.connected = false
+            driver.chrome = null
+            throw Object.assign(new Error('the headless browser exited unexpectedly'), { code: 'CONTEXT_CRASHED' })
+          }
+          return { ok: true, method }
+        },
+        async close() {
+          driver.closed = true
+        },
+      }
+      crashDrivers.push(driver)
+      return driver
+    },
+  })
+  const crashRouter = new HeadlessContextRouter({ manager: crashManager })
+  const crashExec = { agent: { id: 'crash-owner' } }
+  await crashRouter.request('tab.goto', { owner: 'crash-owner', url: 'https://example.com' })
+  const crashContextId = crashManager.activeFor('crash-owner').contextId
+  assert.equal(crashManager.view(crashContextId).state, 'ready')
+  assert.equal(crashManager.view(crashContextId).chromePid, 4001)
+  assert.equal(crashRouter.connected, true)
+
+  const crashBridge = new BackendRouter({
+    desktop: { connected: false, async call() { return {} } },
+    headless: crashRouter,
+    headlessSupported: true,
+  })
+  const crashTools = chromeTools({ bridge: crashBridge, contexts: crashManager, assets: () => ({}) })
+  const statusTool = crashTools.find((tool) => tool.name === 'chrome_status')
+  const contextTool = crashTools.find((tool) => tool.name === 'chrome_context')
+
+  // H8 state vocabulary: closing wins over crashed, a missing driver is dead.
+  assert.equal(driverState(null), 'dead')
+  assert.equal(driverState({}), 'ready')
+  assert.equal(driverState({ closing: true }), 'closing')
+  assert.equal(driverState({ closePromise: Promise.resolve() }), 'closing')
+  assert.equal(driverState({ dead: true, deathReason: 'browser-exit:1' }), 'crashed')
+  assert.equal(driverState({ dead: true, closing: true }), 'closing')
+
+  const readyStatus = await statusTool.execute({}, crashExec)
+  assert.equal(readyStatus.headless.running, true)
+  assert.equal(readyStatus.headless.state, 'ready')
+  assert.equal(readyStatus.headless.chromePid, 4001)
+
+  crashMode = 'crash'
+  await assert.rejects(
+    crashRouter.request('tab.snapshot', { owner: 'crash-owner' }),
+    (error) => error.code === 'CONTEXT_CRASHED',
+  )
+  assert.equal(crashManager.stats().active, 1, 'a crashed context is kept for status/restart')
+  assert.equal(crashRouter.connected, false, 'a crashed driver must not report connected')
+  const crashedView = crashManager.view(crashContextId)
+  assert.equal(crashedView.state, 'crashed')
+  assert.equal(crashedView.deathReason, 'browser-exit:1')
+  assert.equal(crashedView.chromePid, null, 'the dead Chrome process no longer has a pid')
+
+  // The next request sees the same crashed context: no silent relaunch.
+  const driversBeforeRetry = crashDrivers.length
+  await assert.rejects(
+    crashRouter.request('tab.snapshot', { owner: 'crash-owner' }),
+    (error) => error.code === 'CONTEXT_CRASHED',
+  )
+  assert.equal(crashDrivers.length, driversBeforeRetry, 'a crashed context must not be silently relaunched')
+  assert.equal(crashManager.activeFor('crash-owner').contextId, crashContextId)
+
+  // chrome_status carries the crash reason/state and shows it in the render.
+  const crashStatus = await statusTool.execute({}, crashExec)
+  assert.equal(crashStatus.headless.running, false)
+  assert.equal(crashStatus.headless.state, 'crashed')
+  assert.equal(crashStatus.headless.deathReason, 'browser-exit:1')
+  assert.equal(crashStatus.headless.activeContextId, crashContextId)
+  const crashStatusText = statusTool.output.render({}, crashStatus)[0]?.text || ''
+  assert.ok(crashStatusText.includes('headless driver: crashed'), crashStatusText)
+  assert.ok(crashStatusText.includes('last exit: browser-exit:1'), crashStatusText)
+
+  // chrome_context list/current expose the same state.
+  const crashCurrent = await contextTool.execute({ op: 'current' }, crashExec)
+  assert.equal(crashCurrent.state, 'crashed')
+  assert.equal(crashCurrent.deathReason, 'browser-exit:1')
+  const crashList = await contextTool.execute({ op: 'list' }, crashExec)
+  assert.equal(crashList.contexts[0].state, 'crashed')
+  const crashListText = contextTool.output.render({ op: 'list' }, crashList)[0]?.text || ''
+  assert.ok(crashListText.includes('crashed'), crashListText)
+
+  // A live context must refuse restart; a crashed one is rebuilt explicitly.
+  crashMode = 'ok'
+  await crashRouter.request('tab.goto', { owner: 'other-owner', url: 'https://example.org' })
+  const otherContextId = crashManager.activeFor('other-owner').contextId
+  const refusedRestart = await contextTool.execute({ op: 'restart', contextId: otherContextId }, { agent: { id: 'crash-owner' } })
+  assert.equal(refusedRestart.ok, false, 'restart must be owner-scoped')
+  assert.equal(refusedRestart.error, 'CONTEXT_NOT_FOUND')
+
+  const readyRefusal = await contextTool.execute(
+    { op: 'restart', contextId: otherContextId },
+    { agent: { id: 'other-owner' } },
+  )
+  assert.equal(readyRefusal.ok, false, 'restarting a live context must be refused')
+  assert.equal(readyRefusal.error, 'CONTEXT_NOT_CRASHED')
+  assert.equal(readyRefusal.state, 'ready')
+  assert.ok(readyRefusal.message.includes('restart is only for crashed/dead drivers'), readyRefusal.message)
+
+  const restarted = await contextTool.execute({ op: 'restart' }, crashExec)
+  assert.equal(restarted.ok, true, JSON.stringify(restarted))
+  assert.equal(restarted.restarted, true)
+  assert.notEqual(restarted.contextId, crashContextId)
+  assert.equal(restarted.previous.state, 'crashed')
+  assert.equal(restarted.state, 'ready')
+  assert.equal(crashDrivers.length, driversBeforeRetry + 2, 'restart creates exactly one fresh driver')
+  assert.equal(crashDrivers[0].closed, true, 'the crashed driver is closed by restart')
+  assert.equal(crashRouter.connected, true)
+  await crashRouter.close()
+  assert.equal(crashManager.stats().active, 0)
 
   // A2: concurrent headless requests for one owner share a single context.
   let concurrentCreates = 0

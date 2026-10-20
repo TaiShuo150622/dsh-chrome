@@ -12,6 +12,18 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
     if (!current) return ''
     return `contexts ${current.contexts ?? '?'}/${current.maxContexts ?? '?'}  tabs ${current.tabs ?? 0}/${current.maxTabs ?? '?'}`
   }
+  // H8: the driver state travels with every context view, so a crashed
+  // browser is visible here instead of only surfacing on the next request.
+  const stateLabel = (ctx) => {
+    if (!ctx) return ''
+    return [
+      ctx.state || 'ready',
+      ctx.deathReason ? `died:${ctx.deathReason}` : '',
+      ctx.chromePid != null ? `pid ${ctx.chromePid}` : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+  }
   return {
       name: 'chrome_context',
       mutating: false,
@@ -19,11 +31,11 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
       // lifecycle state, not the page in a shared tab, so no write lease.
       stateful: true,
       description:
-        'Manage isolated browser contexts for sandbox verification: op="create" makes a per-session headless context (default preset sandbox), op="use" switches the session active context, op="list" lists this session contexts, op="current" shows the active one, op="close" closes one. op="viewer" writes the viewer URL to a local handoff file and returns its path plus an opaque handle; the bearer URL is never returned. Contexts are isolated (separate profile); backend:"headless" calls route to the session active context.',
+        'Manage isolated browser contexts for sandbox verification: op="create" makes a per-session headless context (default preset sandbox), op="use" switches the session active context, op="list" lists this session contexts with driver state, op="current" shows the active one, op="close" closes one, op="restart" explicitly rebuilds a crashed/dead context. op="viewer" writes the viewer URL to a local handoff file and returns its path plus an opaque handle; the bearer URL is never returned. Contexts are isolated (separate profile); backend:"headless" calls route to the session active context.',
       parameters: {
         type: 'object',
         properties: {
-          op: { type: 'string', enum: ['create', 'use', 'list', 'current', 'close', 'viewer'] },
+          op: { type: 'string', enum: ['create', 'use', 'list', 'current', 'close', 'restart', 'viewer'] },
           preset: { type: 'string', enum: ['sandbox', 'sandbox-persistent', 'debug', 'collab'] },
           profile: { type: 'string', description: 'Named profile label for sandbox-persistent/debug.' },
           contextId: { type: 'string', description: 'Context id for use/close.' },
@@ -38,6 +50,11 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
           preset: { type: 'string' },
           visible: { type: 'boolean' },
           isolation: { type: 'string' },
+          state: { type: 'string' },
+          deathReason: {},
+          chromePid: {},
+          restarted: { type: 'boolean' },
+          previous: { type: 'object', additionalProperties: true },
           contexts: { type: 'array', items: { type: 'object', additionalProperties: true } },
           limits: { type: 'object', additionalProperties: true },
           handle: { type: 'string' },
@@ -53,11 +70,14 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
           if (Array.isArray(value.contexts)) {
             const summary = limitsLine(value)
             const rows = value.contexts.length
-              ? value.contexts.map((ctx) => `${ctx.contextId} ${ctx.preset} ${ctx.isolation}${ctx.visible ? ' visible' : ''} owner=${ctx.owner}`)
+              ? value.contexts.map(
+                  (ctx) =>
+                    `${ctx.contextId} ${ctx.preset} ${ctx.isolation} ${stateLabel(ctx)}${ctx.visible ? ' visible' : ''} owner=${ctx.owner}`,
+                )
               : ['No browser contexts for this session.']
             return renderText([...(summary ? [summary] : []), ...rows].join('\n'))
           }
-          const line = `Context ${value.contextId || ''} ${value.preset || ''} ${value.isolation || ''}${value.visible ? ' visible' : ' hidden'}`
+          const line = `Context ${value.contextId || ''} ${value.preset || ''} ${value.isolation || ''} ${stateLabel(value)}${value.visible ? ' visible' : ' hidden'}`
           return renderText([line, limitsLine(value)].filter(Boolean).join('\n'))
         },
       },
@@ -98,6 +118,29 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
           const contextId = String(args?.contextId || '')
           const closed = await contexts.closeOwned(contextId, owner)
           return closed ? { ok: true, contextId } : { ok: false, error: 'CONTEXT_NOT_FOUND' }
+        }
+        if (op === 'restart') {
+          const contextId = String(args?.contextId || '')
+          const target = contextId ? contexts.getOwned(contextId, owner) : contexts.activeFor(owner)
+          if (!target) return { ok: false, error: 'CONTEXT_NOT_FOUND' }
+          if (typeof contexts.restart !== 'function') return { ok: false, error: 'CONTEXT_RESTART_UNAVAILABLE' }
+          try {
+            const result = await contexts.restart(target.contextId, { owner })
+            return {
+              ok: true,
+              restarted: true,
+              previous: result.previous,
+              ...result.context,
+              limits: limitsView(),
+            }
+          } catch (error) {
+            if (error?.code === 'CONTEXT_NOT_CRASHED') {
+              const view = contexts.view?.(target.contextId)
+              return { ok: false, error: error.code, state: view?.state, message: error.message }
+            }
+            if (error?.code === 'CONTEXT_NOT_FOUND') return { ok: false, error: error.code }
+            throw error
+          }
         }
         return { ok: false, error: `UNKNOWN_OP:${op}` }
       },

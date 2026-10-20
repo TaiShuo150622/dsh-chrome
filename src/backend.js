@@ -129,7 +129,7 @@ export class BackendRouter {
    * count / maxContexts / context count) when the backend exposes them; test
    * bridges and remote drivers may only implement the original four fields.
    */
-  headlessInfo() {
+  headlessInfo(owner = null) {
     const info = {
       supported: Boolean(this.headlessSupported),
       running: Boolean(this.headless?.connected),
@@ -138,6 +138,13 @@ export class BackendRouter {
     }
     const limits = typeof this.headless?.limits === 'function' ? this.headless.limits() : null
     if (limits) Object.assign(info, limits)
+    // H8: driver state/deathReason/chromePid for the calling owner's active
+    // context (aggregate counts when no owner is available). Read-only; this
+    // must never launch or restart a browser as a side effect.
+    if (typeof this.headless?.info === 'function') {
+      const detail = this.headless.info(owner)
+      if (detail && typeof detail === 'object') Object.assign(info, detail)
+    }
     return info
   }
 

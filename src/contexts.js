@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto'
 
 import { CONTEXT_CLOSE_TIMEOUT_MS, settleWithin } from './bounded.js'
 import { presetToMode } from './config.js'
+import { driverInfo } from './driver-state.js'
 import { DRIVER_COUNT_FIELDS, emptyContextStats } from './memory-stats.js'
 
 export class ContextError extends Error {
@@ -65,6 +66,19 @@ export class BrowserContextManager {
 
   list() {
     return [...this.contexts.values()].map((ctx) => this.#view(ctx))
+  }
+
+  /**
+   * H8: driver state for every context, without launching anything. Used by
+   * HeadlessContextRouter.connected/status so a crashed browser is visible as
+   * crashed instead of being silently relaunched by the next status call.
+   */
+  driverStates() {
+    return [...this.contexts.values()].map((ctx) => ({
+      contextId: ctx.contextId,
+      owner: ctx.owner,
+      ...driverInfo(ctx.driver),
+    }))
   }
 
   get(contextId) {
@@ -218,6 +232,35 @@ export class BrowserContextManager {
     return this.close(contextId, options)
   }
 
+  /**
+   * H8: explicit recovery for a crashed/dead context. The old context is closed
+   * with the normal bounded path (so Chrome/profile teardown stays bounded) and
+   * a fresh driver is created for the same owner/preset; a named profile is
+   * reused, an ephemeral one gets a new directory. Restarting a live context is
+   * refused: nothing here is ever automatic.
+   */
+  async restart(contextId, { owner = null } = {}) {
+    const ctx = this.contexts.get(contextId)
+    if (!ctx || (owner != null && ctx.owner !== owner)) {
+      throw new ContextError('CONTEXT_NOT_FOUND', `context ${String(contextId || '')} is not available`)
+    }
+    const previous = this.#view(ctx)
+    if (previous.state !== 'crashed' && previous.state !== 'dead') {
+      throw new ContextError(
+        'CONTEXT_NOT_CRASHED',
+        `context ${contextId} is ${previous.state}; restart is only for crashed/dead drivers`,
+      )
+    }
+    const { owner: contextOwner, preset, profileId, ephemeral } = ctx
+    await this.close(contextId)
+    const context = await this.create({
+      owner: contextOwner,
+      preset,
+      ...(ephemeral ? {} : { profileName: profileId }),
+    })
+    return { previous, context }
+  }
+
   async closeAll() {
     // Close every context concurrently so the manager's total teardown budget
     // is one closeTimeoutMs, not one per context (maxContexts is small and the
@@ -360,6 +403,9 @@ export class BrowserContextManager {
       profileId: ctx.profileId,
       createdAt: ctx.createdAt,
       lastUsedAt: ctx.lastUsedAt,
+      // H8: the context view always says what the driver is doing, so
+      // chrome_context list/current can show a crashed browser.
+      ...driverInfo(ctx.driver),
     }
   }
 

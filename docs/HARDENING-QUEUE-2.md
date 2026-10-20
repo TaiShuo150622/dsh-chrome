@@ -20,7 +20,7 @@
   - `HeadlessDriver.close` 用 bounded closePromise：Browser.close(2s) → SIGTERM(1s) → SIGKILL；CDP 永不回包也必须在预算内返回。
   - `BrowserContextManager.close/closeAll` 有界；provider unload 不无限挂起；启动失败清理有界。
   - 补假 CDP/假 child 的超时测试。
-- [ ] H8 crashed 状态可见
+- [x] H8 crashed 状态可见
   - `chrome_status`/`chrome_context` 显示 driver state（ready/crashed/closing/dead）、deathReason、chromePid。
   - `HeadlessContextRouter.connected` 基于 driver 状态；`chrome_context {op:"restart"}` 或显式 `CONTEXT_CRASHED` 后重建策略。
   - 补崩溃→status→restart 测试；不自动静默重启。
