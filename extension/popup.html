@@ -94,6 +94,47 @@
         padding: 1px 4px;
         border-radius: 4px;
       }
+      .cursor {
+        margin-top: 14px;
+        padding-top: 12px;
+        border-top: 1px solid #252b38;
+      }
+      .cursor h2 {
+        margin: 0 0 8px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #cfd6e6;
+      }
+      .cursor .line {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        margin-top: 6px;
+      }
+      .cursor select,
+      .cursor input[type="file"] {
+        min-width: 0;
+        flex: 1;
+        color: #cfd6e6;
+        background: #1b1f29;
+        border: 1px solid #2d3444;
+        border-radius: 6px;
+        padding: 4px 6px;
+        font-size: 11px;
+      }
+      .cursor img {
+        width: 28px;
+        height: 28px;
+        object-fit: contain;
+        border-radius: 4px;
+        background: #0d0f14;
+      }
+      #cursor-status {
+        margin-top: 6px;
+        font-size: 10px;
+        color: #8b93a7;
+        overflow-wrap: anywhere;
+      }
     </style>
   </head>
   <body>
@@ -118,6 +159,23 @@
       <dt>Dev reload</dt>
       <dd id="autoupdate">—</dd>
     </dl>
+    <div class="cursor">
+      <h2>Cursor</h2>
+      <div class="line">
+        <select id="cursor-preset" aria-label="Cursor preset">
+          <option value="whale">Whale (DSH)</option>
+          <option value="arrow">Arrow</option>
+          <option value="dot">Dot</option>
+          <option value="crosshair">Crosshair</option>
+        </select>
+        <button id="cursor-reset" type="button">Reset</button>
+      </div>
+      <div class="line">
+        <input id="cursor-file" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Upload cursor image" />
+        <img id="cursor-preview" alt="" hidden />
+      </div>
+      <div id="cursor-status">Local image only · PNG/JPEG/WebP · ≤256 KB</div>
+    </div>
     <p class="hint" id="hint"></p>
     <script src="popup.js"></script>
   </body>

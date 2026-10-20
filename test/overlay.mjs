@@ -35,6 +35,18 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 300))
   const pointerShot = await driver.request('tab.screenshot', { owner: 's1' })
   assert.notDeepEqual(fs.readFileSync(pointerShot.path), fs.readFileSync(baseShot.path), 'pointer must be visible in screenshots')
+  const presetCursor = await overlay({ op: 'pointer', selector: 'h1', preset: 'arrow', pulse: true })
+  assert.equal(presetCursor.ok, true)
+  const dotCursor = await overlay({ op: 'cursor', preset: 'dot', image: null, size: 40 })
+  assert.equal(dotCursor.ok, true)
+  assert.equal(dotCursor.preset, 'dot')
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+  const customCursor = await overlay({ op: 'cursor', image: png, size: 40 })
+  assert.equal(customCursor.ok, true)
+  assert.equal(customCursor.custom, true)
+  const badCursor = await overlay({ op: 'cursor', image: 'https://example.com/x.png' })
+  assert.equal(badCursor.ok, true)
+  assert.equal(badCursor.custom, false, 'remote cursor URLs are rejected')
   const hidden = await overlay({ op: 'hide-pointer' })
   assert.equal(hidden.visible, false)
 

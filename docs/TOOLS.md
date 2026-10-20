@@ -293,6 +293,8 @@ Show a persistent virtual pointer pinned to an element (ref/selector) or viewpor
 | `label` | string | no | Label next to the pointer (default "DSH"; empty hides it). |
 | `pulse` | boolean | no | Play a click ripple after moving. |
 | `enabled` | boolean | no | op=auto: enable/disable automatic follow (default true). |
+| `preset` | enum(whale | arrow | dot | crosshair) | no | Optional built-in cursor preset. The popup can also set a custom local image. |
+| `size` | integer | no | Cursor image size in CSS px (default 30). |
 | `tabId` | number | no | Optional tab id owned by this session. |
 | `frame` | boolean | no | Search all frames/iframes for the target (annotation inside an iframe). |
 

@@ -11,6 +11,10 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.24] - 2026-10-20
+
+- 光标外观可换：popup 内置鲸鱼/箭头/圆点/准星 + 本地 PNG/JPEG/WebP 上传（≤256KB，仅 data URL），`chrome_pointer` 新增 preset/size
+
 ## [0.2.23] - 2026-10-19
 
 - H4 跨会话读面收敛；H5 密码/OTP 字段硬确认 + login URL + credentials target；H6 chrome_verify guard/SSRF/artifact 脱敏；H7 close 有界；H8 crashed 状态/显式 restart

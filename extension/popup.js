@@ -84,3 +84,68 @@ chrome.runtime.sendMessage({ type: 'dsh-status' }, (status) => {
   }
   render(status)
 })
+
+const CURSOR_KEY = 'dshCursor'
+const CURSOR_MAX_BYTES = 256 * 1024
+const cursorPreset = document.getElementById('cursor-preset')
+const cursorFile = document.getElementById('cursor-file')
+const cursorPreview = document.getElementById('cursor-preview')
+const cursorStatus = document.getElementById('cursor-status')
+const cursorReset = document.getElementById('cursor-reset')
+
+function renderCursor(cursor) {
+  const value = { preset: 'whale', image: null, size: 30, ...(cursor || {}) }
+  cursorPreset.value = ['whale', 'arrow', 'dot', 'crosshair'].includes(value.preset) ? value.preset : 'whale'
+  if (value.image) {
+    cursorPreview.src = value.image
+    cursorPreview.hidden = false
+    cursorStatus.textContent = 'Custom local image active; choosing a preset removes it.'
+  } else {
+    cursorPreview.removeAttribute('src')
+    cursorPreview.hidden = true
+    cursorStatus.textContent = 'Preset active · local PNG/JPEG/WebP ≤256 KB'
+  }
+}
+
+function saveCursor(cursor) {
+  const value = { preset: cursor.preset || 'whale', image: cursor.image || null, size: 30 }
+  chrome.storage.local.set({ [CURSOR_KEY]: value }, () => {
+    if (chrome.runtime.lastError) {
+      cursorStatus.textContent = `Save failed: ${chrome.runtime.lastError.message}`
+      return
+    }
+    renderCursor(value)
+  })
+}
+
+chrome.storage.local.get(CURSOR_KEY, (stored) => renderCursor(stored?.[CURSOR_KEY]))
+cursorPreset.addEventListener('change', () => saveCursor({ preset: cursorPreset.value }))
+cursorReset.addEventListener('click', () => {
+  cursorFile.value = ''
+  saveCursor({ preset: 'whale', image: null })
+})
+cursorFile.addEventListener('change', () => {
+  const file = cursorFile.files?.[0]
+  if (!file) return
+  if (!/^image\/(png|jpe?g|webp)$/.test(file.type)) {
+    cursorStatus.textContent = 'Unsupported file type; use PNG, JPEG or WebP.'
+    cursorFile.value = ''
+    return
+  }
+  if (file.size > CURSOR_MAX_BYTES) {
+    cursorStatus.textContent = `Image is ${Math.round(file.size / 1024)} KB; limit is 256 KB.`
+    cursorFile.value = ''
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => {
+    const image = String(reader.result || '')
+    if (!/^data:image\/(?:png|jpe?g|webp);base64,/i.test(image)) {
+      cursorStatus.textContent = 'Could not read image.'
+      return
+    }
+    saveCursor({ preset: cursorPreset.value, image })
+  }
+  reader.onerror = () => { cursorStatus.textContent = 'Could not read image.' }
+  reader.readAsDataURL(file)
+})

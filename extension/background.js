@@ -809,18 +809,61 @@ const PAGE_ACTIONS = {
   hasText,
 }
 
+// Cursor appearance is user-configurable from the popup (built-in preset or a
+// locally uploaded image). Only data:image/(png|jpeg|webp);base64 is accepted;
+// remote URLs are deliberately not fetched, so a custom cursor cannot beacon.
+const CURSOR_STORAGE_KEY = 'dshCursor'
+const DEFAULT_CURSOR = { preset: 'whale', image: null, size: 30 }
+let cursorConfig = { ...DEFAULT_CURSOR }
+let cursorConfigReady = null
+function normalizeCursor(value) {
+  const preset = ['whale', 'arrow', 'dot', 'crosshair'].includes(value?.preset) ? value.preset : 'whale'
+  const image = typeof value?.image === 'string' && value.image.length <= 360000 &&
+    /^data:image\/(?:png|jpe?g|webp);base64,[A-Za-z0-9+/=\s]+$/i.test(value.image)
+    ? value.image
+    : null
+  const size = Number.isFinite(Number(value?.size)) ? Math.max(16, Math.min(64, Math.round(Number(value.size)))) : 30
+  return { preset, image, size }
+}
+async function loadCursorConfig() {
+  if (!cursorConfigReady) {
+    cursorConfigReady = (async () => {
+      try {
+        const stored = await chrome.storage.local.get(CURSOR_STORAGE_KEY)
+        cursorConfig = normalizeCursor(stored?.[CURSOR_STORAGE_KEY])
+      } catch {
+        cursorConfig = { ...DEFAULT_CURSOR }
+      }
+      return cursorConfig
+    })()
+  }
+  return cursorConfigReady
+}
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes?.[CURSOR_STORAGE_KEY]) {
+      cursorConfig = normalizeCursor(changes[CURSOR_STORAGE_KEY].newValue)
+      cursorConfigReady = Promise.resolve(cursorConfig)
+    }
+  })
+} catch {}
+loadCursorConfig().catch(() => {})
+
 // Virtual cursor: a small DSH-colored pointer injected into the page so the
 // user can see where the agent is acting (Codex-style "own cursor"). It is a
 // DOM overlay; screenshots taken right after an action include it.
-const CURSOR_HELPER_SRC = `
+function cursorHelperSrc(cursor = cursorConfig) {
+  const CONFIG = JSON.stringify(normalizeCursor(cursor))
+  return `
 (() => {
   const ID = '__dsh_cursor__'
-  if (window.__dshCursor && window.__dshCursorVersion === 2) return
+  const CONFIG = ${CONFIG}
+  if (window.__dshCursor && window.__dshCursorVersion === 3) return
   if (window.__dshCursor) {
     try { document.getElementById(ID)?.remove() } catch {}
     window.__dshCursor = null
   }
-  window.__dshCursorVersion = 2
+  window.__dshCursorVersion = 3
   window.__dshCursor = (x, y, kind) => {
     try {
       let cursor = document.getElementById(ID)
@@ -839,6 +882,13 @@ const CURSOR_HELPER_SRC = `
         cursor.appendChild(dot)
         cursor.appendChild(label)
         document.documentElement.appendChild(cursor)
+        if (window.__dshOverlay) {
+          // The overlay is the visible pointer and supports custom images;
+          // hide the fallback node so two cursors are never drawn.
+          ring.style.display = 'none'
+          dot.style.display = 'none'
+          label.style.display = 'none'
+        }
       }
       cursor.style.transform = 'translate(' + x + 'px,' + y + 'px)'
       cursor.style.opacity = '1'
@@ -856,8 +906,11 @@ const CURSOR_HELPER_SRC = `
         })
       }
       try {
-        if (window.__dshOverlay && window.__dshOverlay.auto !== false) {
-          window.__dshOverlay.handle({ op: 'follow', x, y, label: 'DSH · ' + kind, pulse: kind === 'click' || kind === 'type' || kind === 'key' })
+        if (window.__dshOverlay) {
+          window.__dshOverlay.handle({ op: 'cursor', preset: CONFIG.preset, image: CONFIG.image, size: CONFIG.size })
+          if (window.__dshOverlay.auto !== false) {
+            window.__dshOverlay.handle({ op: 'follow', x, y, label: 'DSH · ' + kind, pulse: kind === 'click' || kind === 'type' || kind === 'key' })
+          }
         }
       } catch {}
       clearTimeout(cursor.__dshTimer)
@@ -866,6 +919,7 @@ const CURSOR_HELPER_SRC = `
   }
 })();
 `
+}
 
 // Shared page-side detector for password/OTP/payment fields. The function body
 // is self-contained and injected into every page evaluation through
@@ -1187,7 +1241,8 @@ async function withDebugger(tabId, fn, options = {}) {
 }
 
 async function evalInTarget(target, fn, args, timeoutMs = 10000) {
-  const expression = `(() => { ${CURSOR_HELPER_SRC}
+  await loadCursorConfig()
+  const expression = `(() => { ${cursorHelperSrc(await loadCursorConfig())}
     ${DEEP_HELPERS_SRC}
     ${PAGE_HELPER_SRC}
     return (${fn.toString()})(...${JSON.stringify(args)})
@@ -2071,10 +2126,11 @@ function captureRequests(owner, params) {
 }
 
 async function evalInTab(tabId, fn, args, timeoutMs, dialogOptions) {
+  await loadCursorConfig()
   return withDebugger(
     tabId,
     async (session) => {
-      const expression = `(() => { ${CURSOR_HELPER_SRC}
+      const expression = `(() => { ${cursorHelperSrc(await loadCursorConfig())}
       ${DEEP_HELPERS_SRC}
       ${PAGE_HELPER_SRC}
       return (${fn.toString()})(...${JSON.stringify(args)})
@@ -2401,8 +2457,8 @@ async function readFrameTree(target) {
   return out
 }
 
-function frameExpression(fn, args) {
-  return `(() => { ${CURSOR_HELPER_SRC}
+function frameExpression(fn, args, helperSource = cursorHelperSrc()) {
+  return `(() => { ${helperSource}
     ${DEEP_HELPERS_SRC}
     ${PAGE_HELPER_SRC}
     return (${fn.toString()})(...${JSON.stringify(args)})
@@ -2410,13 +2466,14 @@ function frameExpression(fn, args) {
 }
 
 async function evalInFrameContext(target, frameId, fn, args, timeoutMs = 15000) {
+  const helperSource = cursorHelperSrc(await loadCursorConfig())
   const world = await chrome.debugger.sendCommand(target, 'Page.createIsolatedWorld', {
     frameId,
     worldName: 'dsh-frame-actions',
   })
   const response = await withTimeout(
     chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
-      expression: frameExpression(fn, args),
+      expression: frameExpression(fn, args, helperSource),
       contextId: world.executionContextId,
       returnByValue: true,
       awaitPromise: true,
@@ -2882,6 +2939,13 @@ async function tabs(owner, params) {
 
 async function overlayAction(owner, params) {
   await ensureNotPaused(owner)
+  const storedCursor = await loadCursorConfig()
+  params = {
+    ...params,
+    preset: params.preset ?? storedCursor.preset,
+    image: params.image !== undefined ? params.image : storedCursor.image,
+    size: params.size ?? storedCursor.size,
+  }
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   if (params.frame) {
     const payload = { ...params }
