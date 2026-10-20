@@ -1,5 +1,7 @@
 # Windows 预览版测试说明（0.1.99）
 
+> ⚠️ 本页已过期（0.1.99）。0.2.23 请使用 [WINDOWS-TEST-GUIDE-0.2.23.md](WINDOWS-TEST-GUIDE-0.2.23.md)。
+
 感谢帮忙测试！这是 DSH Desktop Chrome 插件的 **Windows 预览版**，主要验证 Windows 上 Chrome 能否正常拉起 native host，以及基础浏览器工具是否可用。
 
 ## 1. 获取测试包
