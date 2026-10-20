@@ -80,3 +80,14 @@ Chrome 峰值在 1583.6–1944.1 MiB 之间波动（20 轮无趋势）；每轮�
 - `benchmarks/lib/fake-driver.mjs` — 无 Chrome 对照与故障注入
 - `tests/soak/soak-logic.mjs`、`tests/soak/soak-real.mjs`
 - `benchmarks/README.md` — 操作说明与字段解释
+
+## 40 轮复测（2026-10-20）
+
+同一固定 workload 跑 40 轮：**40/40 PASS、0 不变量失败、288.1s**。
+
+- Node RSS：baseline 56.7 → 最终 45.8 MiB（**retainedAfterRun −10.94 MiB**，after-first-round −21.80 MiB，RSS 反而下降）；
+- Node heapUsed：+4.13 MiB，但曲线在轮次后段回落（第 30 轮后 heap/rss 均下降），未呈现每轮固定增长；
+- Chrome 峰值 1889.5 MiB / 15 proc（区间 1603–1889，无趋势）；每轮关闭后进程树归零；
+- 对象峰值/归零与 20 轮一致；captureBodyBytes 峰值 4.0 KiB，stop 后 0。
+
+结论：**40 轮数据不支持“每轮固定泄漏”**；20 轮观察到的 heapUsed 缓慢上升属于 V8/报告对象的收敛曲线，RSS 在长跑后回落。报告：`benchmarks/reports/2026-10-20-macos-arm64-40rounds.{json,md}`。

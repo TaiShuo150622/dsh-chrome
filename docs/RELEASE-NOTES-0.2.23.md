@@ -17,7 +17,7 @@
 
 - `CI=1 npm test`：exit 0，61 个测试文件；
 - 3 轮真实 headless soak：3/3 PASS、0 不变量失败、11.4s；Chrome peak 1745.5MiB/15 proc；Node rss peak 88.8MiB；
-- 20 轮 soak 基线仍见 `docs/MEMORY-SOAK.md`（本次 3 轮仅做回归，长跑/40+ 轮仍待）。
+- 20 轮 soak 基线见 `docs/MEMORY-SOAK.md`；40 轮复测 **40/40 PASS、0 不变量失败、288.1s**，RSS retainedAfterRun −10.94MiB，不支持每轮固定泄漏；3 轮回归也通过。
 
 ## 仍待
 
