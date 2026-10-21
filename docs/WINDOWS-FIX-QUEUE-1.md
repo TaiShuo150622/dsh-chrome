@@ -14,7 +14,7 @@
   - `history()` 不再用 `chrome.tabs.goBack/goForward`；用 `Page.getNavigationHistory` + `Page.navigateToHistoryEntry`；越界明确 `NO_HISTORY_ENTRY`；等待 load。
   - 保留 reload 现有行为；headless 不回归。
   - 补真实 Chrome 测试：example.com→iana.org→back/forward 各 3 次；新 tab 无 history 错误。
-- [ ] W3（P3）tab focus 更新 activeTabId
+- [x] W3（P3）tab focus 更新 activeTabId
   - `onTabActivated()` 命中本会话 tab 时更新 `entry.activeTabId`、清 paused、保存；`focus` 同时直接写 `activeTabId`，必要时聚焦 window。
   - `tabs list` 的 `*` 跟随；后续 snapshot/screenshot 用新 active。
   - 补测试：双 tab focus 后 list/snapshot 切换；onTabActivated 不创建新 owner。
