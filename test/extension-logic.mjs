@@ -55,6 +55,12 @@ const tabUpdates = []
 // focus + state here (screencast only emits frames for a visible tab).
 const windows = new Map([[1, { id: 1, focused: true, state: 'normal' }]])
 const windowUpdates = []
+// W1: Page.bringToFront behavior and capture hangs are controllable per test.
+// bringToFrontActivates defaults to true (real Chrome activates the tab);
+// tests flip it to false/error to exercise the extension-side fallback.
+let bringToFrontActivates = true
+let bringToFrontError = false
+let screenshotHangCount = 0
 // Session tabs are grouped; a collapsed group is another reason Chrome does not
 // render the tab (makeTabVisibleForScreencast expands it).
 const tabGroups = new Map([[5, { id: 5, collapsed: true, title: 'DSH · demo-project', color: 'blue' }]])
@@ -146,6 +152,13 @@ const chrome = {
       const tab = tabs.get(tabId)
       if (!tab) throw new Error(`no tab ${tabId}`)
       tabUpdates.push({ tabId, ...props })
+      // Real Chrome keeps one active tab per window: activating a tab clears
+      // the previous one, which the screenshot restore/focus paths rely on.
+      if (props?.active === true) {
+        for (const other of tabs.values()) {
+          if (other.id !== tabId && other.windowId === tab.windowId) other.active = false
+        }
+      }
       Object.assign(tab, props)
       return tab
     },
@@ -276,7 +289,31 @@ const chrome = {
         }
       }
       if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 }
-      if (method === 'Page.captureScreenshot') return { data: 'iVBORw0KGgo=' }
+      if (method === 'Page.bringToFront') {
+        debuggerCalls.push({ method: 'Page.bringToFrontCalled', target })
+        if (bringToFrontError) throw new Error('Page.bringToFront failed')
+        if (bringToFrontActivates) {
+          const tab = tabs.get(target.tabId)
+          if (tab) {
+            for (const other of tabs.values()) {
+              if (other.windowId === tab.windowId) other.active = false
+            }
+            tab.active = true
+          }
+        }
+        return {}
+      }
+      if (method === 'Page.captureScreenshot') {
+        // A capture that never answers models the Windows hang (frozen tab,
+        // collapsed group): the extension-side timeout must fire, not the
+        // provider's 60s call timeout.
+        if (screenshotHangCount > 0) {
+          screenshotHangCount -= 1
+          debuggerCalls.push({ method: 'Page.captureScreenshotHang', target })
+          return new Promise(() => {})
+        }
+        return { data: 'iVBORw0KGgo=' }
+      }
       if (method === 'Page.handleJavaScriptDialog') {
         dialogCommands.push(params)
         return {}
@@ -819,6 +856,68 @@ check('tab.screenshot with ref returns base64 data', typeof refShot?.dataBase64 
 const focus = await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'focus', tabId: 7, owner: 's1' }, id: 'tabs-focus' })
 check('tab.tabs op=focus activates the tab', focus?.focused === true && tabs.get(7)?.active === true)
 
+// W1: screenshots from a tab that is not rendered by Chrome. A background tab
+// inside a collapsed group used to hang Page.captureScreenshot on Windows;
+// the extension now brings it to the front (CDP first), expands the group and
+// restores whatever the user was looking at.
+tabs.set(130, { id: 130, url: 'https://user.example/', title: 'User tab', active: true, status: 'complete', windowId: 1 })
+tabs.get(7).active = false
+tabs.get(7).groupId = 5
+tabGroups.get(5).collapsed = true
+windows.get(1).focused = false
+let shotMark = debuggerCalls.length
+const backgroundShot = await sandbox.handleRequest({ method: 'tab.screenshot', params: { owner: 's1' }, id: 'shot-collapsed-group' })
+check(
+  'screenshot succeeds for an inactive tab in a collapsed group',
+  typeof backgroundShot?.dataBase64 === 'string',
+  JSON.stringify(backgroundShot)?.slice(0, 120),
+)
+check(
+  'screenshot asks CDP Page.bringToFront for a background tab',
+  debuggerCalls.slice(shotMark).some((call) => call.method === 'Page.bringToFrontCalled' && call.target?.tabId === 7),
+)
+check(
+  'screenshot expands the collapsed session group',
+  tabGroups.get(5)?.collapsed === false,
+  JSON.stringify(tabGroupUpdates.slice(-2)),
+)
+check(
+  'screenshot restores the previously active tab',
+  tabs.get(130)?.active === true && tabs.get(7)?.active === false,
+  JSON.stringify({ user: tabs.get(130)?.active, session: tabs.get(7)?.active }),
+)
+check(
+  'screenshot does not count the auto-activation as a user switch',
+  vm.runInContext('expectedActivations', sandbox).has(7) && vm.runInContext('expectedActivations', sandbox).has(130),
+)
+
+// W1: Page.bringToFront can fail (or resolve without activating the tab). The
+// extension-side repair (tabs.update + tabGroups + windows) must still make the
+// screenshot work and restore the previous tab.
+tabs.set(131, { id: 131, url: 'https://user2.example/', title: 'User tab 2', active: true, status: 'complete', windowId: 1 })
+tabs.get(130).active = false
+tabs.get(7).active = false
+tabGroups.get(5).collapsed = false
+bringToFrontActivates = false
+bringToFrontError = true
+const tabUpdatesBeforeFallback = tabUpdates.length
+const fallbackShot = await sandbox.handleRequest({ method: 'tab.screenshot', params: { owner: 's1' }, id: 'shot-bring-to-front-failed' })
+check('screenshot falls back to extension activation when Page.bringToFront fails', typeof fallbackShot?.dataBase64 === 'string')
+check(
+  'the fallback activates the session tab through the tabs API',
+  tabUpdates.slice(tabUpdatesBeforeFallback).some((update) => update.tabId === 7 && update.active === true),
+  JSON.stringify(tabUpdates.slice(tabUpdatesBeforeFallback)),
+)
+check('the fallback still restores the previously active tab', tabs.get(131)?.active === true)
+bringToFrontActivates = true
+bringToFrontError = false
+tabs.delete(130)
+tabs.delete(131)
+tabs.get(7).active = true
+tabGroups.get(5).collapsed = false
+windows.get(1).focused = true
+windows.get(1).state = 'normal'
+
 // readable group label reaches tabGroups.update on new tab
 const labelled = await sandbox.handleRequest({
   method: 'tab.tabs',
@@ -1254,6 +1353,56 @@ check(
   afterDetach != null && counts.attach === 1 && counts.detach === 1,
   JSON.stringify(counts),
 )
+
+// W1: a Page.captureScreenshot that never answers must fail with a stable
+// extension-side code, within the extension budget (not the provider's 60s
+// timeout), and must not leave the tab attached or its refs stuck.
+const liveDebuggerSessions = vm.runInContext('debuggerSessions', sandbox)
+const shotLimits = vm.runInContext('SCREENSHOT_LIMITS', sandbox)
+const savedShotLimits = { ...shotLimits }
+shotLimits.commandMs = 40
+shotLimits.budgetMs = 260
+shotLimits.retryDelayMs = 1
+screenshotHangCount = 2
+let timeoutShotError = null
+mark = debuggerCalls.length
+const timeoutShotStarted = Date.now()
+try {
+  await sandbox.handleRequest({ method: 'tab.screenshot', params: { owner: 's1' }, id: 'shot-timeout' })
+} catch (error) {
+  timeoutShotError = error
+}
+const timeoutShotElapsed = Date.now() - timeoutShotStarted
+counts = sessionCounts(mark)
+check(
+  'a hanging capture fails with SCREENSHOT_TIMEOUT inside the extension budget',
+  timeoutShotError?.code === 'SCREENSHOT_TIMEOUT' && timeoutShotElapsed < 2000,
+  `${timeoutShotError?.code || timeoutShotError?.message} after ${timeoutShotElapsed}ms`,
+)
+check(
+  'a timed-out screenshot releases its debugger session and detaches both attempts',
+  liveDebuggerSessions.size === 0 && counts.attach === 2 && counts.detach === 2,
+  JSON.stringify({ sessions: liveDebuggerSessions.size, ...counts }),
+)
+screenshotHangCount = 0
+mark = debuggerCalls.length
+const recoveredShot = await sandbox.handleRequest({ method: 'tab.screenshot', params: { owner: 's1' }, id: 'shot-after-timeout' })
+counts = sessionCounts(mark)
+check(
+  'the next screenshot re-attaches and succeeds after a timeout',
+  typeof recoveredShot?.dataBase64 === 'string' && counts.attach === 1 && counts.detach === 1,
+  JSON.stringify(counts),
+)
+screenshotHangCount = 1
+mark = debuggerCalls.length
+const retriedShot = await sandbox.handleRequest({ method: 'tab.screenshot', params: { owner: 's1' }, id: 'shot-retry-after-hang' })
+counts = sessionCounts(mark)
+check(
+  'a hung first attempt is retried once and succeeds',
+  typeof retriedShot?.dataBase64 === 'string' && counts.attach === 2 && counts.detach === 2,
+  JSON.stringify(counts),
+)
+Object.assign(shotLimits, savedShotLimits)
 
 // C3: capture reclamation. A stopped capture keeps a redacted summary for a
 // bounded TTL/count, then releases entries/bodies/timers; bodies are opt-in.

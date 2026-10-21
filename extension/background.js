@@ -1037,10 +1037,15 @@ const DEEP_HELPERS_SRC = `
 `
 
 function withTimeout(promise, timeoutMs, code, message) {
-  return Promise.race([
-    promise,
-    new Promise((_resolve, reject) => setTimeout(() => reject(bridgeError(code, message)), timeoutMs)),
-  ])
+  // Keep the timer handle so a command that answers early does not leave a
+  // pending timer behind: a service worker may be evicted long before it fires.
+  let timer = null
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(bridgeError(code, message)), timeoutMs)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
 }
 
 function dialogPolicy(dialogOptions, opening) {
@@ -1056,6 +1061,11 @@ function dialogPolicy(dialogOptions, opening) {
 }
 
 const debuggerSessions = new Map()
+
+// A detach that never answers must not keep a failed operation (screenshot,
+// page action) open for the rest of the worker's life. The target is dropped
+// from the map first, so the next action re-attaches or recovers the orphan.
+const DEBUGGER_DETACH_TIMEOUT_MS = 5000
 
 function sessionFor(tabId) {
   let session = debuggerSessions.get(tabId)
@@ -1234,8 +1244,18 @@ async function withDebugger(tabId, fn, options = {}) {
     session.interceptDialogs = false
     session.dialogOptions = null
     if (session.refs === 0 && !session.capture && !session.screencast) {
+      // Remove the entry before detaching: even if detach never answers, the
+      // next call must not reuse a session that is on its way out. The bounded
+      // detach keeps a hung detach from extending a failed operation (W1); a
+      // target Chrome still holds attached is recovered by the attach path's
+      // "Another debugger is already attached" detach + retry.
       debuggerSessions.delete(tabId)
-      await chrome.debugger.detach(session.target).catch(() => {})
+      await withTimeout(
+        Promise.resolve(chrome.debugger.detach(session.target)).catch(() => {}),
+        DEBUGGER_DETACH_TIMEOUT_MS,
+        'DETACH_TIMEOUT',
+        `debugger detach timed out after ${DEBUGGER_DETACH_TIMEOUT_MS}ms`,
+      ).catch(() => {})
     }
   }
 }
@@ -2266,13 +2286,200 @@ async function elementBoxInFrame(tabId, frameRef) {
   })
 }
 
+// W1: a Page.captureScreenshot that never answers used to hang until the
+// provider's 60s call timeout, leaving the tab attached for the rest of the
+// worker's life. Every attempt is now bounded on the extension side, one
+// visibility repair + retry follows, and the whole call stays well below the
+// provider budget. test/extension-logic.mjs shrinks these through the object.
+const SCREENSHOT_LIMITS = {
+  commandMs: 15000,
+  budgetMs: 30000,
+  attempts: 2,
+  retryDelayMs: 250,
+}
+
+async function activeTabInWindow(windowId) {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, windowId })
+    const scoped = Number.isFinite(windowId) ? tabs.filter((tab) => tab.windowId === windowId) : tabs
+    return scoped.find((tab) => tab.active) ?? tabs.find((tab) => tab.active) ?? null
+  } catch {
+    return null
+  }
+}
+
+// What the user was looking at before the screenshot had to move the tab.
+// Only the previously active tab (and a minimized/focused window state) is
+// restored; group expansion is left as is because a collapsed group hides the
+// page the user is currently working in.
+async function screenshotFocusState(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    const windowId = Number.isFinite(tab.windowId) ? tab.windowId : null
+    const active = windowId == null ? null : await activeTabInWindow(windowId)
+    let window = null
+    try {
+      window = windowId == null ? null : await chrome.windows.get(windowId)
+    } catch {
+      window = null
+    }
+    return {
+      targetTabId: tabId,
+      windowId,
+      restoreTabId: active && active.id !== tabId ? active.id : null,
+      windowState: window?.state || null,
+      windowFocused: Boolean(window?.focused),
+    }
+  } catch {
+    return null
+  }
+}
+
+async function restoreScreenshotFocus(state) {
+  if (!state?.restoreTabId) return
+  try {
+    // Do not steal the active tab back if the user (or another action) moved on
+    // while the screenshot was running.
+    const current = state.windowId == null ? null : await activeTabInWindow(state.windowId)
+    if (!current || current.id !== state.targetTabId) return
+    expectedActivations.add(state.restoreTabId)
+    await chrome.tabs.update(state.restoreTabId, { active: true })
+    diag('screenshot-restore-active', { tabId: state.restoreTabId })
+  } catch {
+    // tab closed since the screenshot started
+  }
+  try {
+    if (state.windowId == null) return
+    const window = await chrome.windows.get(state.windowId)
+    if (state.windowState === 'minimized' && window?.state !== 'minimized') {
+      await chrome.windows.update(state.windowId, { state: 'minimized' })
+    } else if (state.windowFocused && window && !window.focused) {
+      await chrome.windows.update(state.windowId, { focused: true })
+    }
+  } catch {
+    // window API unavailable; the active tab is still restored
+  }
+}
+
+/**
+ * A background tab in a collapsed group is not rendered on Windows and
+ * Page.captureScreenshot can hang there. Prefer CDP Page.bringToFront (it does
+ * not need the tabs API), then fall back to the same activation/group/window
+ * repair the screencast uses. `forceExtension` skips the CDP attempt on the
+ * retry: if Page.bringToFront resolved but the tab stayed invisible, the
+ * extension-side repair is what actually works.
+ */
+async function ensureScreenshotVisibility(tabId, target, { forceExtension = false, timeoutMs = 3000 } = {}) {
+  let before = await readTabVisibility(tabId)
+  if (before?.visible) return { visible: true, method: 'already-visible' }
+  let cdpError = null
+  if (!forceExtension) {
+    if (!before?.tabActive) expectedActivations.add(tabId)
+    try {
+      await withTimeout(
+        chrome.debugger.sendCommand(target, 'Page.bringToFront'),
+        Math.min(timeoutMs, SCREENSHOT_LIMITS.commandMs),
+        'SCREENSHOT_TIMEOUT',
+        'Page.bringToFront timed out',
+      )
+    } catch (error) {
+      cdpError = error?.message || String(error)
+    }
+    const afterCdp = await readTabVisibility(tabId)
+    if (afterCdp?.visible) return { visible: true, method: 'cdp-bring-to-front', cdpError }
+    before = afterCdp || before
+  }
+  const visibility = await makeTabVisibleForScreencast(tabId)
+  const after = await readTabVisibility(tabId)
+  diag('screenshot-visibility-repair', {
+    tabId,
+    forceExtension,
+    cdpError,
+    activated: visibility?.activated,
+    expandedGroup: visibility?.expandedGroup,
+    focusedWindow: visibility?.focusedWindow,
+    restoredWindow: visibility?.restoredWindow,
+    visible: Boolean(after?.visible),
+  })
+  return {
+    visible: Boolean(after?.visible),
+    method: 'extension-visible',
+    cdpError,
+    tabActive: Boolean(after?.tabActive),
+    tabGroupCollapsed: after?.tabGroupCollapsed ?? null,
+    windowState: after?.windowState ?? null,
+  }
+}
+
+function isRetryableScreenshotError(error) {
+  return error?.code === 'SCREENSHOT_TIMEOUT' || error?.code === 'SCREENSHOT_FAILED'
+}
+
+async function screenshotAttempt(tabId, { effectiveClip, elementRef, fullPage, forceVisibility, commandMs }) {
+  return withDebugger(tabId, async (session) => {
+    const target = session.target
+    const visibility = await ensureScreenshotVisibility(tabId, target, {
+      forceExtension: forceVisibility,
+      timeoutMs: commandMs,
+    })
+    let finalClip = effectiveClip
+    if (!finalClip && Number.isFinite(elementRef)) {
+      const box = await evalInTarget(target, elementBox, [elementRef, ''], Math.min(10000, commandMs))
+      if (!box || box.width <= 0 || box.height <= 0) {
+        throw bridgeError('REF_STALE', `ref ${elementRef} has no visible box`)
+      }
+      finalClip = { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 }
+    }
+    if (fullPage) {
+      let dims
+      try {
+        dims = await withTimeout(
+          chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+            expression:
+              '({ width: Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0), height: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0) })',
+            returnByValue: true,
+          }),
+          Math.min(commandMs, 10000),
+          'SCREENSHOT_TIMEOUT',
+          `full-page measurement did not answer within ${Math.min(commandMs, 10000)}ms`,
+        )
+      } catch (error) {
+        if (error?.code === 'SCREENSHOT_TIMEOUT') throw error
+        throw bridgeError('SCREENSHOT_FAILED', `cannot measure the full page: ${error?.message || String(error)}`)
+      }
+      const width = Math.min(20000, Math.max(1, Math.round(Number(dims?.result?.value?.width) || 0)))
+      const height = Math.min(20000, Math.max(1, Math.round(Number(dims?.result?.value?.height) || 0)))
+      finalClip = { x: 0, y: 0, width, height, scale: 1 }
+    }
+    let response
+    try {
+      response = await withTimeout(
+        chrome.debugger.sendCommand(target, 'Page.captureScreenshot', {
+          format: 'png',
+          captureBeyondViewport: fullPage,
+          ...(finalClip ? { clip: finalClip } : {}),
+        }),
+        commandMs,
+        'SCREENSHOT_TIMEOUT',
+        `Page.captureScreenshot did not answer within ${commandMs}ms`,
+      )
+    } catch (error) {
+      if (error?.code === 'SCREENSHOT_TIMEOUT') throw error
+      throw bridgeError('SCREENSHOT_FAILED', `Page.captureScreenshot failed: ${error?.message || String(error)}`)
+    }
+    if (!response?.data) {
+      throw bridgeError('SCREENSHOT_FAILED', 'Page.captureScreenshot returned no data')
+    }
+    return { dataBase64: response.data, visibility }
+  })
+}
+
 async function screenshot(owner, params) {
   const tabId = await resolveOwnedTabId(owner, params?.tabId)
-  const target = { tabId }
   const highlight = Boolean(params?.highlight)
   const fullPage = Boolean(params?.fullPage)
   const elementRef = Number(params?.ref)
-  if (highlight) await callInPage(tabId, 'overlayDraw', [], 10000).catch(() => null)
+  const restoreState = await screenshotFocusState(tabId)
   let clip
   const rawClip = params?.clip
   if (rawClip && typeof rawClip === 'object') {
@@ -2286,41 +2493,51 @@ async function screenshot(owner, params) {
     clip = { x, y, width, height, scale: 1 }
   }
   let effectiveClip = clip
-  if (!effectiveClip && params?.frameRef) {
-    const box = await elementBoxInFrame(tabId, String(params.frameRef))
-    effectiveClip = { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 }
-  }
   try {
-    return await withDebugger(tabId, async (session) => {
-      const target = session.target
-      let finalClip = effectiveClip
-      if (!finalClip && Number.isFinite(elementRef)) {
-        const box = await evalInTarget(target, elementBox, [elementRef, ''], 10000)
-        if (!box || box.width <= 0 || box.height <= 0) {
-          throw bridgeError('REF_STALE', `ref ${elementRef} has no visible box`)
-        }
-        finalClip = { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 }
-      }
-      if (fullPage) {
-        const dims = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
-          expression:
-            '({ width: Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0), height: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0) })',
-          returnByValue: true,
+    if (highlight) await callInPage(tabId, 'overlayDraw', [], 10000).catch(() => null)
+    if (!effectiveClip && params?.frameRef) {
+      const box = await elementBoxInFrame(tabId, String(params.frameRef))
+      effectiveClip = { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 }
+    }
+    const deadline = Date.now() + SCREENSHOT_LIMITS.budgetMs
+    const attempts = Math.max(1, Math.min(3, Number(SCREENSHOT_LIMITS.attempts) || 1))
+    let lastError = null
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) break
+      const commandMs = Math.max(1, Math.min(SCREENSHOT_LIMITS.commandMs, remaining))
+      try {
+        const shot = await screenshotAttempt(tabId, {
+          effectiveClip,
+          elementRef,
+          fullPage,
+          forceVisibility: attempt > 1,
+          commandMs,
         })
-        const width = Math.min(20000, Math.max(1, Math.round(Number(dims?.result?.value?.width) || 0)))
-        const height = Math.min(20000, Math.max(1, Math.round(Number(dims?.result?.value?.height) || 0)))
-        finalClip = { x: 0, y: 0, width, height, scale: 1 }
+        return { dataBase64: shot.dataBase64 }
+      } catch (error) {
+        lastError = error
+        diag('screenshot-attempt-failed', {
+          tabId,
+          attempt,
+          code: error?.code || 'INTERNAL',
+          error: String(error?.message || error).slice(0, 200),
+        })
+        if (attempt >= attempts || !isRetryableScreenshotError(error)) break
+        // The retry repairs visibility from the extension side (activate /
+        // expand group / focus window) before re-attaching and capturing.
+        await makeTabVisibleForScreencast(tabId).catch(() => {})
+        await new Promise((resolve) => setTimeout(resolve, SCREENSHOT_LIMITS.retryDelayMs))
       }
-      const response = await chrome.debugger.sendCommand(target, 'Page.captureScreenshot', {
-        format: 'png',
-        captureBeyondViewport: fullPage,
-        ...(finalClip ? { clip: finalClip } : {}),
-      })
-      if (!response?.data) throw bridgeError('INTERNAL', 'empty screenshot data')
-      return { dataBase64: response.data }
-    })
+    }
+    if (lastError) throw lastError
+    throw bridgeError(
+      'SCREENSHOT_TIMEOUT',
+      `screenshot did not finish within ${SCREENSHOT_LIMITS.budgetMs}ms; the page may be busy or the tab may not be renderable`,
+    )
   } finally {
     if (highlight) await callInPage(tabId, 'overlayRemove', [], 10000).catch(() => null)
+    await restoreScreenshotFocus(restoreState)
   }
 }
 
