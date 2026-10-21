@@ -5,6 +5,8 @@ import path from 'node:path'
 
 import { DEFAULT_CONFIG, PRESETS, loadConfig, presetToMode } from '../src/config.js'
 import { BrowserContextManager, ContextError } from '../src/contexts.js'
+import { createContextTool } from '../src/tools-context.js'
+import { outputSchema, renderText } from '../src/tool-support.js'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-browser-contexts-'))
 const home = path.join(root, 'home')
@@ -278,6 +280,89 @@ try {
   await manager.closeAll()
   await assert.rejects(() => manager.create({ owner: 'x', preset: 'collab' }), (error) => error.code === 'UNSUPPORTED_MODE')
   await manager.closeAll()
+
+  // W4: closing the active context auto-falls back to the most recently used
+  // remaining context of the same owner (ties: smallest contextId). Only the
+  // last close leaves the session without an active context.
+  let w4Now = 5_000_000
+  const makeW4Manager = (clock = null) =>
+    new BrowserContextManager({
+      config: {
+        ...DEFAULT_CONFIG,
+        browser: { ...DEFAULT_CONFIG.browser, preset: 'sandbox', maxContexts: 3, idleTimeoutMs: 60_000 },
+      },
+      home,
+      now: clock || (() => w4Now++),
+      createDriver: async () => ({ async close() {} }),
+    })
+
+  const mruManager = makeW4Manager()
+  const mruContexts = []
+  for (let index = 0; index < 3; index += 1) mruContexts.push(await mruManager.create({ owner: 'mru' }))
+  assert.equal(mruManager.activeFor('mru').contextId, mruContexts[2].contextId)
+  await mruManager.close(mruContexts[2].contextId)
+  assert.equal(
+    mruManager.activeFor('mru').contextId,
+    mruContexts[1].contextId,
+    'closing the active context falls back to the most recently used remainder',
+  )
+  await mruManager.close(mruContexts[1].contextId)
+  assert.equal(mruManager.activeFor('mru').contextId, mruContexts[0].contextId)
+  await mruManager.close(mruContexts[0].contextId)
+  assert.equal(mruManager.activeFor('mru'), null, 'closing the last context leaves no active context')
+
+  const tieManager = makeW4Manager(() => 7_000_000)
+  const tieContexts = []
+  for (let index = 0; index < 3; index += 1) tieContexts.push(await tieManager.create({ owner: 'tie' }))
+  assert.equal(tieContexts[0].lastUsedAt, tieContexts[2].lastUsedAt, 'the fixed clock ties every context')
+  await tieManager.close(tieContexts[2].contextId)
+  const smallestId = [tieContexts[0], tieContexts[1]].sort((a, b) => (a.contextId < b.contextId ? -1 : 1))[0]
+  assert.equal(
+    tieManager.activeFor('tie').contextId,
+    smallestId.contextId,
+    'equal lastUsedAt is broken by the smallest contextId',
+  )
+  await tieManager.closeAll()
+
+  // chrome_context: current may not turn into NO_ACTIVE_CONTEXT while another
+  // context remains, close reports the fallback, and an explicit use survives
+  // closing a different context.
+  const toolManager = makeW4Manager()
+  const contextTool = createContextTool({
+    contexts: toolManager,
+    contextViewer: null,
+    ownerOf: () => 'tool-owner',
+    outputSchema,
+    renderText,
+  })
+  const toolContexts = []
+  for (let index = 0; index < 3; index += 1) toolContexts.push(await toolManager.create({ owner: 'tool-owner' }))
+  const [ctxFirst, ctxSecond, ctxThird] = toolContexts
+  const used = await contextTool.execute({ op: 'use', contextId: ctxFirst.contextId }, {})
+  assert.equal(used.ok, true)
+  assert.equal(toolManager.activeFor('tool-owner').contextId, ctxFirst.contextId)
+  const closedOther = await contextTool.execute({ op: 'close', contextId: ctxSecond.contextId }, {})
+  assert.equal(closedOther.ok, true)
+  assert.equal(closedOther.fallback, undefined, 'closing a non-active context must not report a fallback')
+  assert.equal(
+    toolManager.activeFor('tool-owner').contextId,
+    ctxFirst.contextId,
+    'an explicit use is not overridden by closing another context',
+  )
+  const closedActive = await contextTool.execute({ op: 'close', contextId: ctxFirst.contextId }, {})
+  assert.equal(closedActive.ok, true)
+  assert.equal(closedActive.fallback, true)
+  assert.equal(closedActive.activeContextId, ctxThird.contextId)
+  assert.match(String(closedActive.hint), /most recently used remaining context/)
+  const currentAfterFallback = await contextTool.execute({ op: 'current' }, {})
+  assert.equal(currentAfterFallback.ok, true, 'current must not be NO_ACTIVE_CONTEXT after an active close')
+  assert.equal(currentAfterFallback.contextId, ctxThird.contextId)
+  const closeRender = contextTool.output.render({ op: 'close' }, closedActive)[0]?.text || ''
+  assert.ok(closeRender.includes('most recently used remaining context'), closeRender)
+  await contextTool.execute({ op: 'close', contextId: ctxThird.contextId }, {})
+  const currentAfterLast = await contextTool.execute({ op: 'current' }, {})
+  assert.equal(currentAfterLast.ok, false)
+  assert.equal(currentAfterLast.error, 'NO_ACTIVE_CONTEXT', 'closing the last context still reports NO_ACTIVE_CONTEXT')
 
   assert.deepEqual(PRESETS, ['sandbox', 'sandbox-persistent', 'debug', 'collab'])
   console.log('BROWSER CONTEXTS TEST: PASS')

@@ -16,10 +16,17 @@
 | `list` | 列出当前会话的 context |
 | `current` | 当前 active context |
 | `use` | 切换当前会话的 active context |
-| `close` | 关闭 context（ephemeral profile 会清理） |
+| `close` | 关闭 context（ephemeral profile 会清理）；关闭当前 active 时自动回退到同会话剩余 context |
 | `viewer` | 把当前 context 的 viewer URL 写到本机 0600 文件，返回文件路径与 opaque handle（需 Host webServer；bearer URL 不返回模型） |
 
-### 2.1 Viewer 与写操作（H3）
+### 2.1 active context 的回退规则（W4）
+
+- 关闭当前 active context 后，如果同一个 DSH 会话还有剩余 context，自动把 **最近使用**（`lastUsedAt` 最大）的一个设为 active；时间相同则取 `contextId` 字典序最小的，保证跨进程可复现。
+- `use` 也算一次使用（刷新 `lastUsedAt`），因此显式选择不会被“关闭另一个 context”覆盖；只有被关闭的恰好是 active 时才会回退。
+- 关闭最后一个 context 后 `current` 仍返回 `NO_ACTIVE_CONTEXT`，不会伪造一个不存在的 context。
+- `chrome_context {op:"close"}` 的回退会带 `activeContextId`、`fallback:true` 与一句 `hint`。
+
+### 2.2 Viewer 与写操作（H3）
 
 - `chrome_context {op:"viewer"}` / `chrome_screencast {op:"viewer"}` 不再把带 `token`/`access` 的 URL 放进工具结果或 render：URL 写到 `$DSH_HOME/cache/dsh-chrome/viewer/*.url`（0600），模型只拿 `handle` + `urlFile` + `hint`；
 - viewer 的点击/输入/滚动等写操作**默认只读**；需要在 provider config 里显式 opt-in：

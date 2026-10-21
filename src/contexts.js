@@ -197,7 +197,15 @@ export class BrowserContextManager {
     const ctx = this.contexts.get(contextId)
     if (!ctx) return false
     this.contexts.delete(contextId)
-    if (this.activeByOwner.get(ctx.owner) === contextId) this.activeByOwner.delete(ctx.owner)
+    const wasActive = this.activeByOwner.get(ctx.owner) === contextId
+    if (wasActive) {
+      // W4: closing the active context must not leave the session without an
+      // active context while another one is still alive. See #fallbackActive
+      // for the selection rule; the close still completes even if the fallback
+      // context is being closed concurrently (it is already out of the map).
+      this.activeByOwner.delete(ctx.owner)
+      this.#fallbackActive(ctx.owner)
+    }
     // The context is gone from `contexts` immediately, but its Chrome/profile
     // is still shutting down. Hold the named profile until close() resolves so
     // a concurrent create cannot open a second process on the same profile.
@@ -280,9 +288,35 @@ export class BrowserContextManager {
     return contextId ? this.contexts.get(contextId) || null : null
   }
 
+  /**
+   * W4: when the active context disappears (closed, reaped, restarted), keep
+   * the session usable by activating the most recently used remaining context
+   * of the same owner. Ties are broken by the lexicographically smallest
+   * contextId so the choice is deterministic across runs. An explicit
+   * chrome_context use() updates lastUsedAt, so it wins over older contexts
+   * and is never overridden by closing a different context.
+   * Returns the new active contextId, or null when the owner has none left.
+   */
+  #fallbackActive(owner) {
+    const candidates = [...this.contexts.values()].filter((ctx) => ctx.owner === owner)
+    if (candidates.length === 0) return null
+    candidates.sort((a, b) => {
+      const byUse = (Number(b.lastUsedAt) || 0) - (Number(a.lastUsedAt) || 0)
+      if (byUse !== 0) return byUse
+      return a.contextId < b.contextId ? -1 : a.contextId > b.contextId ? 1 : 0
+    })
+    const next = candidates[0]
+    this.activeByOwner.set(owner, next.contextId)
+    this.logger?.info?.('browser context fallback for %s: %s', owner, next.contextId)
+    return next.contextId
+  }
+
   setActive(owner, contextId) {
     const ctx = this.contexts.get(contextId)
     if (!ctx || ctx.owner !== owner) throw new ContextError('CONTEXT_NOT_FOUND', `context ${contextId} is not owned by ${owner}`)
+    // Explicit selection is a use: the fallback rule prefers the most recently
+    // used context, so an explicit use survives a later close of another one.
+    ctx.lastUsedAt = this.now()
     this.activeByOwner.set(owner, contextId)
     return this.#view(ctx)
   }

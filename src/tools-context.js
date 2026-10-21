@@ -57,6 +57,8 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
           previous: { type: 'object', additionalProperties: true },
           contexts: { type: 'array', items: { type: 'object', additionalProperties: true } },
           limits: { type: 'object', additionalProperties: true },
+          activeContextId: { type: 'string' },
+          fallback: { type: 'boolean' },
           handle: { type: 'string' },
           urlFile: { type: 'string' },
           hint: { type: 'string' },
@@ -78,7 +80,7 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
             return renderText([...(summary ? [summary] : []), ...rows].join('\n'))
           }
           const line = `Context ${value.contextId || ''} ${value.preset || ''} ${value.isolation || ''} ${stateLabel(value)}${value.visible ? ' visible' : ' hidden'}`
-          return renderText([line, limitsLine(value)].filter(Boolean).join('\n'))
+          return renderText([line, value.hint, limitsLine(value)].filter(Boolean).join('\n'))
         },
       },
       async execute(args, exec) {
@@ -116,8 +118,26 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
         }
         if (op === 'close') {
           const contextId = String(args?.contextId || '')
+          const activeBefore = typeof contexts.activeFor === 'function' ? contexts.activeFor(owner) : null
           const closed = await contexts.closeOwned(contextId, owner)
-          return closed ? { ok: true, contextId } : { ok: false, error: 'CONTEXT_NOT_FOUND' }
+          if (!closed) return { ok: false, error: 'CONTEXT_NOT_FOUND' }
+          const active = typeof contexts.activeFor === 'function' ? contexts.activeFor(owner) : null
+          // W4: closing the active context auto-selects the most recently used
+          // remaining context (manager rule). Report it so the model does not
+          // have to guess that current moved.
+          const fallback = Boolean(activeBefore && activeBefore.contextId === contextId && active && active.contextId !== contextId)
+          return {
+            ok: true,
+            contextId,
+            ...(active ? { activeContextId: active.contextId } : {}),
+            ...(fallback
+              ? {
+                  fallback: true,
+                  hint: `closed the active context; ${active.contextId} is now active (most recently used remaining context)`,
+                }
+              : {}),
+            limits: limitsView(),
+          }
         }
         if (op === 'restart') {
           const contextId = String(args?.contextId || '')
