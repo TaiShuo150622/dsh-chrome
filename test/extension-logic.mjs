@@ -96,6 +96,7 @@ let runtimeReloads = 0
 const nativePortListeners = { message: [], disconnect: [] }
 const fakeNativePort = {
   posted: [],
+  disconnects: 0,
   onMessage: {
     addListener(listener) {
       nativePortListeners.message.push(listener)
@@ -109,7 +110,9 @@ const fakeNativePort = {
   postMessage(message) {
     this.posted.push(message)
   },
-  disconnect() {},
+  disconnect() {
+    this.disconnects += 1
+  },
 }
 
 const chrome = {
@@ -1862,6 +1865,11 @@ check(
     !capturesMap.has(reloadCapture.captureId) &&
     debuggerCalls.filter((call) => call.method === 'detach').length > reloadDetachMark,
   JSON.stringify({ sessions: debuggerSessionsMap.size, captures: capturesMap.size }),
+)
+check(
+  'prepareForReload announces dsh.restarting and drops the native host',
+  fakeNativePort.posted.some((message) => message?.event === 'dsh.restarting') && fakeNativePort.disconnects > 0,
+  JSON.stringify({ posted: fakeNativePort.posted.slice(-2), disconnects: fakeNativePort.disconnects }),
 )
 
 // A target left attached by a previous worker generation is detached on the

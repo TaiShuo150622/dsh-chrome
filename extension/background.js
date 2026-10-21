@@ -1195,10 +1195,29 @@ async function releaseAllDebuggerSessions(reason) {
 }
 
 async function prepareForReload() {
+  // Tell the provider this reload is intentional before either side goes away,
+  // so its in-flight calls fail fast with BRIDGE_RESTARTING instead of waiting
+  // out the 45s tool timeout.
+  try {
+    port?.postMessage({ event: 'dsh.restarting', params: { version: VERSION } })
+  } catch {
+    // port may already be gone
+  }
   // Detach before chrome.runtime.reload(): a reload tears down the worker but
   // the debuggee can stay attached, and the next worker would then have to
   // recover an orphan it cannot attribute to any live capture/screencast.
   await releaseAllDebuggerSessions('extension-reload')
+  // Drop the native port before the worker dies. Chrome closes it anyway, but
+  // an explicit disconnect flushes the restart frame and lets the host exit
+  // before the reloaded worker spawns a new host; otherwise both hosts can be
+  // connected to the bridge at once (P5).
+  if (port) {
+    try {
+      port.disconnect()
+    } catch {
+      // port may already be gone
+    }
+  }
 }
 
 function clearCaptureMeta() {

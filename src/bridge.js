@@ -24,6 +24,12 @@ export const SUPPORTED_PROTOCOL_VERSIONS = Object.freeze([1])
 export const PROTOCOL_VERSION_MISMATCH = 'PROTOCOL_VERSION_MISMATCH'
 const HELLO_TIMEOUT_MS = 5000
 const DEFAULT_TIMEOUT_MS = 30000
+// After the extension announces an auto-reload, calls fail with
+// BRIDGE_RESTARTING for at most this long. The window only changes the error
+// code: both branches fail immediately, so a tool never waits for its timeout.
+const RESTART_WINDOW_MS = 30000
+/** Stable error code required by docs/CONTRACTS.md §3. Never rename it. */
+export const BRIDGE_RESTARTING = 'BRIDGE_RESTARTING'
 
 function isSupportedProtocol(value) {
   return Number.isInteger(value) && SUPPORTED_PROTOCOL_VERSIONS.includes(value)
@@ -76,7 +82,14 @@ export class BridgeServer {
     this.server = null
     this.socket = null
     this.authed = false
+    // Connection generation (P5). `connection` is the active authenticated
+    // host; `candidate` is the next connection still doing its hello. Keeping
+    // them separate means a stale socket can never parse its bytes into the
+    // active host's buffer or answer the active host's pending calls.
+    this.connection = null
+    this.candidate = null
     this.buffer = ''
+    this.restartingUntil = 0
     this.pending = new Map()
     this.handlers = new Map()
     this.nextId = 0
@@ -175,41 +188,98 @@ export class BridgeServer {
   }
 
   #accept(socket) {
-    if (this.socket && this.socket !== socket) {
+    // A native host can overlap with the previous generation during an
+    // extension auto-reload. Keep the active host until the new connection
+    // authenticates: an unauthenticated local connection must not be able to
+    // knock the real host offline. #activate() then replaces it atomically.
+    if (this.candidate && this.candidate.socket !== socket) {
       try {
-        this.socket.destroy()
+        this.candidate.socket.destroy()
       } catch {
-        // the old host is already gone
+        // candidate already gone
       }
     }
-    this.socket = socket
-    this.authed = false
-    this.buffer = ''
+    const connection = { socket, authed: false, buffer: '', helloTimer: null, closed: false }
+    this.candidate = connection
     socket.setEncoding('utf8')
-    const helloTimer = setTimeout(() => socket.destroy(), HELLO_TIMEOUT_MS)
-    socket.on('data', (chunk) => this.#onData(chunk, socket, helloTimer))
+    connection.helloTimer = setTimeout(() => {
+      if (!connection.authed) socket.destroy()
+    }, HELLO_TIMEOUT_MS)
+    socket.on('data', (chunk) => {
+      if (connection.closed) return
+      if (this.connection !== connection && this.candidate !== connection) return
+      this.#onData(chunk, connection)
+    })
     socket.on('close', () => {
-      clearTimeout(helloTimer)
-      if (this.socket === socket) {
-        this.socket = null
-        this.authed = false
-        if (this.pingTimer) {
-          clearInterval(this.pingTimer)
-          this.pingTimer = null
-        }
+      connection.closed = true
+      clearTimeout(connection.helloTimer)
+      if (this.candidate === connection) this.candidate = null
+      // Only the active host may tear down provider state. When #activate()
+      // replaced it, its close is ignored so it cannot clear the new pending
+      // table or the new heartbeat.
+      if (this.connection !== connection) return
+      this.connection = null
+      this.socket = null
+      this.authed = false
+      if (this.pingTimer) {
+        clearInterval(this.pingTimer)
+        this.pingTimer = null
+      }
+      if (this.restarting) {
+        this.#failPending(BRIDGE_RESTARTING, 'Chrome extension is reloading; in-flight request discarded')
+      } else {
         this.#failPending('NOT_CONNECTED', 'Chrome native host disconnected')
       }
     })
     socket.on('error', () => {})
   }
 
-  #onData(chunk, socket, helloTimer) {
-    this.buffer += chunk
-    let index = this.buffer.indexOf('\n')
+  /** True while the extension announced an auto-reload and no new hello arrived. */
+  get restarting() {
+    return this.restartingUntil > Date.now()
+  }
+
+  /** Promote an authenticated connection, discarding the previous generation. */
+  #activate(connection) {
+    const previous = this.connection
+    connection.authed = true
+    this.connection = connection
+    this.socket = connection.socket
+    this.authed = true
+    this.candidate = null
+    this.restartingUntil = 0
+    this.buffer = ''
+    if (previous && previous !== connection) {
+      // Requests written to the previous host will never be answered. Fail
+      // them now with a stable code so a tool never waits for its 45s timeout.
+      this.#failPending(BRIDGE_RESTARTING, 'Chrome native host reconnected; the previous generation was replaced')
+      try {
+        previous.socket.destroy()
+      } catch {
+        // already closed
+      }
+    }
+    if (this.pingTimer) clearInterval(this.pingTimer)
+    // Heartbeat: lets the extension notice a silently dead native port
+    // (Chrome does not always deliver onDisconnect immediately).
+    this.pingTimer = setInterval(() => {
+      if (!this.connection || this.connection.socket.destroyed) return
+      try {
+        this.connection.socket.write(`${JSON.stringify({ event: 'dsh.ping', params: { at: Date.now() } })}\n`)
+      } catch {
+        // the close handler tears down the timer
+      }
+    }, 20000)
+  }
+
+  #onData(chunk, connection) {
+    const socket = connection.socket
+    connection.buffer += chunk
+    let index = connection.buffer.indexOf('\n')
     while (index >= 0) {
-      const line = this.buffer.slice(0, index)
-      this.buffer = this.buffer.slice(index + 1)
-      index = this.buffer.indexOf('\n')
+      const line = connection.buffer.slice(0, index)
+      connection.buffer = connection.buffer.slice(index + 1)
+      index = connection.buffer.indexOf('\n')
       if (!line.trim()) continue
       let message
       try {
@@ -218,7 +288,7 @@ export class BridgeServer {
         socket.destroy()
         return
       }
-      if (!this.authed) {
+      if (!connection.authed) {
         if (
           message?.type !== 'hello' ||
           typeof message.token !== 'string' ||
@@ -243,7 +313,7 @@ export class BridgeServer {
             received,
             expected: PROTOCOL_VERSION,
           }
-          clearTimeout(helloTimer)
+          clearTimeout(connection.helloTimer)
           try {
             socket.end(
               `${JSON.stringify({
@@ -259,8 +329,8 @@ export class BridgeServer {
           }
           return
         }
-        this.authed = true
-        clearTimeout(helloTimer)
+        this.#activate(connection)
+        clearTimeout(connection.helloTimer)
         this.lastProtocolError = null
         if (typeof message.hostVersion === 'string') this.hostVersion = message.hostVersion
         this.hostProtocol = message.protocol
@@ -271,16 +341,14 @@ export class BridgeServer {
             hostProtocol: message.protocol,
           })}\n`,
         )
-        // Heartbeat: lets the extension notice a silently dead native port
-        // (Chrome does not always deliver onDisconnect immediately).
-        this.pingTimer = setInterval(() => {
-          if (!this.socket || this.socket.destroyed) return
-          try {
-            this.socket.write(`${JSON.stringify({ event: 'dsh.ping', params: { at: Date.now() } })}\n`)
-          } catch {
-            // the close handler tears down the timer
-          }
-        }, 20000)
+        continue
+      }
+      // A replaced generation must not answer the new generation's pending
+      // calls (stale responses are discarded).
+      if (this.connection !== connection) return
+      if (message?.event === 'dsh.restarting') {
+        this.restartingUntil = Date.now() + RESTART_WINDOW_MS
+        this.#failPending(BRIDGE_RESTARTING, 'Chrome extension is reloading; in-flight request discarded')
         continue
       }
       if (message?.id != null) {
@@ -333,6 +401,12 @@ export class BridgeServer {
   }
 
   call(method, params = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+    // The reload announcement is checked before `connected`: during the short
+    // window where the old host still looks live, a call must fail immediately
+    // instead of being written to a socket that is about to disappear.
+    if (this.restarting) {
+      throw new BridgeError(BRIDGE_RESTARTING, 'Chrome extension is reloading; retry in a moment')
+    }
     if (!this.connected) {
       throw new BridgeError(
         'NOT_CONNECTED',
@@ -383,7 +457,10 @@ export class BridgeServer {
       clearInterval(this.pingTimer)
       this.pingTimer = null
     }
+    this.restartingUntil = 0
     this.#failPending('NOT_CONNECTED', 'bridge stopped')
+    this.connection = null
+    this.candidate = null
     if (this.socket) {
       try {
         this.socket.destroy()
@@ -392,6 +469,7 @@ export class BridgeServer {
       }
       this.socket = null
     }
+    this.authed = false
     if (this.server) {
       const server = this.server
       this.server = null
