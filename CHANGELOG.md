@@ -11,6 +11,10 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.26] - 2026-10-21
+
+- P4 overlay 移到 ISOLATED world（桌面+headless）；P5 bridge 连接 generation/退避/重载快速失败；P7 find 空格、tab 真实 URL、verify 错误、下载绝对路径、context close 状态
+
 ## [0.2.25] - 2026-10-21
 
 - 桌面截图扩展侧有界超时/非活动 tab 重试；history back/forward 改 CDP；tab focus 同步 activeTabId；关闭 active context 自动回退

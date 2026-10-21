@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop-chrome",
-  "version": "0.2.25",
+  "version": "0.2.26",
   "private": true,
   "type": "module",
   "description": "DSH Desktop provider that drives the user's real Chrome through a Chrome MV3 extension and native messaging.",
