@@ -10,7 +10,7 @@
   - `chrome_pointer`/annotate/frame overlay 调用不再用 main-world `Runtime.evaluate` 的 `window.__dshOverlay`；改走 isolated-world script/消息。
   - auto-follow helper 不再在 main world 里调 overlay；改为 isolated-world 注入/调用（或 content-script 消息）。
   - 验证：页面脚本探针读不到 `window.__dshOverlay`（undefined/不可调用）；pointer/annotate/list/clear/截图仍正常；frame 场景可用。
-- [ ] V2（P4b）headless overlay 隔离
+- [x] V2（P4b）headless overlay 隔离
   - `src/headless.js` 的 overlay 注入/调用改走 `Page.createIsolatedWorld` + `executionContextId`；页面脚本不可读写 overlay。
   - 保留 overlay 在截图/annotation 中可见；`tab.overlay` 行为不变。
   - 补真实 headless 测试：探针页 `window.__dshOverlay` 不可见；pointer 可见。
