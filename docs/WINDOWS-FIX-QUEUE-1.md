@@ -18,7 +18,7 @@
   - `onTabActivated()` 命中本会话 tab 时更新 `entry.activeTabId`、清 paused、保存；`focus` 同时直接写 `activeTabId`，必要时聚焦 window。
   - `tabs list` 的 `*` 跟随；后续 snapshot/screenshot 用新 active。
   - 补测试：双 tab focus 后 list/snapshot 切换；onTabActivated 不创建新 owner。
-- [ ] W4（P6）关闭 active context 自动回退
+- [x] W4（P6）关闭 active context 自动回退
   - 关闭当前 active context 后，如果还有剩余 context，自动 `use` 一个（最近使用/最小 id 规则写清）；`current` 不再 `NO_ACTIVE_CONTEXT`；无剩余时仍明确报错。
   - 补测试：3 context 关闭 active -> 自动回退；关闭最后一个 -> NO_ACTIVE_CONTEXT；显式 use 优先。
 
