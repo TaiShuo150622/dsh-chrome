@@ -982,13 +982,56 @@ export class HeadlessDriver {
     return result.result?.value
   }
 
+  /**
+   * The overlay lives in an isolated world (P4): a page script must not be able
+   * to read or call `window.__dshOverlay`. One isolated context per tab (main
+   * frame) is created on demand and reused until a navigation invalidates it.
+   */
+  async overlayContext(tab) {
+    if (tab.overlayContextId != null) return tab.overlayContextId
+    const tree = await this.cdp.send('Page.getFrameTree', {}, tab.sessionId)
+    const frameId = tree?.frameTree?.frame?.id
+    if (!frameId) throw error('HEADLESS_CDP_FAILED', 'cannot resolve the main frame for the overlay')
+    const { executionContextId } = await this.cdp.send(
+      'Page.createIsolatedWorld',
+      { frameId, worldName: 'dsh-overlay', grantUniveralAccess: false },
+      tab.sessionId,
+    )
+    tab.overlayFrameId = frameId
+    tab.overlayContextId = executionContextId
+    return executionContextId
+  }
+
   async ensureOverlay(tab) {
     if (tab.overlayReady) return true
     const source = overlaySource()
     if (!source) return false
-    await this.evalOn(tab, `(() => { if (!window.__dshOverlay) { ${source} } return Boolean(window.__dshOverlay) })()`)
+    const contextId = await this.overlayContext(tab)
+    await this.evalInContext(
+      tab,
+      contextId,
+      `(() => { if (!window.__dshOverlay) { ${source} } return Boolean(window.__dshOverlay) })()`,
+    )
     tab.overlayReady = true
     return true
+  }
+
+  /**
+   * Run an overlay call in its isolated context. A navigation destroys that
+   * context without necessarily clearing our cached id, so a failed evaluation
+   * recreates the world once and retries (the tab.overlay behavior itself does
+   * not change).
+   */
+  async evalOverlay(tab, expression) {
+    if (!(await this.ensureOverlay(tab))) throw error('UNSUPPORTED_BACKEND', 'overlay script is not available')
+    try {
+      return await this.evalInContext(tab, tab.overlayContextId, expression)
+    } catch (cause) {
+      tab.overlayReady = false
+      tab.overlayContextId = null
+      if (!(await this.ensureOverlay(tab))) throw cause
+      return this.evalInContext(tab, tab.overlayContextId, expression)
+    }
   }
 
   async ensureFrameOverlays(tab) {
@@ -1043,7 +1086,7 @@ export class HeadlessDriver {
         label: 'DSH · ' + kind,
         pulse: kind === 'click' || kind === 'type' || kind === 'key',
       }
-      const value = await this.evalOn(tab, `window.__dshOverlay.handle(${JSON.stringify(payload)})`)
+      const value = await this.evalOverlay(tab, `window.__dshOverlay.handle(${JSON.stringify(payload)})`)
       if (value && !value.skipped) {
         tab.renderChangeAt = Date.now() / 1000
         tab.overlayChangedAt = Date.now() / 1000
@@ -1322,7 +1365,7 @@ export class HeadlessDriver {
         }
         if (!(await this.ensureOverlay(tab))) throw error('UNSUPPORTED_BACKEND', 'overlay script is not available')
         if (String(params.op) === 'auto') this.autoPointerEnabled = params.enabled !== false
-        const result = await this.evalOn(tab, `window.__dshOverlay.handle(${JSON.stringify(payload)})`)
+        const result = await this.evalOverlay(tab, `window.__dshOverlay.handle(${JSON.stringify(payload)})`)
         // Overlay changes are page paints; make the next screenshot wait for a
         // fresh frame instead of serving the cached pre-overlay frame.
         tab.renderChangeAt = Date.now() / 1000

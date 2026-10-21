@@ -32,6 +32,23 @@ try {
   const pointer = await overlay({ op: 'pointer', selector: 'h1', label: 'DSH', pulse: true })
   assert.equal(pointer.ok, true)
   assert.equal(pointer.visible, true)
+  // P4: the overlay lives in an isolated world. The page's MAIN world (which
+  // tab.evaluate uses) must not see or be able to call window.__dshOverlay.
+  const mainProbe = await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: 'typeof window.__dshOverlay',
+  })
+  assert.equal(mainProbe.value, 'undefined', 'page MAIN world must not see window.__dshOverlay')
+  // A page can create its own (harmless) global, but the tool must keep
+  // talking to the isolated overlay: the page's fake is never called.
+  const tamper = await driver.request('tab.evaluate', {
+    owner: 's1',
+    expression: '(() => { window.__dshOverlay = { version: 3, handle: () => ({ hacked: true }) }; return true })()',
+  })
+  assert.equal(tamper.value, true)
+  const afterTamper = await overlay({ op: 'list' })
+  assert.equal(afterTamper.ok, true)
+  assert.equal(afterTamper.hacked, undefined, 'page-defined window.__dshOverlay must not be called')
   await new Promise((resolve) => setTimeout(resolve, 300))
   const pointerShot = await driver.request('tab.screenshot', { owner: 's1' })
   assert.notDeepEqual(fs.readFileSync(pointerShot.path), fs.readFileSync(baseShot.path), 'pointer must be visible in screenshots')

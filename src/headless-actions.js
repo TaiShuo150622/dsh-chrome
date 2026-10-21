@@ -129,6 +129,7 @@ export function createHeadlessActions({ error, safeTabUrl, visualProbeEnabled })
     const url = safeTabUrl(params.url)
     const tab = await driver.ensureTab(owner, params.tabId)
     tab.overlayReady = false
+    tab.overlayContextId = null
     tab.frameContexts = null
     await driver.cdp.send('Page.navigate', { url }, tab.sessionId)
     await driver.waitReady(tab)
@@ -348,6 +349,7 @@ export function createHeadlessActions({ error, safeTabUrl, visualProbeEnabled })
   actions.set('tab.history', async (driver, params, owner) => {
     const tab = await driver.ensureTab(owner, params.tabId)
     tab.overlayReady = false
+    tab.overlayContextId = null
     tab.frameContexts = null
     if (params.op === 'back') await driver.evalOn(tab, 'history.back()')
     else if (params.op === 'forward') await driver.evalOn(tab, 'history.forward()')
