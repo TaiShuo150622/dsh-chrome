@@ -10,7 +10,7 @@
   - 截图前处理不可见 tab：优先 CDP `Page.bringToFront`；失败/非活动 tab 可 `makeTabVisibleForScreencast`（激活/展开 group/聚焦窗口）并在截图后恢复原 active tab；至少先重试一次。
   - 失败返回明确错误，不依赖 provider 60s 超时。
   - 补测试：fake CDP 不返回 -> 预算内 TIMEOUT、refs 归零、下一次可 attach；真实 Chrome 折叠 group/非活动 tab 连续截图（可条件跑）。
-- [ ] W2（P2）history back/forward 改 CDP
+- [x] W2（P2）history back/forward 改 CDP
   - `history()` 不再用 `chrome.tabs.goBack/goForward`；用 `Page.getNavigationHistory` + `Page.navigateToHistoryEntry`；越界明确 `NO_HISTORY_ENTRY`；等待 load。
   - 保留 reload 现有行为；headless 不回归。
   - 补真实 Chrome 测试：example.com→iana.org→back/forward 各 3 次；新 tab 无 history 错误。
