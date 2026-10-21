@@ -14,7 +14,7 @@
   - `src/headless.js` 的 overlay 注入/调用改走 `Page.createIsolatedWorld` + `executionContextId`；页面脚本不可读写 overlay。
   - 保留 overlay 在截图/annotation 中可见；`tab.overlay` 行为不变。
   - 补真实 headless 测试：探针页 `window.__dshOverlay` 不可见；pointer 可见。
-- [ ] V3（P5）auto-reload bridge 去重/退避
+- [x] V3（P5）auto-reload bridge 去重/退避
   - bridge 连接 generation：新 host hello 到达时关闭旧 socket/fail 旧 pending；同一 bridge 只保留一个活动 host。
   - host 断线退避；extension 重载时先 release debugger/host，避免新旧 host 同时连。
   - 重载窗口内工具快速失败 `BRIDGE_RESTARTING`，不挂 45s。
