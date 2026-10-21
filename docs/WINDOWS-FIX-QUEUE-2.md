@@ -19,7 +19,7 @@
   - host 断线退避；extension 重载时先 release debugger/host，避免新旧 host 同时连。
   - 重载窗口内工具快速失败 `BRIDGE_RESTARTING`，不挂 45s。
   - 补 host/bridge 测试（双连接、旧响应丢弃、重载窗口）。
-- [ ] V4（P7）小项
+- [x] V4（P7）小项
   - `chrome_find` 对 NBSP/连续空格归一化；
   - `tabs new` 等导航完成再返回真实 URL；
   - `chrome_verify` 失败显示错误原因（不是 undefinedms/0 checks）；
