@@ -128,6 +128,18 @@ const tools = makeTools()
 const verify = tools.find((tool) => tool.name === 'chrome_verify')
 assert.ok(verify, 'chrome_verify must be registered')
 
+// P7: a failure without checks/duration (early return or thrown before the run
+// starts) must show the reason instead of the old "undefinedms, 0 checks".
+const earlyFailureRender = verify.output.render({}, { ok: false, error: 'STEPS_REQUIRED' })[0]?.text || ''
+assert.match(earlyFailureRender, /STEPS_REQUIRED/, earlyFailureRender)
+assert.doesNotMatch(earlyFailureRender, /undefinedms/, earlyFailureRender)
+const failedRunRender = verify.output.render(
+  {},
+  { ok: false, durationMs: 12, checks: [{ id: 'c1', type: 'url', ok: false, message: 'url was about:blank' }], artifacts: [], error: 'PROTECTED_PAGE' },
+)[0]?.text || ''
+assert.match(failedRunRender, /PROTECTED_PAGE/, failedRunRender)
+assert.match(failedRunRender, /12ms/, failedRunRender)
+
 try {
   // H6 target classifier: normalizations WHATWG URL already performs, plus the
   // literal ranges and local-name suffixes the guard must refuse by default.

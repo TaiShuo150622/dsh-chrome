@@ -54,6 +54,8 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
           deathReason: {},
           chromePid: {},
           restarted: { type: 'boolean' },
+          closed: { type: 'boolean' },
+          stopped: { type: 'boolean' },
           previous: { type: 'object', additionalProperties: true },
           contexts: { type: 'array', items: { type: 'object', additionalProperties: true } },
           limits: { type: 'object', additionalProperties: true },
@@ -129,6 +131,9 @@ export function createContextTool({ contexts, contextViewer, ownerOf, outputSche
           return {
             ok: true,
             contextId,
+            closed: true,
+            stopped: true,
+            state: 'closed',
             ...(active ? { activeContextId: active.contextId } : {}),
             ...(fallback
               ? {

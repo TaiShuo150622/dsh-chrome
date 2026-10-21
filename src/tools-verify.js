@@ -125,8 +125,13 @@ export function createVerifyTool({
         render: (_args, value) => {
           if (!value || value.ok == null) return renderText(`Verify error: ${value?.error || 'unknown'}`)
           const failed = (value.checks || []).filter((check) => !check.ok)
+          const duration = Number.isFinite(value.durationMs) ? `${value.durationMs}ms` : 'unknown duration'
           const lines = (value.checks || []).map((check) => `${check.ok ? 'PASS' : 'FAIL'} ${check.id || check.type || ''} ${check.message || ''}`)
-          lines.unshift(`chrome_verify ${value.ok ? 'PASS' : 'FAIL'} (${value.durationMs}ms, ${value.checks?.length || 0} checks)`)
+          lines.unshift(`chrome_verify ${value.ok ? 'PASS' : 'FAIL'} (${duration}, ${value.checks?.length || 0} checks)`)
+          // Early returns (CONTEXTS_UNAVAILABLE, STEPS_REQUIRED, ...) carry no
+          // checks/duration; without this line the failure read "undefinedms,
+          // 0 checks" and hid the actual reason.
+          if (value.error) lines.push(`error: ${value.error}`)
           if (failed.length) lines.push(`failed: ${failed.length}`)
           if (value.artifacts?.length) lines.push(`artifacts: ${value.artifacts.map((item) => item.path || item.type).join(', ')}`)
           return renderText(lines.join('\n'))

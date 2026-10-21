@@ -294,8 +294,13 @@ export function currentSelection(maxChars) {
 }
 
 export function findPage(query, regex, maxResults) {
-  const needle = String(query || '')
-  if (!needle) return { query: needle, matches: [], truncated: false }
+  const raw = String(query || '')
+  // NBSP / repeated whitespace is common in rendered pages; normalize the
+  // caller's query the same way the text node is normalized below, otherwise a
+  // literal query with ordinary spaces misses the NBSP-separated words.
+  const normalize = (value) => String(value ?? '').replace(/\s+/g, ' ').trim()
+  const needle = normalize(raw)
+  if (!needle) return { query: raw, matches: [], truncated: false }
   let matcher
   if (regex) {
     try {
@@ -313,7 +318,7 @@ export function findPage(query, regex, maxResults) {
   const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT)
   let node
   while ((node = walker.nextNode())) {
-    const text = (node.nodeValue || '').replace(/\s+/g, ' ').trim()
+    const text = normalize(node.nodeValue || '')
     if (!text || !matcher || !matcher.test(text)) continue
     const parent = node.parentElement
     if (!parent) continue
@@ -341,7 +346,7 @@ export function findPage(query, regex, maxResults) {
       break
     }
   }
-  return { query: needle, matches, truncated }
+  return { query: raw, matches, truncated }
 }
 
 export function selectPage(ref, selector, value, checked, probe) {

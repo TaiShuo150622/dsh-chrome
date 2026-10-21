@@ -97,7 +97,10 @@ host.stdout.on(
       'tab.tabs': { claimed: true, tabId: 7, url: 'https://example.com/', title: 'Example Domain', remaining: 0 },
       'tab.claim': { tabId: 7, url: 'https://example.com/', title: 'Example Domain', claimed: true },
       'tab.upload': { ok: true, ref: 5, files: 1 },
-      'browser.downloads': { scope: 'session', items: [{ id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z', tabId: 7 }] },
+      'browser.downloads': { scope: 'session', items: [
+        { id: 1, filename: '/tmp/report.pdf', url: 'https://example.com/report.pdf', state: 'complete', bytesReceived: 1024, totalBytes: 1024, startTime: '2026-10-17T09:00:00.000Z', tabId: 7 },
+        { id: 2, filename: 'relative-report.pdf', url: 'https://example.com/relative.pdf', state: 'complete', bytesReceived: 10, totalBytes: 10, startTime: '2026-10-17T09:01:00.000Z', tabId: 7 },
+      ] },
       'tab.select': { ok: true, tag: 'input', value: 'checked' },
       'tab.screencast_start': { active: true, alreadyActive: false, tabId: 7, format: 'jpeg' },
       'tab.screencast_stop': { active: false, tabId: 7, frames: 12, elapsedMs: 3000 },
@@ -231,6 +234,12 @@ check(
 
 const downloadValue = await byName.chrome_download.execute({ limit: 5 }, exec())
 check('chrome_download executes', downloadValue.items?.[0]?.filename === '/tmp/report.pdf')
+check(
+  'chrome_download returns an absolute path for every item (P7)',
+  downloadValue.items.every((item) => path.isAbsolute(item.filename)) &&
+    downloadValue.items[1]?.filename === path.resolve('relative-report.pdf'),
+  JSON.stringify(downloadValue.items.map((item) => item.filename)),
+)
 check(
   'downloads default is session-scoped and carries the owner',
   requests.at(-1)?.method === 'browser.downloads' &&

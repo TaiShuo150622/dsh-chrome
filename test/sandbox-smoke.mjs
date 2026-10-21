@@ -50,6 +50,7 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Sandbox Sm
 </style></head><body>
 <h1 id="heading">Sandbox Smoke</h1>
 <p id="intro">Hello from the sandbox fixture.</p>
+<p id="nbsp">NBSP&nbsp;&nbsp;and&nbsp;spaces</p>
 <label>Name <input id="name" placeholder="name"></label>
 <label>Password <input id="pw" type="password" name="password" autocomplete="current-password"></label>
 <label>OTP <input id="otp" name="otp" inputmode="numeric"></label>
@@ -492,6 +493,11 @@ try {
     assert.equal(value.query, 'Sandbox')
     assert.ok(value.matches.length >= 1, `no matches: ${JSON.stringify(value)}`)
     assert.ok(value.matches.some((match) => String(match.text).includes('Sandbox')))
+  })
+
+  await check('chrome_find normalizes NBSP and repeated spaces', async () => {
+    const value = await run('chrome_find', { query: 'NBSP and spaces', maxResults: 5 })
+    assert.ok(value.matches.length >= 1, `no NBSP match: ${JSON.stringify(value)}`)
   })
 
   const regexProbe = await run('chrome_find', { query: 'Sandbox\\s+Smoke', regex: true, maxResults: 5 })
@@ -983,10 +989,13 @@ try {
     assert.ok(link, `download link missing: ${JSON.stringify(fresh.controls)}`)
     await run('chrome_click', { ref: link.ref })
     const value = await poll('chrome_download', () => run('chrome_download', { limit: 10 }), (result) =>
-      (result.items || []).some((item) => item.state === 'complete' && item.filename === 'sandbox-report.txt'),
+      (result.items || []).some((item) => item.state === 'complete' && path.basename(item.filename) === 'sandbox-report.txt'),
     )
-    const item = value.items.find((entry) => entry.filename === 'sandbox-report.txt')
+    const item = value.items.find((entry) => path.basename(entry.filename) === 'sandbox-report.txt')
     assert.equal(item.state, 'complete')
+    // P7: chrome_download reports an absolute path even when the backend only
+    // returned a display name.
+    assert.ok(path.isAbsolute(item.filename), `download filename is not absolute: ${item.filename}`)
     assert.ok(fs.existsSync(item.path), `download file missing: ${item.path}`)
   })
 

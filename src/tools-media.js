@@ -600,6 +600,7 @@ export function createMediaTools({
             properties: {
               id: { type: 'number' },
               filename: { type: 'string' },
+              path: { type: 'string' },
               url: { type: 'string' },
               state: { type: 'string' },
               bytesReceived: { type: 'number' },
@@ -651,7 +652,20 @@ export function createMediaTools({
             'download backend did not scope its list to this session; refusing to expose the machine-wide history. Update the extension or retry with includeHistory:true after the hard confirmation.',
         }
       }
-      return value
+      // P7: callers need a path they can open, not a backend-relative display
+      // name. Chrome normally reports an absolute `filename`; older/other
+      // backends may not, so normalize and keep `path` in sync.
+      const items = (Array.isArray(value.items) ? value.items : []).map((item) => {
+        const rawPath = typeof item?.path === 'string' && item.path
+          ? item.path
+          : typeof item?.filename === 'string'
+            ? item.filename
+            : ''
+        if (!rawPath) return item
+        const absolute = path.isAbsolute(rawPath) ? rawPath : path.resolve(rawPath)
+        return { ...item, filename: absolute, path: absolute }
+      })
+      return { ...value, items }
     },
   }
 

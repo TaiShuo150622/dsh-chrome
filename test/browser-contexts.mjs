@@ -343,6 +343,9 @@ try {
   assert.equal(toolManager.activeFor('tool-owner').contextId, ctxFirst.contextId)
   const closedOther = await contextTool.execute({ op: 'close', contextId: ctxSecond.contextId }, {})
   assert.equal(closedOther.ok, true)
+  assert.equal(closedOther.closed, true)
+  assert.equal(closedOther.stopped, true)
+  assert.equal(closedOther.state, 'closed', 'P7: close must report the closed/stopped state')
   assert.equal(closedOther.fallback, undefined, 'closing a non-active context must not report a fallback')
   assert.equal(
     toolManager.activeFor('tool-owner').contextId,
@@ -359,6 +362,7 @@ try {
   assert.equal(currentAfterFallback.contextId, ctxThird.contextId)
   const closeRender = contextTool.output.render({ op: 'close' }, closedActive)[0]?.text || ''
   assert.ok(closeRender.includes('most recently used remaining context'), closeRender)
+  assert.ok(closeRender.includes('closed'), closeRender)
   await contextTool.execute({ op: 'close', contextId: ctxThird.contextId }, {})
   const currentAfterLast = await contextTool.execute({ op: 'current' }, {})
   assert.equal(currentAfterLast.ok, false)

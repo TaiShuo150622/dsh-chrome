@@ -77,6 +77,10 @@ const tabRemovedListeners = []
 const tabGroupUpdates = []
 const tabActivatedListeners = []
 const tabUpdates = []
+const tabUpdatedListeners = []
+// P7: when set, chrome.tabs.create() returns the initial about:blank as
+// status:complete and commits the requested URL later (the Windows race).
+let createTabPlan = null
 // Windows the mocked tabs live in. `makeTabVisibleForScreencast` reads/writes
 // focus + state here (screencast only emits frames for a visible tab).
 const windows = new Map([[1, { id: 1, focused: true, state: 'normal' }]])
@@ -177,8 +181,24 @@ const chrome = {
       return list
     },
     async create({ url }) {
-      const tab = { id: ++nextTabId, url: url || 'about:blank', title: '', active: false, status: 'complete', windowId: 1 }
+      const plan = createTabPlan
+      const tab = {
+        id: ++nextTabId,
+        url: plan ? plan.initialUrl || 'about:blank' : url || 'about:blank',
+        title: '',
+        active: false,
+        status: 'complete',
+        windowId: 1,
+      }
       tabs.set(tab.id, tab)
+      if (plan) {
+        setTimeout(() => {
+          tab.url = plan.finalUrl || url || tab.url
+          tab.title = plan.title || tab.title
+          tab.status = 'complete'
+          for (const listener of tabUpdatedListeners) listener(tab.id, { status: 'complete', url: tab.url })
+        }, plan.delayMs ?? 50)
+      }
       return tab
     },
     async update(tabId, props) {
@@ -218,7 +238,15 @@ const chrome = {
     async reload(tabId) {
       reloadCalls.push(tabId)
     },
-    onUpdated: { addListener() {}, removeListener() {} },
+    onUpdated: {
+      addListener(listener) {
+        tabUpdatedListeners.push(listener)
+      },
+      removeListener(listener) {
+        const index = tabUpdatedListeners.indexOf(listener)
+        if (index >= 0) tabUpdatedListeners.splice(index, 1)
+      },
+    },
     onRemoved: {
       addListener(listener) {
         tabRemovedListeners.push(listener)
@@ -659,6 +687,52 @@ sandbox.document.activeElement = bodyElement
 const bodyPress = sandbox.pressKey('X', false)
 check('press outside a sensitive field needs no approval', bodyPress?.ok === true && !bodyPress.sensitive)
 
+// P7: chrome_find normalizes NBSP / repeated whitespace on both sides. Windows
+// pages commonly render "word&nbsp;&nbsp;word", which a normal literal query
+// used to miss.
+const findTextNode = {
+  nodeValue: 'Alpha\u00a0\u00a0Beta\t Gamma',
+  parentElement: {
+    tagName: 'P',
+    getAttribute: () => null,
+    setAttribute: () => {},
+    style: {},
+    closest: () => null,
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 20 }),
+  },
+}
+sandbox.NodeFilter = { SHOW_TEXT: 4 }
+sandbox.getComputedStyle = () => ({ display: 'block', visibility: 'visible' })
+sandbox.document.querySelectorAll = () => []
+sandbox.document.createTreeWalker = () => {
+  let used = false
+  return {
+    nextNode() {
+      if (used) return null
+      used = true
+      return findTextNode
+    },
+  }
+}
+const normalizedFind = sandbox.findInPage('alpha beta gamma', 5, false)
+check(
+  'findInPage normalizes NBSP and repeated whitespace',
+  normalizedFind?.matches?.length === 1 && normalizedFind.matches[0].text === 'Alpha Beta Gamma',
+  JSON.stringify(normalizedFind),
+)
+const normalizedNbspQuery = sandbox.findInPage('alpha\u00a0beta', 5, false)
+check(
+  'findInPage normalizes an NBSP query',
+  normalizedNbspQuery?.matches?.length === 1,
+  JSON.stringify(normalizedNbspQuery),
+)
+const normalizedRegexFind = sandbox.findInPage('alpha  beta  gamma', 5, true)
+check(
+  'findInPage regex mode matches the normalized text as a fallback',
+  normalizedRegexFind?.matches?.length === 1,
+  JSON.stringify(normalizedRegexFind),
+)
+
 // ------------------------------------------------------- per-method dispatch
 const pageCases = [
   ['tab.snapshot', { maxChars: 1000, owner: 's1' }, { title: 'T', url: 'u', controls: [], text: 'x', truncated: false }],
@@ -759,6 +833,21 @@ check('tab.tabs list returns session tabs', Array.isArray(tabList?.tabs) && tabL
 
 const tabNew = await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'new', url: 'https://example.com/b', owner: 's1' }, id: 'tabs-new' })
 check('tab.tabs new creates a background tab', Number.isFinite(tabNew?.tabId) && tabs.get(tabNew.tabId)?.active === false)
+
+// P7: the tab starts as about:blank (already status:complete) and only later
+// commits the requested URL; tab.tabs new must return the real URL.
+createTabPlan = { initialUrl: 'about:blank', finalUrl: 'https://example.com/landing', title: 'Landing', delayMs: 120 }
+const delayedTab = await sandbox.handleRequest({
+  method: 'tab.tabs',
+  params: { op: 'new', url: 'https://example.com/landing', owner: 's1' },
+  id: 'tabs-new-delayed-url',
+})
+createTabPlan = null
+check(
+  'tab.tabs new waits for the real URL after the initial about:blank',
+  delayedTab?.url === 'https://example.com/landing' && delayedTab?.title === 'Landing',
+  JSON.stringify(delayedTab),
+)
 
 const tabClose = await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'close', tabId: tabNew.tabId, owner: 's1' }, id: 'tabs-close' })
 check('tab.tabs close removes the tab', tabClose?.closed === tabNew.tabId)

@@ -778,7 +778,10 @@ async function gotoUrl(owner, url, label = null) {
     await chrome.tabs.update(tabId, { url })
   }
   await waitForComplete(tabId, 45000)
-  const updated = await chrome.tabs.get(tabId)
+  // `tabs.update({url})` may report the previous document as complete before
+  // the new URL commits (observed on Windows); wait for the real URL rather
+  // than returning the stale one.
+  const updated = (await waitForTabUrl(tabId)) || (await chrome.tabs.get(tabId))
   return {
     tabId,
     url: updated.url || url,
@@ -3224,8 +3227,11 @@ async function tabs(owner, params) {
     const tab = await chrome.tabs.create({ url, active: false, pinned: false })
     await addTabToSession(owner, tab, { activate: false, label: params.ownerLabel || null })
     if (url !== 'about:blank') await waitForComplete(tab.id, 45000).catch(() => {})
-    const created = await chrome.tabs.get(tab.id)
-    return { tabId: tab.id, url: created.url || url, title: created.title || '' }
+    // chrome.tabs.create() can hand back the initial about:blank while the
+    // requested navigation is still committing (P7, Windows). Return only
+    // after the tab reports the real URL.
+    const created = url === 'about:blank' ? await chrome.tabs.get(tab.id) : await waitForTabUrl(tab.id)
+    return { tabId: tab.id, url: created?.url || url, title: created?.title || '' }
   }
   if (op === 'close') {
     const tabId = await resolveOwnedTabId(owner, params.tabId)
@@ -3656,6 +3662,27 @@ async function wait(owner, params) {
     }
   }
   return result
+}
+
+// A tab can report status:"complete" for its initial about:blank before the
+// requested URL commits, and some Chrome versions keep `pendingUrl` set while
+// the real document loads. Wait until the tab owns a real URL and has no
+// pending navigation; bounded so a broken navigation cannot hang the tool.
+async function waitForTabUrl(tabId, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  for (;;) {
+    try {
+      last = await chrome.tabs.get(tabId)
+    } catch {
+      return null
+    }
+    const url = String(last?.url || '')
+    const pendingUrl = String(last?.pendingUrl || '')
+    if (url && url !== 'about:blank' && !pendingUrl && (last?.status == null || last.status === 'complete')) return last
+    if (Date.now() >= deadline) return last
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
 }
 
 function waitForComplete(tabId, timeoutMs) {
@@ -4200,16 +4227,31 @@ function scrollPage(direction, amount) {
 function findInPage(query, limit, useRegex) {
   const raw = String(query || '')
   if (!raw.trim()) return { query: '', matches: [], truncated: false }
+  // Windows pages frequently separate words with NBSP (U+00A0) or repeated
+  // whitespace. A literal query typed with ordinary spaces must still match,
+  // so both sides are whitespace-normalized (`\s` includes NBSP). The result
+  // still reports the raw query the caller passed.
+  const normalize = (value) => String(value).replace(/\s+/g, ' ').trim()
   let matcher
   if (useRegex) {
+    let regex
     try {
-      matcher = new RegExp(raw, 'i')
+      regex = new RegExp(raw, 'i')
     } catch {
       return { query: raw, matches: [], truncated: false, error: 'INVALID_REGEX' }
     }
+    let normalizedRegex = null
+    try {
+      normalizedRegex = new RegExp(normalize(raw), 'i')
+    } catch {
+      normalizedRegex = null
+    }
+    matcher = {
+      test: (value) => regex.test(value) || Boolean(normalizedRegex && normalizedRegex.test(normalize(value))),
+    }
   } else {
-    const needle = raw.toLowerCase()
-    matcher = { test: (value) => String(value).toLowerCase().includes(needle) }
+    const needle = normalize(raw).toLowerCase()
+    matcher = { test: (value) => normalize(value).toLowerCase().includes(needle) }
   }
   const max = Number.isFinite(limit) ? Math.max(1, Math.min(50, limit)) : 20
   const roots = window.__dshDeep ? window.__dshDeep.roots(document.body || document.documentElement) : [document.body || document.documentElement]
@@ -4263,7 +4305,7 @@ function findInPage(query, limit, useRegex) {
     } catch {}
     matches.push({
       ref,
-      text: value.trim().slice(0, 160),
+      text: normalize(value).slice(0, 160),
       tag: target.tagName.toLowerCase(),
       x: Math.round(rect.left + rect.width / 2),
       y: Math.round(rect.top + rect.height / 2),
