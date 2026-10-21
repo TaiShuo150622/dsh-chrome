@@ -5,7 +5,7 @@
 
 ## 队列
 
-- [ ] V1（P4a）桌面 overlay 移到 ISOLATED world
+- [x] V1（P4a）桌面 overlay 移到 ISOLATED world
   - `extension/manifest.json` 的 overlay content script 去掉 `world:"MAIN"`（默认 ISOLATED）；`chrome.scripting.executeScript` 注入/调用 overlay 时使用 `world:"ISOLATED"`。
   - `chrome_pointer`/annotate/frame overlay 调用不再用 main-world `Runtime.evaluate` 的 `window.__dshOverlay`；改走 isolated-world script/消息。
   - auto-follow helper 不再在 main world 里调 overlay；改为 isolated-world 注入/调用（或 content-script 消息）。
