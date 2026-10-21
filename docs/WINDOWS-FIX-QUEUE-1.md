@@ -5,7 +5,7 @@
 
 ## 队列
 
-- [ ] W1（P1）桌面截图可靠性
+- [x] W1（P1）桌面截图可靠性
   - `extension/background.js` 的 `screenshot()`：给 `Page.captureScreenshot` 加扩展侧 timeout（15–20s，稳定错误 `SCREENSHOT_TIMEOUT`）；`withDebugger` finally 必须释放 refs/detach，超时后该 tab 下一次重新 attach，不能连环卡死。
   - 截图前处理不可见 tab：优先 CDP `Page.bringToFront`；失败/非活动 tab 可 `makeTabVisibleForScreencast`（激活/展开 group/聚焦窗口）并在截图后恢复原 active tab；至少先重试一次。
   - 失败返回明确错误，不依赖 provider 60s 超时。
