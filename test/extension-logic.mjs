@@ -26,7 +26,9 @@ function check(name, condition, detail = '') {
 
 // ------------------------------------------------------------------ chrome mock
 const tabs = new Map([
-  [7, { id: 7, url: 'https://example.com/', title: 'Example Domain', active: true, status: 'complete', windowId: 1 }],
+  // The session fixture tab starts in the session group (id 5), like a tab
+  // created through chrome_tabs on the real extension.
+  [7, { id: 7, url: 'https://example.com/', title: 'Example Domain', active: true, status: 'complete', windowId: 1, groupId: 5 }],
 ])
 // W2: CDP navigation history per tab. chrome.tabs.goBack/goForward counters
 // prove the extension no longer uses those APIs.
@@ -82,6 +84,7 @@ let screenshotHangCount = 0
 // Session tabs are grouped; a collapsed group is another reason Chrome does not
 // render the tab (makeTabVisibleForScreencast expands it).
 const tabGroups = new Map([[5, { id: 5, collapsed: true, title: 'DSH · demo-project', color: 'blue' }]])
+let nextGroupId = 6
 let connectNativeCalls = 0
 let runtimeReloads = 0
 const nativePortListeners = { message: [], disconnect: [] }
@@ -159,6 +162,9 @@ const chrome = {
       // claimTab() picks the active tab; honour `active` so an unowned active
       // tab can be claimed without touching another session's tabs (R-12).
       if (queryInfo?.active === true) list = list.filter((tab) => tab.active)
+      if (Number.isFinite(queryInfo?.windowId)) list = list.filter((tab) => tab.windowId === queryInfo.windowId)
+      // syncTabsFromGroup() reconciles the tracked tab ids with the real group.
+      if (Number.isFinite(queryInfo?.groupId)) list = list.filter((tab) => tab.groupId === queryInfo.groupId)
       return list
     },
     async create({ url }) {
@@ -183,8 +189,16 @@ const chrome = {
     async remove(tabId) {
       tabs.delete(tabId)
     },
-    async group() {
-      return 5
+    async group({ tabIds = [], groupId } = {}) {
+      // One group per created set unless the caller joins an existing group;
+      // this mirrors Chrome and keeps two owners from sharing group 5.
+      const target = Number.isFinite(groupId) ? groupId : nextGroupId++
+      for (const id of tabIds) {
+        const tab = tabs.get(id)
+        if (tab) tab.groupId = target
+      }
+      if (!tabGroups.has(target)) tabGroups.set(target, { id: target, collapsed: false, title: '', color: 'blue' })
+      return target
     },
     async goBack(tabId) {
       goBackCalls.push(tabId)
@@ -1052,6 +1066,94 @@ tabs.get(7).active = true
 tabGroups.get(5).collapsed = false
 windows.get(1).focused = true
 windows.get(1).state = 'normal'
+
+// W3: focusing a second session tab updates activeTabId, tabs list `*`,
+// subsequent snapshots and the window focus; onTabActivated follows a tab
+// activation back without ever creating a new owner.
+const dualTab = await sandbox.handleRequest({
+  method: 'tab.tabs',
+  params: { op: 'new', url: 'https://second.example/', owner: 's1' },
+  id: 'w3-new-tab',
+})
+check(
+  'second session tab is created in the session group',
+  Number.isFinite(dualTab?.tabId) && tabs.get(dualTab.tabId)?.groupId === 5,
+  JSON.stringify({ tabId: dualTab?.tabId, groupId: tabs.get(dualTab.tabId)?.groupId }),
+)
+windows.get(1).focused = false
+const windowUpdatesBeforeW3 = windowUpdates.length
+const focusSecond = await sandbox.handleRequest({
+  method: 'tab.tabs',
+  params: { op: 'focus', tabId: dualTab.tabId, owner: 's1' },
+  id: 'w3-focus',
+})
+check(
+  'focus returns the focused tab',
+  focusSecond?.tabId === dualTab.tabId && focusSecond?.focused === true,
+  JSON.stringify(focusSecond),
+)
+check(
+  'focus activates the tab and deactivates the previous one',
+  tabs.get(dualTab.tabId)?.active === true && tabs.get(7)?.active === false,
+)
+check(
+  'focus focuses the window when it is not focused',
+  windowUpdates.slice(windowUpdatesBeforeW3).some((update) => update.windowId === 1 && update.focused === true),
+  JSON.stringify(windowUpdates.slice(windowUpdatesBeforeW3)),
+)
+const listAfterW3Focus = await sandbox.handleRequest({
+  method: 'tab.tabs',
+  params: { op: 'list', owner: 's1' },
+  id: 'w3-list',
+})
+check(
+  'tabs list marks the focused tab active',
+  listAfterW3Focus?.tabs?.find((tab) => tab.tabId === dualTab.tabId)?.active === true &&
+    listAfterW3Focus?.tabs?.find((tab) => tab.tabId === 7)?.active === false,
+  JSON.stringify(listAfterW3Focus?.tabs),
+)
+let snapshotMark = debuggerCalls.length
+nextPageValue = { ok: true, tag: 'button', label: 'W3 snapshot' }
+await sandbox.handleRequest({ method: 'tab.snapshot', params: { owner: 's1' }, id: 'w3-snapshot' })
+check(
+  'snapshot after focus targets the new active tab',
+  debuggerCalls.slice(snapshotMark).some((call) => call.method === 'attach' && call.target?.tabId === dualTab.tabId),
+  JSON.stringify(debuggerCalls.slice(snapshotMark).filter((call) => call.method === 'attach')),
+)
+
+const sessionsBeforeW3 = await vm.runInContext('loadSessions()', sandbox)
+const ownersBeforeW3 = Object.keys(sessionsBeforeW3).sort().join(',')
+sessionsBeforeW3.s1.paused = true
+sessionsBeforeW3.s1.pausedAt = Date.now()
+sessionsBeforeW3.s1.pausedUrl = 'https://foreign.example/'
+for (const listener of tabActivatedListeners) await listener({ tabId: 7, windowId: 1 })
+const sessionsAfterW3 = await vm.runInContext('loadSessions()', sandbox)
+check(
+  'onTabActivated follows a session tab activation',
+  sessionsAfterW3.s1?.activeTabId === 7,
+  JSON.stringify({ activeTabId: sessionsAfterW3.s1?.activeTabId }),
+)
+check(
+  'onTabActivated clears the USER_SWITCHED pause',
+  sessionsAfterW3.s1?.paused === false && !sessionsAfterW3.s1?.pausedUrl,
+  JSON.stringify({ paused: sessionsAfterW3.s1?.paused }),
+)
+for (const listener of tabActivatedListeners) await listener({ tabId: 42, windowId: 1 })
+const sessionsAfterForeignW3 = await vm.runInContext('loadSessions()', sandbox)
+check(
+  'onTabActivated never creates a new owner',
+  Object.keys(sessionsAfterForeignW3).sort().join(',') === ownersBeforeW3 &&
+    sessionsAfterForeignW3.s1?.paused === true,
+  JSON.stringify({ owners: Object.keys(sessionsAfterForeignW3), paused: sessionsAfterForeignW3.s1?.paused }),
+)
+await sandbox.handleRequest({ method: 'tab.resume', params: { owner: 's1' }, id: 'w3-resume' })
+await sandbox.handleRequest({
+  method: 'tab.tabs',
+  params: { op: 'close', tabId: dualTab.tabId, owner: 's1' },
+  id: 'w3-close',
+})
+tabs.get(7).active = true
+for (const listener of tabActivatedListeners) await listener({ tabId: 7, windowId: 1 })
 
 // readable group label reaches tabGroups.update on new tab
 const labelled = await sandbox.handleRequest({

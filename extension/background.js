@@ -359,12 +359,25 @@ async function onTabActivated(info) {
   const expected = expectedActivations.delete(tabId)
   const ownerOfTab = Object.entries(sessions).find(([, entry]) => Array.isArray(entry?.tabIds) && entry.tabIds.includes(tabId))
   if (ownerOfTab) {
+    // W3: activating one of this session's tabs makes it the session's active
+    // tab (tabs list `*`, snapshot/screenshot default, focus) and clears a
+    // pending USER_SWITCHED pause. Only an existing owner is touched: an
+    // unowned tab must never create a session entry here.
     const entry = ownerOfTab[1]
+    let changed = false
+    if (entry.activeTabId !== tabId) {
+      entry.activeTabId = tabId
+      changed = true
+    }
     if (entry.paused) {
       entry.paused = false
       entry.pausedAt = null
       entry.pausedUrl = ''
+      changed = true
+    }
+    if (changed) {
       await saveSessions()
+      diag('active-tab-followed', { owner: ownerShort(ownerOfTab[0]), tabId })
     }
     return
   }
@@ -3216,12 +3229,30 @@ async function tabs(owner, params) {
     const tabId = await resolveOwnedTabId(owner, params.tabId)
     expectedActivations.add(tabId)
     await chrome.tabs.update(tabId, { active: true })
+    const tab = await chrome.tabs.get(tabId)
+    // Bringing a tab to the front is only half of focus on Windows: a
+    // minimized/unfocused window keeps the tab behind the user's other work.
+    try {
+      if (chrome.windows?.get && chrome.windows?.update && Number.isFinite(tab.windowId)) {
+        const window = await chrome.windows.get(tab.windowId)
+        if (window?.state === 'minimized') {
+          await chrome.windows.update(tab.windowId, { state: 'normal' })
+        }
+        if (window && !window.focused) {
+          await chrome.windows.update(tab.windowId, { focused: true })
+        }
+      }
+    } catch {
+      // window API unavailable; the tab is still activated
+    }
     const entry = await getSessionEntry(owner)
+    // Write after getSessionEntry so a cleanup pass cannot leave the explicit
+    // focus target off the active slot.
+    entry.activeTabId = tabId
     entry.paused = false
     entry.pausedAt = null
     entry.pausedUrl = ''
     await saveSessions()
-    const tab = await chrome.tabs.get(tabId)
     return { tabId, url: tab.url || '', title: tab.title || '', focused: true }
   }
   throw bridgeError('UNSUPPORTED', `unknown tabs op: ${op}`)
