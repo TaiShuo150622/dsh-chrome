@@ -10,7 +10,7 @@
 |---|---|
 | `dsh-desktop-chrome-0.2.25.tgz` | `d474185a20e31736a14faaed03b8b1d29e77494352802afe32aa2e1147627691` |
 | `dsh-chrome-extension-0.2.25.zip` | `58efbb634b4386d05d9c5d1a139b42be35c515245c78f3406ce0fe1d34906ef1` |
-| `dsh-chrome-host-win32-x64.exe` | `HOST025SHA256` |
+| `dsh-chrome-host-win32-x64.exe` | `09a4a09827e5f320ac86121427c1c9d0247d16f05163d3b1da7c7a769799e3de` |
 
 PowerShell 校验：
 
