@@ -3075,15 +3075,88 @@ async function scroll(owner, params) {
   return attachSnapshotIfRequested(tabId, { ...result, tabId }, params)
 }
 
+// W2: chrome.tabs.goBack/goForward report success even when Chrome has no
+// usable entry (and can fail on Windows for tabs that are not rendered). Use
+// the DevTools navigation history instead: the entry list says whether a
+// back/forward target exists, and navigateToHistoryEntry is the same call
+// DevTools uses.
+async function navigateHistoryByCdp(tabId, direction) {
+  return withDebugger(tabId, async (session) => {
+    const target = session.target
+    let navigation
+    try {
+      navigation = await withTimeout(
+        chrome.debugger.sendCommand(target, 'Page.getNavigationHistory'),
+        10000,
+        'HISTORY_FAILED',
+        'Page.getNavigationHistory did not answer within 10000ms',
+      )
+    } catch (error) {
+      if (error?.code) throw error
+      throw bridgeError('HISTORY_FAILED', `cannot read navigation history: ${error?.message || String(error)}`)
+    }
+    const entries = Array.isArray(navigation?.entries) ? navigation.entries : []
+    const currentIndex = Number(navigation?.currentIndex)
+    if (entries.length === 0 || !Number.isFinite(currentIndex)) {
+      throw bridgeError('NO_HISTORY_ENTRY', `tab ${tabId} has no navigation history`)
+    }
+    const nextIndex = direction === 'back' ? currentIndex - 1 : currentIndex + 1
+    if (nextIndex < 0 || nextIndex >= entries.length) {
+      throw bridgeError(
+        'NO_HISTORY_ENTRY',
+        `no ${direction} entry: tab ${tabId} is at history index ${currentIndex} of ${entries.length}`,
+      )
+    }
+    const entry = entries[nextIndex]
+    try {
+      await withTimeout(
+        chrome.debugger.sendCommand(target, 'Page.navigateToHistoryEntry', { entryId: entry.id }),
+        10000,
+        'HISTORY_FAILED',
+        'Page.navigateToHistoryEntry did not answer within 10000ms',
+      )
+    } catch (error) {
+      if (error?.code) throw error
+      throw bridgeError('HISTORY_FAILED', `cannot navigate to history entry: ${error?.message || String(error)}`)
+    }
+    return { entryId: entry.id, url: entry.url || '', index: nextIndex, total: entries.length }
+  })
+}
+
+// Page.navigateToHistoryEntry resolves before the document finishes loading
+// and a same-document entry never fires a second "complete". Wait for the URL
+// to become the target entry's URL; then waitForComplete covers the
+// cross-document case. The wait is bounded by the same 45s budget as goto.
+async function waitForHistoryNavigation(tabId, targetUrl, timeoutMs) {
+  const deadline = Date.now() + Math.min(45000, Math.max(1000, timeoutMs || 45000))
+  let last = null
+  while (Date.now() < deadline) {
+    try {
+      last = await chrome.tabs.get(tabId)
+    } catch {
+      return null
+    }
+    if (last.status === 'complete' && String(last.url || '') === String(targetUrl || '')) return last
+    if (last.status === 'complete' && !targetUrl) return last
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  return last
+}
+
 async function history(owner, params) {
   await ensureNotPaused(owner)
   const tabId = await resolveOwnedTabId(owner, params.tabId)
   const op = String(params.op || 'reload')
-  if (op === 'back') await chrome.tabs.goBack(tabId)
-  else if (op === 'forward') await chrome.tabs.goForward(tabId)
-  else if (op === 'reload') await chrome.tabs.reload(tabId)
-  else throw bridgeError('UNSUPPORTED', `unknown history op: ${op}`)
-  await waitForComplete(tabId, 45000).catch(() => {})
+  if (op === 'back' || op === 'forward') {
+    const nav = await navigateHistoryByCdp(tabId, op)
+    await waitForHistoryNavigation(tabId, nav.url, 45000)
+    await waitForComplete(tabId, 5000).catch(() => {})
+  } else if (op === 'reload') {
+    await chrome.tabs.reload(tabId)
+    await waitForComplete(tabId, 45000).catch(() => {})
+  } else {
+    throw bridgeError('UNSUPPORTED', `unknown history op: ${op}`)
+  }
   const tab = await chrome.tabs.get(tabId)
   const result = { tabId, url: tab.url || '', title: tab.title || '', loadState: tab.status || 'complete' }
   if (params.frameHit) {

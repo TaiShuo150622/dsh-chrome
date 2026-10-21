@@ -28,6 +28,24 @@ function check(name, condition, detail = '') {
 const tabs = new Map([
   [7, { id: 7, url: 'https://example.com/', title: 'Example Domain', active: true, status: 'complete', windowId: 1 }],
 ])
+// W2: CDP navigation history per tab. chrome.tabs.goBack/goForward counters
+// prove the extension no longer uses those APIs.
+const navigationHistories = new Map()
+const goBackCalls = []
+const goForwardCalls = []
+const reloadCalls = []
+function navigationHistoryFor(tabId) {
+  let history = navigationHistories.get(tabId)
+  if (!history) {
+    const tab = tabs.get(tabId)
+    history = {
+      currentIndex: 0,
+      entries: [{ id: 1, url: tab?.url || 'about:blank', title: tab?.title || '', transitionType: 'typed' }],
+    }
+    navigationHistories.set(tabId, history)
+  }
+  return history
+}
 const debuggerCalls = []
 // Attached targets reported by chrome.debugger.getTargets(); the worker runs
 // detachOrphanedTargets() on start and tests can seed a target left attached by
@@ -168,9 +186,15 @@ const chrome = {
     async group() {
       return 5
     },
-    async goBack() {},
-    async goForward() {},
-    async reload() {},
+    async goBack(tabId) {
+      goBackCalls.push(tabId)
+    },
+    async goForward(tabId) {
+      goForwardCalls.push(tabId)
+    },
+    async reload(tabId) {
+      reloadCalls.push(tabId)
+    },
     onUpdated: { addListener() {}, removeListener() {} },
     onRemoved: {
       addListener(listener) {
@@ -289,6 +313,23 @@ const chrome = {
         }
       }
       if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 }
+      if (method === 'Page.getNavigationHistory') {
+        return navigationHistoryFor(target.tabId)
+      }
+      if (method === 'Page.navigateToHistoryEntry') {
+        const history = navigationHistoryFor(target.tabId)
+        const index = history.entries.findIndex((entry) => entry.id === params?.entryId)
+        if (index < 0) throw new Error(`no history entry ${params?.entryId}`)
+        history.currentIndex = index
+        const entry = history.entries[index]
+        const tab = tabs.get(target.tabId)
+        if (tab) {
+          tab.url = entry.url
+          tab.title = entry.title || ''
+          tab.status = 'complete'
+        }
+        return {}
+      }
       if (method === 'Page.bringToFront') {
         debuggerCalls.push({ method: 'Page.bringToFrontCalled', target })
         if (bringToFrontError) throw new Error('Page.bringToFront failed')
@@ -646,6 +687,100 @@ check('a refused scheme creates no tab', tabs.size === tabsSizeBeforeScheme)
 
 const history = await sandbox.handleRequest({ method: 'tab.history', params: { op: 'reload', owner: 's1' }, id: 'history' })
 check('tab.history reload returns tab state', history?.tabId === 7)
+check('tab.history reload keeps using chrome.tabs.reload', reloadCalls.at(-1) === 7, JSON.stringify(reloadCalls))
+
+// W2: back/forward go through CDP Page.getNavigationHistory +
+// Page.navigateToHistoryEntry. chrome.tabs.goBack/goForward stay untouched,
+// out-of-range moves are NO_HISTORY_ENTRY, and three back/forward round trips
+// land on the expected entry every time.
+const goBackCallsBefore = goBackCalls.length
+const goForwardCallsBefore = goForwardCalls.length
+const tab7History = navigationHistoryFor(7)
+tab7History.entries = [
+  { id: 11, url: 'https://example.com/', title: 'Example Domain', transitionType: 'typed' },
+  { id: 12, url: 'https://www.iana.org/', title: 'IANA', transitionType: 'link' },
+]
+tab7History.currentIndex = 1
+tabs.get(7).url = tab7History.entries[1].url
+tabs.get(7).title = tab7History.entries[1].title
+const historyUrl = async (op, id, tabId) => {
+  const value = await sandbox.handleRequest({
+    method: 'tab.history',
+    params: { op, owner: 's1', ...(tabId == null ? {} : { tabId }) },
+    id,
+  })
+  return value?.url || ''
+}
+const roundTrips = []
+for (let round = 0; round < 3; round += 1) {
+  const backUrl = await historyUrl('back', `history-back-${round}`)
+  const forwardUrl = await historyUrl('forward', `history-forward-${round}`)
+  roundTrips.push({ backUrl, forwardUrl, index: tab7History.currentIndex })
+}
+check(
+  'history back/forward use CDP entries for three round trips',
+  roundTrips.every((trip) => trip.backUrl === 'https://example.com/' && trip.forwardUrl === 'https://www.iana.org/') &&
+    tab7History.currentIndex === 1,
+  JSON.stringify(roundTrips),
+)
+check(
+  'history never calls chrome.tabs.goBack/goForward',
+  goBackCalls.length === goBackCallsBefore && goForwardCalls.length === goForwardCallsBefore,
+  JSON.stringify({ back: goBackCalls.length - goBackCallsBefore, forward: goForwardCalls.length - goForwardCallsBefore }),
+)
+await historyUrl('back', 'history-back-to-oldest')
+let oldestBackError = null
+try {
+  await historyUrl('back', 'history-back-past-oldest')
+} catch (error) {
+  oldestBackError = error
+}
+check(
+  'history back at the oldest entry is NO_HISTORY_ENTRY',
+  oldestBackError?.code === 'NO_HISTORY_ENTRY',
+  String(oldestBackError?.message || oldestBackError),
+)
+await historyUrl('forward', 'history-forward-to-newest')
+let newestForwardError = null
+try {
+  await historyUrl('forward', 'history-forward-past-newest')
+} catch (error) {
+  newestForwardError = error
+}
+check(
+  'history forward at the newest entry is NO_HISTORY_ENTRY',
+  newestForwardError?.code === 'NO_HISTORY_ENTRY',
+  String(newestForwardError?.message || newestForwardError),
+)
+
+// A brand-new tab has exactly one (about:blank) entry: both directions are
+// explicit errors instead of chrome.tabs.goBack silently doing nothing.
+const freshTab = await sandbox.handleRequest({
+  method: 'tab.tabs',
+  params: { op: 'new', url: 'about:blank', owner: 's1' },
+  id: 'history-fresh-tab',
+})
+let freshBackError = null
+try {
+  await historyUrl('back', 'history-fresh-back', freshTab?.tabId)
+} catch (error) {
+  freshBackError = error
+}
+let freshForwardError = null
+try {
+  await historyUrl('forward', 'history-fresh-forward', freshTab?.tabId)
+} catch (error) {
+  freshForwardError = error
+}
+check(
+  'a new tab has no back/forward history (NO_HISTORY_ENTRY)',
+  freshBackError?.code === 'NO_HISTORY_ENTRY' && freshForwardError?.code === 'NO_HISTORY_ENTRY',
+  JSON.stringify({ back: freshBackError?.code, forward: freshForwardError?.code, tab: freshTab?.tabId }),
+)
+await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'close', tabId: freshTab.tabId, owner: 's1' }, id: 'history-fresh-close' })
+navigationHistories.delete(7)
+tabs.get(7).url = 'https://example.com/'
+tabs.get(7).title = 'Example Domain'
 
 const waited = await sandbox.handleRequest({ method: 'tab.wait', params: { until: 'load', owner: 's1' }, id: 'wait' })
 check('tab.wait load returns ready state', waited?.loadState === 'complete')
