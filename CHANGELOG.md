@@ -11,6 +11,10 @@
 - `npm run status` 输出 updateState 与 update.log 尾部
 - `chrome_status` 增加 `providerVersion` 与 `updateState`，可直接看到"运行版本 vs 磁盘版本 vs 最近 reload 时间"
 
+## [0.2.25] - 2026-10-21
+
+- 桌面截图扩展侧有界超时/非活动 tab 重试；history back/forward 改 CDP；tab focus 同步 activeTabId；关闭 active context 自动回退
+
 ## [0.2.24] - 2026-10-20
 
 - 光标外观可换：popup 内置鲸鱼/箭头/圆点/准星 + 本地 PNG/JPEG/WebP 上传（≤256KB，仅 data URL），`chrome_pointer` 新增 preset/size
