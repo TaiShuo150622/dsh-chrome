@@ -451,6 +451,35 @@
     return { ok: false, error: `UNKNOWN_OP:${op}` }
   }
 
+  // Auto-follow bridge for the MAIN-world page actions. The cursor helper is
+  // injected into MAIN by the background and can no longer touch this isolated
+  // world (P4); it publishes the action coordinates on a DOM event and this
+  // listener moves the overlay pointer. A page script can dispatch the same
+  // event, but that only moves a visual pointer: no overlay state or API is
+  // reachable from the page.
+  const CURSOR_EVENT = '__dsh_cursor_follow__'
+  document.addEventListener(
+    CURSOR_EVENT,
+    (event) => {
+      try {
+        const payload = typeof event?.detail === 'string' ? JSON.parse(event.detail) : null
+        if (!payload || !Number.isFinite(payload.x) || !Number.isFinite(payload.y)) return
+        if (payload.cursor) applyCursor(payload.cursor)
+        const fallback = document.getElementById('__dsh_cursor__')
+        if (fallback) fallback.style.opacity = '0'
+        if (!state.auto) return
+        const kind = String(payload.kind || 'move')
+        autoFollow({
+          x: payload.x,
+          y: payload.y,
+          label: 'DSH · ' + kind,
+          pulse: kind === 'click' || kind === 'type' || kind === 'key',
+        })
+      } catch {}
+    },
+    true,
+  )
+
   window.__dshOverlay = { version: VERSION, handle, get auto() { return state.auto } }
   try { if (document.readyState !== 'loading') restore() } catch {}
 })();

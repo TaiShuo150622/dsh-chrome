@@ -63,6 +63,22 @@ check(
   manifest.minimum_chrome_version,
 )
 
+// 4b) P4: the overlay must not run in MAIN world (the page could read/call
+// window.__dshOverlay). The console hook intentionally stays in MAIN.
+const contentScriptFor = (file) => (manifest.content_scripts ?? []).find((script) => (script.js ?? []).includes(file))
+const overlayScript = contentScriptFor('overlay.js')
+const consoleScript = contentScriptFor('console-hook.js')
+check(
+  'overlay content script is isolated from the page',
+  Boolean(overlayScript) && overlayScript.world !== 'MAIN',
+  JSON.stringify(overlayScript?.world ?? 'ISOLATED'),
+)
+check(
+  'console hook stays in MAIN world (it must wrap page console)',
+  consoleScript?.world === 'MAIN',
+  JSON.stringify(consoleScript?.world),
+)
+
 // 5) version is semver-ish and matches package version line
 check('manifest version looks like semver', /^\d+\.\d+\.\d+$/.test(manifest.version), manifest.version)
 

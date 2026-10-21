@@ -807,7 +807,6 @@ const PAGE_ACTIONS = {
   drag: dragByRef,
   elementBox,
   html: outerHtml,
-  overlay: (params) => (window.__dshOverlay ? window.__dshOverlay.handle(params) : { ok: false, error: 'OVERLAY_NOT_READY' }),
   selection: readSelection,
   pickStart,
   pickStatus,
@@ -862,22 +861,23 @@ try {
 } catch {}
 loadCursorConfig().catch(() => {})
 
-// Virtual cursor: a small DSH-colored pointer injected into the page so the
-// user can see where the agent is acting (Codex-style "own cursor"). It is a
-// DOM overlay; screenshots taken right after an action include it.
+// Virtual cursor: the MAIN-world page actions call `window.__dshCursor` at the
+// coordinates they act on. The visible pointer itself lives in the overlay,
+// which is isolated from the page (P4); MAIN cannot touch `window.__dshOverlay`
+// any more. The helper therefore only draws the small fallback cursor (used on
+// pages/frames where the content script is not present) and publishes the
+// coordinates on a DOM event. The isolated overlay content script listens for
+// that event, hides the fallback and moves its own pointer. A page can spoof
+// the event, but that only moves a pointer: no overlay state or API is exposed.
+const CURSOR_EVENT = '__dsh_cursor_follow__'
 function cursorHelperSrc(cursor = cursorConfig) {
   const CONFIG = JSON.stringify(normalizeCursor(cursor))
   return `
 (() => {
   const ID = '__dsh_cursor__'
   const CONFIG = ${CONFIG}
-  if (window.__dshCursor && window.__dshCursorVersion === 3) return
-  if (window.__dshCursor) {
-    try { document.getElementById(ID)?.remove() } catch {}
-    window.__dshCursor = null
-  }
-  window.__dshCursorVersion = 3
-  window.__dshCursor = (x, y, kind) => {
+  const EVENT = ${JSON.stringify(CURSOR_EVENT)}
+  const draw = (x, y, kind) => {
     try {
       let cursor = document.getElementById(ID)
       if (!cursor) {
@@ -895,18 +895,11 @@ function cursorHelperSrc(cursor = cursorConfig) {
         cursor.appendChild(dot)
         cursor.appendChild(label)
         document.documentElement.appendChild(cursor)
-        if (window.__dshOverlay) {
-          // The overlay is the visible pointer and supports custom images;
-          // hide the fallback node so two cursors are never drawn.
-          ring.style.display = 'none'
-          dot.style.display = 'none'
-          label.style.display = 'none'
-        }
       }
       cursor.style.transform = 'translate(' + x + 'px,' + y + 'px)'
       cursor.style.opacity = '1'
       const label = cursor.lastChild
-      if (label && label !== cursor.firstChild) label.textContent = 'DSH · ' + kind
+      if (label && label !== cursor.firstChild) label.textContent = 'DSH \u00b7 ' + kind
       if (kind === 'click' || kind === 'type' || kind === 'key') {
         const ring = cursor.firstChild
         ring.style.transition = 'none'
@@ -918,16 +911,16 @@ function cursorHelperSrc(cursor = cursorConfig) {
           ring.style.transform = 'scale(2.4)'
         })
       }
-      try {
-        if (window.__dshOverlay) {
-          window.__dshOverlay.handle({ op: 'cursor', preset: CONFIG.preset, image: CONFIG.image, size: CONFIG.size })
-          if (window.__dshOverlay.auto !== false) {
-            window.__dshOverlay.handle({ op: 'follow', x, y, label: 'DSH · ' + kind, pulse: kind === 'click' || kind === 'type' || kind === 'key' })
-          }
-        }
-      } catch {}
       clearTimeout(cursor.__dshTimer)
       cursor.__dshTimer = setTimeout(() => { cursor.style.opacity = '0' }, 900)
+    } catch {}
+  }
+  window.__dshCursor = (x, y, kind) => {
+    draw(x, y, kind)
+    try {
+      document.dispatchEvent(new CustomEvent(EVENT, {
+        detail: JSON.stringify({ x, y, kind, cursor: CONFIG }),
+      }))
     } catch {}
   }
 })();
@@ -3258,6 +3251,24 @@ async function tabs(owner, params) {
   throw bridgeError('UNSUPPORTED', `unknown tabs op: ${op}`)
 }
 
+// Overlay calls run in the extension's ISOLATED world (MV3 default for content
+// scripts). The page can neither see nor call `window.__dshOverlay`; it only
+// sees the rendered nodes. `chrome.scripting.executeScript` is the only channel
+// used to reach it: CDP Runtime.evaluate would run in MAIN (P4).
+function overlayRunner(value) {
+  return window.__dshOverlay ? window.__dshOverlay.handle(value) : { ok: false, error: 'OVERLAY_NOT_READY' }
+}
+
+async function injectOverlay(tabId, allFrames = false) {
+  const target = allFrames ? { tabId, allFrames: true } : { tabId }
+  return chrome.scripting.executeScript({ target, files: ['overlay.js'], world: 'ISOLATED' })
+}
+
+async function invokeOverlay(tabId, payload, allFrames = false) {
+  const target = allFrames ? { tabId, allFrames: true } : { tabId }
+  return chrome.scripting.executeScript({ target, world: 'ISOLATED', args: [payload], func: overlayRunner })
+}
+
 async function overlayAction(owner, params) {
   await ensureNotPaused(owner)
   const storedCursor = await loadCursorConfig()
@@ -3273,13 +3284,8 @@ async function overlayAction(owner, params) {
     delete payload.frame
     delete payload.owner
     try {
-      await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['overlay.js'], world: 'MAIN' })
-      const results = await chrome.scripting.executeScript({
-        target: { tabId, allFrames: true },
-        world: 'MAIN',
-        args: [payload],
-        func: (value) => (window.__dshOverlay ? window.__dshOverlay.handle(value) : { ok: false, error: 'OVERLAY_NOT_READY' }),
-      })
+      await injectOverlay(tabId, true)
+      const results = await invokeOverlay(tabId, payload, true)
       const hit = (results || []).find((entry) => entry?.result?.ok)
       if (hit) return { ...hit.result, frameId: hit.frameId }
       return (results || [])[0]?.result || { ok: false, error: 'FRAME_TARGET_NOT_FOUND' }
@@ -3287,16 +3293,25 @@ async function overlayAction(owner, params) {
       throw bridgeError('OVERLAY_FAILED', `cannot inject overlay into frames: ${error?.message || error}`)
     }
   }
-  let result = await callInPage(tabId, 'overlay', [params])
+  let results
+  try {
+    results = await invokeOverlay(tabId, params)
+  } catch (error) {
+    throw bridgeError('OVERLAY_FAILED', `cannot inject overlay: ${error?.message || error}`)
+  }
+  let result = results?.[0]?.result
   if (result?.error === 'OVERLAY_NOT_READY') {
+    // A tab that was open before this extension generation has no content
+    // script yet; inject the file into the isolated world and retry once.
     try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ['overlay.js'], world: 'MAIN' })
+      await injectOverlay(tabId)
+      results = await invokeOverlay(tabId, params)
     } catch (error) {
       throw bridgeError('OVERLAY_FAILED', `cannot inject overlay: ${error?.message || error}`)
     }
-    result = await callInPage(tabId, 'overlay', [params])
+    result = results?.[0]?.result
   }
-  return result
+  return result || { ok: false, error: 'OVERLAY_NOT_READY' }
 }
 
 async function selectAgent(owner, params) {

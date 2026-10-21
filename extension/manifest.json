@@ -61,7 +61,6 @@
         "overlay.js"
       ],
       "run_at": "document_idle",
-      "world": "MAIN",
       "all_frames": true
     }
   ],

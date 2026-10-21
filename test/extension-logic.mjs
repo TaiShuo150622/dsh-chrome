@@ -49,6 +49,12 @@ function navigationHistoryFor(tabId) {
   return history
 }
 const debuggerCalls = []
+// P4: overlay calls must go through chrome.scripting in the ISOLATED world.
+// The mock records every executeScript call; `scriptingQueue` is consumed in
+// order so the OVERLAY_NOT_READY inject+retry path can be exercised.
+const scriptingCalls = []
+let scriptingQueue = []
+const scriptingDefault = { ok: true, visible: true }
 // Attached targets reported by chrome.debugger.getTargets(); the worker runs
 // detachOrphanedTargets() on start and tests can seed a target left attached by
 // a previous worker generation.
@@ -289,6 +295,14 @@ const chrome = {
       ]
     },
   },
+  scripting: {
+    async executeScript(options) {
+      scriptingCalls.push(options)
+      if (Array.isArray(options.files)) return [{ frameId: 0, result: null }]
+      const result = scriptingQueue.length > 0 ? scriptingQueue.shift() : scriptingDefault
+      return [{ frameId: options.target?.allFrames ? 4 : 0, result }]
+    },
+  },
   debugger: {
     async attach(target) {
       debuggerCalls.push({ method: 'attach', target })
@@ -490,9 +504,9 @@ check(
 const PAGE_ACTIONS = vm.runInContext('PAGE_ACTIONS', sandbox)
 check(
   'PAGE_ACTIONS has the expected page actions',
-  ['snapshot', 'click', 'type', 'press', 'scroll', 'find', 'hover', 'select', 'getText', 'console', 'network', 'overlay'].every(
+  ['snapshot', 'click', 'type', 'press', 'scroll', 'find', 'hover', 'select', 'getText', 'console', 'network', 'overlayDraw'].every(
     (name) => typeof PAGE_ACTIONS[name] === 'function',
-  ),
+  ) && PAGE_ACTIONS.overlay === undefined,
 )
 
 // ------------------------------------------- H5 sensitive field page actions
@@ -669,6 +683,72 @@ for (const [method, params, value] of pageCases) {
     )
   check(`${method} dispatches`, ok, JSON.stringify(result)?.slice(0, 120))
 }
+
+// ------------------------------------------------ P4 overlay isolated world
+// tab.overlay must never touch the page's MAIN world: every overlay call goes
+// through chrome.scripting world:"ISOLATED", and it must not issue a CDP
+// Runtime.evaluate (which would run in MAIN and expose window.__dshOverlay).
+scriptingQueue = []
+scriptingCalls.length = 0
+const runtimeEvalBeforeOverlay = debuggerCalls.filter((call) => call.method === 'Runtime.evaluate').length
+const overlayReply = await sandbox.handleRequest({
+  method: 'tab.overlay',
+  params: { op: 'box', selector: 'h1', label: 'P4', owner: 's1' },
+  id: 'overlay-isolated',
+})
+check(
+  'tab.overlay returns the isolated-world handler result',
+  overlayReply?.ok === true && overlayReply.visible === true,
+  JSON.stringify(overlayReply),
+)
+check(
+  'tab.overlay uses chrome.scripting only',
+  scriptingCalls.length === 1 &&
+    scriptingCalls.every((call) => call.world === 'ISOLATED') &&
+    debuggerCalls.filter((call) => call.method === 'Runtime.evaluate').length === runtimeEvalBeforeOverlay,
+  JSON.stringify(scriptingCalls.map((call) => ({ world: call.world, files: call.files, args: call.args }))),
+)
+check(
+  'tab.overlay payload reaches the isolated overlay handler',
+  scriptingCalls[0]?.args?.[0]?.op === 'box' && scriptingCalls[0]?.args?.[0]?.selector === 'h1',
+  JSON.stringify(scriptingCalls[0]?.args),
+)
+
+// A tab that predates this extension generation returns OVERLAY_NOT_READY from
+// the first isolated call; the background injects overlay.js into that isolated
+// world (still never MAIN) and retries once.
+scriptingCalls.length = 0
+scriptingQueue = [{ ok: false, error: 'OVERLAY_NOT_READY' }, { ok: true, count: 0 }]
+const overlayRetry = await sandbox.handleRequest({
+  method: 'tab.overlay',
+  params: { op: 'list', owner: 's1' },
+  id: 'overlay-retry',
+})
+check(
+  'tab.overlay inject+retries in the isolated world',
+  overlayRetry?.ok === true &&
+    scriptingCalls.length === 3 &&
+    scriptingCalls[1].files?.[0] === 'overlay.js' &&
+    scriptingCalls.every((call) => call.world === 'ISOLATED'),
+  JSON.stringify(scriptingCalls.map((call) => ({ files: call.files, world: call.world }))),
+)
+
+// Frame mode: inject into all frames and return the frame that accepted the op.
+scriptingCalls.length = 0
+scriptingQueue = [{ ok: true, id: 'a9' }]
+const overlayFrame = await sandbox.handleRequest({
+  method: 'tab.overlay',
+  params: { op: 'box', frame: true, selector: '#frame-btn', owner: 's1' },
+  id: 'overlay-frame',
+})
+check(
+  'tab.overlay frame mode stays isolated and reports the frame',
+  overlayFrame?.ok === true &&
+    overlayFrame.frameId === 4 &&
+    scriptingCalls.length === 2 &&
+    scriptingCalls.every((call) => call.world === 'ISOLATED' && call.target?.allFrames === true),
+  JSON.stringify({ reply: overlayFrame, calls: scriptingCalls.map((call) => ({ files: call.files, target: call.target })) }),
+)
 
 // non-page methods (tabs/history/wait/claim/downloads/upload)
 const tabList = await sandbox.handleRequest({ method: 'tab.tabs', params: { op: 'list', owner: 's1' }, id: 'tabs-list' })
